@@ -142,7 +142,7 @@ def _generate_html(title: str, db_path: str, records: list[dict[str, Any]]) -> s
 </head>
 <body>
     {nav_header}
-    
+
     <h1>{title}</h1>
 
     <div class="info">
@@ -392,9 +392,9 @@ def _generate_navigation_header(current_page: str = "") -> str:
             nav_links.append(f'<a href="{page}" class="nav-link">{label}</a>')
 
     nav_html = f"""
-    <nav style="background-color: #2196F3; padding: 15px; margin: -20px -20px 20px -20px; 
+    <nav style="background-color: #2196F3; padding: 15px; margin: -20px -20px 20px -20px;
                 border-radius: 0;">
-        <div style="max-width: 1200px; margin: 0 auto; display: flex; gap: 20px; 
+        <div style="max-width: 1200px; margin: 0 auto; display: flex; gap: 20px;
                     flex-wrap: wrap; align-items: center;">
             <h2 style="margin: 0; color: white; font-size: 1.2em;">CID el Dill Viewer</h2>
             <div style="display: flex; gap: 15px; flex-wrap: wrap; margin-left: auto;">
@@ -419,7 +419,9 @@ def _generate_navigation_header(current_page: str = "") -> str:
     return nav_html
 
 
-def _generate_web_ui_pages(db_path: str, main_output_path: str, records: list[dict[str, Any]]) -> None:
+def _generate_web_ui_pages(
+    db_path: str, main_output_path: str, records: list[dict[str, Any]]
+) -> None:
     """Generate additional web UI pages for navigation and viewing.
 
     Args:
@@ -457,12 +459,12 @@ def _generate_home_page(output_dir: Path, db_path: str, records: list[dict[str, 
 
     # Get statistics
     total_calls = len(records)
-    unique_functions = len(set(r.get('function_name', '') for r in records))
-    unique_files = len(set(
+    unique_functions = len({r.get('function_name', '') for r in records})
+    unique_files = len({
         r.get('call_site', {}).get('filename', '')
         for r in records
         if r.get('call_site', {}).get('filename')
-    ))
+    })
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -550,9 +552,9 @@ def _generate_home_page(output_dir: Path, db_path: str, records: list[dict[str, 
 <body>
     <div class="container">
         {nav_header}
-        
+
         <h1>Welcome to CID el Dill Viewer</h1>
-        
+
         <div class="stats-grid">
             <div class="stat-card">
                 <div class="stat-value">{total_calls}</div>
@@ -567,7 +569,7 @@ def _generate_home_page(output_dir: Path, db_path: str, records: list[dict[str, 
                 <div class="stat-label">Source Files</div>
             </div>
         </div>
-        
+
         <h2>Quick Access</h2>
         <div class="quick-links">
             <a href="timeline.html" class="quick-link-card">
@@ -575,27 +577,27 @@ def _generate_home_page(output_dir: Path, db_path: str, records: list[dict[str, 
                 <div class="quick-link-title">Timeline View</div>
                 <div class="quick-link-desc">View all function calls chronologically</div>
             </a>
-            
+
             <a href="sources.html" class="quick-link-card">
                 <div class="quick-link-icon">📄</div>
                 <div class="quick-link-title">Source Files</div>
                 <div class="quick-link-desc">Browse all source files with calls</div>
             </a>
-            
+
             <a href="callstacks.html" class="quick-link-card">
                 <div class="quick-link-icon">📚</div>
                 <div class="quick-link-title">Call Stacks</div>
                 <div class="quick-link-desc">Explore function call stacks</div>
             </a>
-            
+
             <a href="breakpoints.html" class="quick-link-card">
                 <div class="quick-link-icon">🔴</div>
                 <div class="quick-link-title">Breakpoints</div>
                 <div class="quick-link-desc">View and manage breakpoints</div>
             </a>
         </div>
-        
-        <div style="margin-top: 40px; padding: 20px; background-color: #e8f5e9; 
+
+        <div style="margin-top: 40px; padding: 20px; background-color: #e8f5e9;
                     border-radius: 5px; border-left: 4px solid #4CAF50;">
             <strong>Database:</strong> {db_path}
         </div>
@@ -700,10 +702,10 @@ def _generate_timeline_page(output_dir: Path, db_path: str, records: list[dict[s
 <body>
     <div class="container">
         {nav_header}
-        
+
         <h1>Timeline View</h1>
         <p>All function calls ordered by time</p>
-        
+
         {timeline_html}
     </div>
 </body>
@@ -745,7 +747,7 @@ def _generate_sources_page(output_dir: Path, db_path: str, records: list[dict[st
             link_url = f"source_{record['id']}.html"
             files_html += f"""
                 <a href="{link_url}" class="call-link">
-                    {record.get('function_name', 'Unknown')}() 
+                    {record.get('function_name', 'Unknown')}()
                     [Line {record.get('call_site', {}).get('lineno', '?')}]
                 </a>
 """
@@ -824,10 +826,10 @@ def _generate_sources_page(output_dir: Path, db_path: str, records: list[dict[st
 <body>
     <div class="container">
         {nav_header}
-        
+
         <h1>Source Files</h1>
         <p>All source files with recorded function calls</p>
-        
+
         {files_html if files_html else '<p>No source files found.</p>'}
     </div>
 </body>
@@ -838,7 +840,9 @@ def _generate_sources_page(output_dir: Path, db_path: str, records: list[dict[st
     sources_path.write_text(html, encoding="utf-8")
 
 
-def _generate_callstacks_page(output_dir: Path, db_path: str, records: list[dict[str, Any]]) -> None:
+def _generate_callstacks_page(
+    output_dir: Path, db_path: str, records: list[dict[str, Any]]
+) -> None:
     """Generate the call stacks list page.
 
     Args:
@@ -867,7 +871,7 @@ def _generate_callstacks_page(output_dir: Path, db_path: str, records: list[dict
         for i, frame in enumerate(callstack[:5]):  # Show first 5 frames
             stacks_html += f"""
                 <div class="stack-frame">
-                    Frame {i}: {frame.get('function', 'Unknown')} 
+                    Frame {i}: {frame.get('function', 'Unknown')}
                     [{frame.get('filename', 'Unknown')}:{frame.get('lineno', '?')}]
                 </div>
 """
@@ -958,10 +962,10 @@ def _generate_callstacks_page(output_dir: Path, db_path: str, records: list[dict
 <body>
     <div class="container">
         {nav_header}
-        
+
         <h1>Call Stacks</h1>
         <p>All recorded function call stacks</p>
-        
+
         {stacks_html if stacks_html else '<p>No call stacks found.</p>'}
     </div>
 </body>
@@ -972,7 +976,9 @@ def _generate_callstacks_page(output_dir: Path, db_path: str, records: list[dict
     stacks_path.write_text(html, encoding="utf-8")
 
 
-def _generate_breakpoints_page(output_dir: Path, db_path: str, records: list[dict[str, Any]]) -> None:
+def _generate_breakpoints_page(
+    output_dir: Path, db_path: str, records: list[dict[str, Any]]
+) -> None:
     """Generate the breakpoints management page.
 
     Args:
@@ -983,7 +989,7 @@ def _generate_breakpoints_page(output_dir: Path, db_path: str, records: list[dic
     nav_header = _generate_navigation_header("breakpoints.html")
 
     # Get unique functions
-    functions = sorted(set(r.get('function_name', '') for r in records if r.get('function_name')))
+    functions = sorted({r.get('function_name', '') for r in records if r.get('function_name')})
 
     functions_html = ""
     for func_name in functions:
@@ -995,7 +1001,9 @@ def _generate_breakpoints_page(output_dir: Path, db_path: str, records: list[dic
                 <span class="function-calls">{len(func_records)} call(s)</span>
             </div>
             <div class="breakpoint-info">
-                <span class="breakpoint-status">ℹ️ Breakpoint management is available in the live inspector</span>
+                <span class="breakpoint-status">
+                    ℹ️ Breakpoint management is available in the live inspector
+                </span>
             </div>
         </div>
 """
@@ -1066,20 +1074,26 @@ def _generate_breakpoints_page(output_dir: Path, db_path: str, records: list[dic
 <body>
     <div class="container">
         {nav_header}
-        
+
         <h1>Breakpoints</h1>
-        
+
         <div class="info-box">
             <strong>Note:</strong> This page shows functions available for breakpoint management.
             To set/unset breakpoints during execution, use the Interceptor API in your code:
             <ul>
-                <li><code>interceptor.set_breakpoint(function_name)</code> - Set breakpoint on a function</li>
-                <li><code>interceptor.remove_breakpoint(function_name)</code> - Remove breakpoint</li>
+                <li>
+                    <code>interceptor.set_breakpoint(function_name)</code>
+                    - Set breakpoint on a function
+                </li>
+                <li>
+                    <code>interceptor.remove_breakpoint(function_name)</code>
+                    - Remove breakpoint
+                </li>
                 <li><code>interceptor.set_breakpoint_on_all()</code> - Break on all functions</li>
                 <li><code>interceptor.clear_breakpoints()</code> - Clear all breakpoints</li>
             </ul>
         </div>
-        
+
         <h2>Available Functions</h2>
         {functions_html if functions_html else '<p>No functions found.</p>'}
     </div>
