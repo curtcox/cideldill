@@ -13,6 +13,24 @@ CID el Dill is a Python library for logging execution to a remote inspector/debu
 
 ## Installation
 
+### Quick Start
+
+To install CID el Dill with all dependencies:
+
+```bash
+./install_deps.sh
+```
+
+For development (includes testing and linting tools):
+
+```bash
+./install_deps.sh --dev
+```
+
+### Manual Installation
+
+Alternatively, you can install manually using pip:
+
 ```bash
 pip install -e .
 ```
@@ -22,6 +40,16 @@ For development:
 ```bash
 pip install -e ".[dev]"
 ```
+
+### Running Examples
+
+After installation, you can run the examples:
+
+```bash
+./run/mac/calculator_example
+```
+
+**Note**: The examples require the package to be installed first to ensure all dependencies (including `pygments` for syntax-highlighted HTML reports) are available.
 
 ## Usage
 

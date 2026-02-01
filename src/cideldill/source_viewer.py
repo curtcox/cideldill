@@ -4,20 +4,14 @@ This module provides utilities to generate HTML views of source code files
 with syntax highlighting and navigation capabilities.
 """
 
-import html
 import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-# Try to import Pygments for syntax highlighting, but make it optional
-try:
-    from pygments import highlight  # type: ignore[import-untyped]
-    from pygments.formatters import HtmlFormatter  # type: ignore[import-untyped]
-    from pygments.lexers import get_lexer_by_name  # type: ignore[import-untyped]
-    HAS_PYGMENTS = True
-except ImportError:
-    HAS_PYGMENTS = False
+from pygments import highlight
+from pygments.formatters import HtmlFormatter
+from pygments.lexers import get_lexer_by_name
 
 
 def generate_source_view(
@@ -71,22 +65,23 @@ def _generate_source_html(
     Returns:
         Complete HTML page as a string.
     """
-    if HAS_PYGMENTS:
-        # Use Pygments for syntax highlighting
-        lexer = get_lexer_by_name("python", stripall=True)
-        formatter = HtmlFormatter(
-            linenos=True,
-            cssclass="source",
-            style="default",
-            hl_lines=[highlight_line] if highlight_line else [],
-            linenostart=1,
-        )
-        highlighted_code = highlight(source_content, lexer, formatter)
-        css_styles = formatter.get_style_defs(".source")
-    else:
-        # Fallback to basic HTML without syntax highlighting
-        highlighted_code = _generate_basic_source_html(source_content, highlight_line)
-        css_styles = ""
+    # Get lexer for Python
+    lexer = get_lexer_by_name("python", stripall=True)
+
+    # Configure formatter with line numbers and highlighting
+    formatter = HtmlFormatter(
+        linenos=True,
+        cssclass="source",
+        style="default",
+        hl_lines=[highlight_line] if highlight_line else [],
+        linenostart=1,
+    )
+
+    # Generate syntax-highlighted HTML
+    highlighted_code = highlight(source_content, lexer, formatter)
+
+    # Get CSS for syntax highlighting
+    css_styles = formatter.get_style_defs(".source")
 
     # Generate call context section if provided
     context_html = ""
@@ -98,21 +93,6 @@ def _generate_source_html(
     title = f"Source: {filename}"
     if highlight_line:
         title += f" (Line {highlight_line})"
-
-    # Add notice if Pygments is not available
-    pygments_notice = ""
-    if not HAS_PYGMENTS:
-        notice_style = (
-            "background-color: #fff3cd; border: 1px solid #ffc107; "
-            "border-radius: 5px; padding: 15px; margin-bottom: 20px;"
-        )
-        pygments_notice = f"""
-        <div style="{notice_style}">
-            <strong>ℹ️ Note:</strong> Syntax highlighting is not available.
-            Install <code>pygments</code> for colored syntax highlighting:
-            <code>pip install pygments</code>
-        </div>
-        """
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -209,50 +189,11 @@ def _generate_source_html(
             background-color: #ffffcc;
             display: block;
         }}
-        /* Basic source view styles (fallback when Pygments is not available) */
-        .source-basic {{
-            font-family: 'Courier New', monospace;
-            font-size: 0.9em;
-            background-color: #f8f8f8;
-            border: 1px solid #e0e0e0;
-            border-radius: 3px;
-            overflow-x: auto;
-        }}
-        .source-table {{
-            width: 100%;
-            border-collapse: collapse;
-        }}
-        .source-table td {{
-            padding: 2px 8px;
-            vertical-align: top;
-        }}
-        .source-table .line-number {{
-            text-align: right;
-            color: #888;
-            border-right: 1px solid #ddd;
-            padding-right: 10px;
-            user-select: none;
-            min-width: 40px;
-        }}
-        .source-table .line-content {{
-            padding-left: 10px;
-        }}
-        .source-table .line-content pre {{
-            margin: 0;
-            padding: 0;
-            font-family: inherit;
-            white-space: pre;
-        }}
-        .source-table tr.highlight-line {{
-            background-color: #ffffcc;
-        }}
     </style>
 </head>
 <body>
     <div class="container">
         <h1>{title}</h1>
-
-        {pygments_notice}
 
         {context_html}
 
@@ -264,36 +205,6 @@ def _generate_source_html(
 </html>
 """
     return html
-
-
-def _generate_basic_source_html(source_content: str, highlight_line: Optional[int] = None) -> str:
-    """Generate basic HTML for source code without Pygments.
-
-    Args:
-        source_content: Source code content.
-        highlight_line: Line number to highlight (1-indexed).
-
-    Returns:
-        HTML string with line numbers and basic formatting.
-    """
-    lines = source_content.split('\n')
-    html_lines = []
-
-    html_lines.append('<div class="source-basic">')
-    html_lines.append('<table class="source-table">')
-
-    for i, line in enumerate(lines, start=1):
-        line_class = "highlight-line" if i == highlight_line else ""
-        escaped_line = html.escape(line) if line else "&nbsp;"
-        html_lines.append(f'<tr class="{line_class}">')
-        html_lines.append(f'  <td class="line-number">{i}</td>')
-        html_lines.append(f'  <td class="line-content"><pre>{escaped_line}</pre></td>')
-        html_lines.append('</tr>')
-
-    html_lines.append('</table>')
-    html_lines.append('</div>')
-
-    return '\n'.join(html_lines)
 
 
 def _generate_context_section(
