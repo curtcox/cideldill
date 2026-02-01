@@ -8,6 +8,8 @@ CID el Dill is a Python library for logging execution to a remote inspector/debu
 
 - **Logger**: Track and log execution events with structured data
 - **Inspector**: Remote debugging and configuration through an agent
+- **Interactive Breakpoints**: Set breakpoints and control execution via web UI
+- **Real-time Monitoring**: Observe function calls as they happen
 - **Comprehensive Testing**: Unit tests, property-based tests with Hypothesis, and more
 - **Code Quality**: Automated linting and quality checks with multiple tools
 
@@ -114,6 +116,26 @@ inspector.connect()
 inspector.send_data({"event": "startup", "timestamp": "2024-01-01"})
 inspector.disconnect()
 ```
+
+### Interactive Breakpoints
+
+Set breakpoints and control execution via an interactive web UI:
+
+```bash
+# Start the breakpoint server
+python -m cideldill.breakpoint_server
+
+# In another terminal, run your application
+python examples/interactive_breakpoint_demo.py
+```
+
+Then open http://localhost:5000/ in your browser to:
+- Set/remove breakpoints on functions
+- See paused executions in real-time
+- Examine arguments and call stacks
+- Continue, skip, or modify execution
+
+For detailed documentation, see [docs/breakpoints_web_ui.md](docs/breakpoints_web_ui.md).
 
 ## Development
 
