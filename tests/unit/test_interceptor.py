@@ -142,3 +142,65 @@ def test_wrapped_function_with_mixed_args() -> None:
     assert records[0]["result"] == 12
 
     interceptor.close()
+
+
+def test_wrapped_function_records_timestamp() -> None:
+    """Test that wrapped function records the timestamp."""
+    import time
+    
+    interceptor = Interceptor()
+    wrapped_add = interceptor.wrap(add)
+
+    before = time.time()
+    wrapped_add(2, 3)
+    after = time.time()
+
+    records = interceptor.get_call_records()
+    assert len(records) == 1
+    assert "timestamp" in records[0]
+    # Timestamp should be between before and after
+    assert before <= records[0]["timestamp"] <= after
+
+    interceptor.close()
+
+
+def test_wrapped_function_records_callstack() -> None:
+    """Test that wrapped function records the callstack."""
+    interceptor = Interceptor()
+    wrapped_add = interceptor.wrap(add)
+
+    wrapped_add(2, 3)
+
+    records = interceptor.get_call_records()
+    assert len(records) == 1
+    assert "callstack" in records[0]
+    assert isinstance(records[0]["callstack"], list)
+    assert len(records[0]["callstack"]) > 0
+    # Callstack should contain frame information
+    first_frame = records[0]["callstack"][0]
+    assert "filename" in first_frame
+    assert "lineno" in first_frame
+    assert "function" in first_frame
+
+    interceptor.close()
+
+
+def test_wrapped_function_records_call_site() -> None:
+    """Test that wrapped function records the source code call site."""
+    interceptor = Interceptor()
+    wrapped_add = interceptor.wrap(add)
+
+    wrapped_add(2, 3)
+
+    records = interceptor.get_call_records()
+    assert len(records) == 1
+    assert "call_site" in records[0]
+    call_site = records[0]["call_site"]
+    assert "filename" in call_site
+    assert "lineno" in call_site
+    assert "code_context" in call_site
+    # Should show the line where wrapped_add was called
+    assert isinstance(call_site["lineno"], int)
+    assert call_site["lineno"] > 0
+
+    interceptor.close()

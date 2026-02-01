@@ -6,6 +6,7 @@ calls, arguments, and results to a CAS store.
 
 import functools
 import inspect
+import time
 from typing import Any, Callable, Optional
 
 from cideldill.cas_store import CASStore
@@ -29,7 +30,23 @@ class Interceptor:
         """
         self.store = store if store is not None else CASStore()
 
-    def wrap(self, func: Callable) -> Callable:
+    def _extract_call_site(self, frame: inspect.FrameInfo) -> dict[str, Any]:
+        """Extract call site information from a frame.
+
+        Args:
+            frame: Frame information from inspect.
+
+        Returns:
+            Dictionary with call site information.
+        """
+        return {
+            "filename": frame.filename,
+            "lineno": frame.lineno,
+            "function": frame.function,
+            "code_context": frame.code_context[0].strip() if frame.code_context else None,
+        }
+
+    def wrap(self, func: Callable[..., Any]) -> Callable[..., Any]:
         """Wrap a function to intercept and record its calls.
 
         Args:
@@ -41,6 +58,27 @@ class Interceptor:
 
         @functools.wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
+            # Capture timestamp
+            timestamp = time.time()
+
+            # Get the call stack and call site
+            # Stack frame layout:
+            #   [0]: this wrapper function
+            #   [1]: the function that called the wrapped function (call site)
+            #   [2+]: frames above the call site
+            stack = inspect.stack()
+            # Extract call site from frame [1]
+            call_site = self._extract_call_site(stack[1]) if len(stack) > 1 else None
+            # Extract full callstack starting from frame [1] (caller and above)
+            callstack = []
+            for frame in stack[1:]:  # Skip wrapper frame [0]
+                callstack.append({
+                    "filename": frame.filename,
+                    "lineno": frame.lineno,
+                    "function": frame.function,
+                    "code_context": frame.code_context[0].strip() if frame.code_context else None,
+                })
+
             # Get function signature to bind arguments properly
             sig = inspect.signature(func)
             bound_args = sig.bind(*args, **kwargs)
@@ -55,7 +93,12 @@ class Interceptor:
 
                 # Record successful call
                 self.store.record_call(
-                    function_name=func.__name__, args=args_dict, result=result
+                    function_name=func.__name__,
+                    args=args_dict,
+                    result=result,
+                    timestamp=timestamp,
+                    callstack=callstack,
+                    call_site=call_site,
                 )
 
                 return result
@@ -67,7 +110,12 @@ class Interceptor:
                     "message": str(e),
                 }
                 self.store.record_call(
-                    function_name=func.__name__, args=args_dict, exception=exception_info
+                    function_name=func.__name__,
+                    args=args_dict,
+                    exception=exception_info,
+                    timestamp=timestamp,
+                    callstack=callstack,
+                    call_site=call_site,
                 )
                 raise
 

@@ -247,3 +247,53 @@ def test_generate_html_with_default_title():
     finally:
         Path(db_path).unlink(missing_ok=True)
         Path(html_path).unlink(missing_ok=True)
+
+
+def test_generated_html_shows_timestamp(temp_db_with_data):
+    """Test that generated HTML displays call timestamps."""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False) as tmp:
+        html_path = tmp.name
+
+    try:
+        generate_html_viewer(temp_db_with_data, html_path)
+
+        html_content = Path(html_path).read_text()
+
+        # Should show timestamp section
+        assert "Timestamp:" in html_content
+    finally:
+        Path(html_path).unlink(missing_ok=True)
+
+
+def test_generated_html_shows_callstack(temp_db_with_data):
+    """Test that generated HTML displays callstack information."""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False) as tmp:
+        html_path = tmp.name
+
+    try:
+        generate_html_viewer(temp_db_with_data, html_path)
+
+        html_content = Path(html_path).read_text()
+
+        # Should show callstack section
+        assert "Callstack:" in html_content or "Call Stack:" in html_content
+    finally:
+        Path(html_path).unlink(missing_ok=True)
+
+
+def test_generated_html_shows_call_site(temp_db_with_data):
+    """Test that generated HTML displays call site information."""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False) as tmp:
+        html_path = tmp.name
+
+    try:
+        generate_html_viewer(temp_db_with_data, html_path)
+
+        html_content = Path(html_path).read_text()
+
+        # Should show call site section
+        assert "Call Site:" in html_content
+        # Should show file information
+        assert "filename" in html_content.lower() or "file:" in html_content.lower()
+    finally:
+        Path(html_path).unlink(missing_ok=True)
