@@ -258,6 +258,134 @@ class CASStore:
                 records.append(record)
         return records
 
+    def get_next_call_by_timestamp(self, call_id: int) -> Optional[dict[str, Any]]:
+        """Get the next call record chronologically by timestamp.
+
+        Args:
+            call_id: The current call record ID.
+
+        Returns:
+            The next call record, or None if this is the last record.
+        """
+        current_record = self.get_call_record(call_id)
+        if current_record is None or current_record.get("timestamp") is None:
+            return None
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT id FROM call_records
+            WHERE timestamp > ?
+            ORDER BY timestamp ASC, id ASC
+            LIMIT 1
+            """,
+            (current_record["timestamp"],),
+        )
+        row = cursor.fetchone()
+
+        if row is None:
+            return None
+
+        return self.get_call_record(row[0])
+
+    def get_previous_call_by_timestamp(self, call_id: int) -> Optional[dict[str, Any]]:
+        """Get the previous call record chronologically by timestamp.
+
+        Args:
+            call_id: The current call record ID.
+
+        Returns:
+            The previous call record, or None if this is the first record.
+        """
+        current_record = self.get_call_record(call_id)
+        if current_record is None or current_record.get("timestamp") is None:
+            return None
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT id FROM call_records
+            WHERE timestamp < ?
+            ORDER BY timestamp DESC, id DESC
+            LIMIT 1
+            """,
+            (current_record["timestamp"],),
+        )
+        row = cursor.fetchone()
+
+        if row is None:
+            return None
+
+        return self.get_call_record(row[0])
+
+    def get_next_call_of_same_function(self, call_id: int) -> Optional[dict[str, Any]]:
+        """Get the next call record of the same function.
+
+        Args:
+            call_id: The current call record ID.
+
+        Returns:
+            The next call record of the same function, or None if none exists.
+        """
+        current_record = self.get_call_record(call_id)
+        if current_record is None:
+            return None
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT id FROM call_records
+            WHERE function_name = ? AND id > ?
+            ORDER BY id ASC
+            LIMIT 1
+            """,
+            (current_record["function_name"], call_id),
+        )
+        row = cursor.fetchone()
+
+        if row is None:
+            return None
+
+        return self.get_call_record(row[0])
+
+    def get_previous_call_of_same_function(self, call_id: int) -> Optional[dict[str, Any]]:
+        """Get the previous call record of the same function.
+
+        Args:
+            call_id: The current call record ID.
+
+        Returns:
+            The previous call record of the same function, or None if none exists.
+        """
+        current_record = self.get_call_record(call_id)
+        if current_record is None:
+            return None
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT id FROM call_records
+            WHERE function_name = ? AND id < ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (current_record["function_name"], call_id),
+        )
+        row = cursor.fetchone()
+
+        if row is None:
+            return None
+
+        return self.get_call_record(row[0])
+
     def close(self) -> None:
         """Close the database connection."""
         if self._conn:

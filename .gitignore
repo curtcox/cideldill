@@ -33,3 +33,7 @@ node_modules/
 .DS_Store
 .vscode/
 .idea/
+
+# Generated HTML reports and databases
+*.db
+*.html

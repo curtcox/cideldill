@@ -1,7 +1,8 @@
 """Hypothesis property-based tests for Logger."""
 
-from hypothesis import given, strategies as st
 from cideldill.logger import Logger
+from hypothesis import given
+from hypothesis import strategies as st
 
 
 @given(st.text(min_size=1), st.text())

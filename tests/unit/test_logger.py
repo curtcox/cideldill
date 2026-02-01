@@ -1,6 +1,5 @@
 """Unit tests for Logger class."""
 
-import pytest
 from cideldill.logger import Logger
 
 

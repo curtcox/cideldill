@@ -30,6 +30,9 @@ def generate_html_viewer(db_path: str, output_path: str, title: str = "CAS Store
     # Write to file
     Path(output_path).write_text(html_content)
 
+    # Generate source viewer pages for each record with call site information
+    _generate_source_viewer_pages(db_path, output_path)
+
 
 def _generate_html(title: str, db_path: str, records: list[dict[str, Any]]) -> str:
     """Generate the HTML content.
@@ -44,7 +47,7 @@ def _generate_html(title: str, db_path: str, records: list[dict[str, Any]]) -> s
     """
     records_html = ""
     for record in records:
-        records_html += _format_record(record)
+        records_html += _format_record(record, db_path)
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -157,11 +160,12 @@ border-radius: 5px; text-align: center;">
     return html
 
 
-def _format_record(record: dict[str, Any]) -> str:
+def _format_record(record: dict[str, Any], db_path: str = "") -> str:
     """Format a single call record as HTML.
 
     Args:
         record: Call record dictionary.
+        db_path: Path to the database for generating source links.
 
     Returns:
         HTML string for the record.
@@ -191,9 +195,14 @@ def _format_record(record: dict[str, Any]) -> str:
     # Call Site
     if "call_site" in record:
         call_site = record["call_site"]
+        source_link = ""
+        if db_path and "id" in record:
+            link_url = f"source_{record['id']}.html"
+            link_style = "color: #2196F3; text-decoration: none; font-weight: bold;"
+            source_link = f' <a href="{link_url}" style="{link_style}">[View Source]</a>'
         html += f"""
         <div class="section">
-            <div class="section-title">Call Site:</div>
+            <div class="section-title">Call Site:{source_link}</div>
             <div class="code-block">
                 <strong>File:</strong> {call_site.get('filename', 'N/A')}<br>
                 <strong>Line:</strong> {call_site.get('lineno', 'N/A')}<br>
@@ -248,8 +257,14 @@ def _format_record(record: dict[str, Any]) -> str:
                 "margin-bottom: 10px; padding: 5px; "
                 "background-color: #f9f9f9; border-left: 3px solid #ddd;"
             )
+            # Add source link for each frame
+            frame_link = ""
+            if db_path and frame.get('filename') and frame.get('lineno'):
+                link_url = f"source_{record['id']}.html"
+                link_style = "color: #2196F3; text-decoration: none; font-size: 0.9em;"
+                frame_link = f' <a href="{link_url}" style="{link_style}">[view]</a>'
             html += f"""                <div style="{frame_style}">
-                    <strong>Frame {i}:</strong> {frame.get('function', 'N/A')}<br>
+                    <strong>Frame {i}:</strong> {frame.get('function', 'N/A')}{frame_link}<br>
                     <strong>File:</strong> {frame.get('filename', 'N/A')}<br>
                     <strong>Line:</strong> {frame.get('lineno', 'N/A')}<br>
 """
@@ -266,3 +281,53 @@ def _format_record(record: dict[str, Any]) -> str:
 """
 
     return html
+
+
+def _generate_source_viewer_pages(db_path: str, main_output_path: str) -> None:
+    """Generate source viewer pages for all call records.
+
+    Args:
+        db_path: Path to the database.
+        main_output_path: Path to the main HTML output file (used for determining output directory).
+    """
+    from cideldill import CASStore
+    from cideldill.source_viewer import generate_source_view
+
+    store = CASStore(db_path)
+    records = store.get_all_call_records()
+    store.close()
+
+    output_dir = Path(main_output_path).parent
+
+    for record in records:
+        call_site = record.get("call_site")
+        if not call_site:
+            continue
+
+        filename = call_site.get("filename")
+        lineno = call_site.get("lineno")
+
+        if not filename or not Path(filename).exists():
+            continue
+
+        # Generate source viewer for this call
+        source_output = output_dir / f"source_{record['id']}.html"
+        try:
+            generate_source_view(
+                source_file=filename,
+                output_path=str(source_output),
+                highlight_line=lineno,
+                call_record=record,
+                db_path=db_path,
+            )
+        except OSError:
+            # Skip source generation if file cannot be read or written
+            # This is expected for some cases like temporary files or stdin
+            pass
+        except Exception as e:
+            # Log unexpected errors but continue processing other records
+            # This prevents a single problematic file from breaking the entire report
+            import sys
+            print(f"Warning: Failed to generate source view for record {record['id']}: {e}",
+                  file=sys.stderr)
+

@@ -13,6 +13,65 @@ CID el Dill is a Python library for logging execution to a remote inspector/debu
 
 ## Installation
 
+### Quick Start
+
+To install CID el Dill with all dependencies:
+
+```bash
+./install_deps.sh
+```
+
+For development (includes testing and linting tools):
+
+```bash
+./install_deps.sh --dev
+```
+
+**Important**: 
+- The install script uses `python3 -m pip` by default. Make sure you run the doctor script and examples with the same Python version.
+- On systems with externally-managed Python (e.g., Homebrew on macOS), the script will automatically use the `--user` flag to install to user site-packages.
+- For best results, consider using a virtual environment (see below).
+
+### Using a Virtual Environment (Recommended)
+
+For a cleaner installation that doesn't affect your system Python, use a virtual environment:
+
+```bash
+# Create a virtual environment
+python3 -m venv venv
+
+# Activate it
+source venv/bin/activate  # On macOS/Linux
+# or
+venv\Scripts\activate  # On Windows
+
+# Install dependencies
+./install_deps.sh --dev
+
+# When done, deactivate
+deactivate
+```
+
+### Verify Installation
+
+After installation, verify everything is working correctly:
+
+```bash
+python3 doctor.py
+```
+
+This will check:
+- Python version compatibility
+- CID el Dill package installation
+- All required dependencies (including Pygments)
+- Optional development dependencies
+
+If the doctor script reports issues, ensure you're using the same Python version for both installation and running scripts.
+
+### Manual Installation
+
+Alternatively, you can install manually using pip:
+
 ```bash
 pip install -e .
 ```
@@ -22,6 +81,16 @@ For development:
 ```bash
 pip install -e ".[dev]"
 ```
+
+### Running Examples
+
+After installation, you can run the examples:
+
+```bash
+./run/mac/calculator_example
+```
+
+**Note**: The examples require the package to be installed first (via `./install_deps.sh`) to ensure all dependencies (including `pygments` for syntax-highlighted HTML reports) are available.
 
 ## Usage
 

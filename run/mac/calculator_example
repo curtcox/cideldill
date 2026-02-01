@@ -29,17 +29,27 @@ import sys
 import webbrowser
 from pathlib import Path
 
-# Add src to path so we can import cideldill
+# Try to import from installed package first, fall back to local source
+try:
+    from cideldill import CASStore, Interceptor
+    from cideldill.html_generator import generate_html_viewer
+    # If cideldill is installed, we're good
+except ImportError:
+    # Fall back to local source if package not installed
+    script_dir = Path(__file__).parent
+    repo_root = script_dir.parent.parent
+    sys.path.insert(0, str(repo_root / "src"))
+    from cideldill import CASStore, Interceptor
+    from cideldill.html_generator import generate_html_viewer
+
+# Add examples to path for calculator module
 script_dir = Path(__file__).parent
 repo_root = script_dir.parent.parent
-sys.path.insert(0, str(repo_root / "src"))
-sys.path.insert(0, str(repo_root / "examples"))
+if str(repo_root / "examples") not in sys.path:
+    sys.path.insert(0, str(repo_root / "examples"))
 
 # ruff: noqa: E402
 from level0_calculator import add, div, mul
-
-from cideldill import CASStore, Interceptor
-from cideldill.html_generator import generate_html_viewer
 
 
 def parse_args():
