@@ -3,7 +3,7 @@
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -56,6 +56,7 @@ def main() -> None:
     eslint_txt = read_file_safe("reports/eslint.txt")
     stylelint_txt = read_file_safe("reports/stylelint.txt")
     pytest_txt = read_file_safe("reports/pytest.txt")
+    gauge_txt = read_file_safe("reports/gauge.txt")
     
     # Count issues
     ruff_issues = ruff_txt.count("\n") if ruff_txt else 0
@@ -74,6 +75,7 @@ def main() -> None:
     
     # Get test results
     test_passed = "passed" in pytest_txt.lower()
+    gauge_passed = "failed" not in gauge_txt.lower() and gauge_txt != ""
     
     # Generate HTML
     html = f"""<!DOCTYPE html>
@@ -224,7 +226,7 @@ def main() -> None:
         <header>
             <h1>🔍 CID el Dill</h1>
             <div class="subtitle">Comprehensive Build Report</div>
-            <div class="timestamp">Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")}</div>
+            <div class="timestamp">Generated: {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")}</div>
         </header>
         
         <div class="content">
@@ -355,6 +357,13 @@ def main() -> None:
                             {generate_badge("Coverage", f"{coverage_percent:.1f}%", "success" if coverage_percent > 80 else "warning")}
                         </h3>
                         <a href="coverage/index.html">View Full Coverage Report →</a>
+                    </div>
+                    <div class="report-card">
+                        <h3>
+                            Gauge Tests
+                            {generate_badge("Status", "Pass" if gauge_passed else "Fail", "success" if gauge_passed else "warning")}
+                        </h3>
+                        <pre>{gauge_txt[:1000] if gauge_txt else "No Gauge tests run"}</pre>
                     </div>
                 </div>
             </section>

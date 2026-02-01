@@ -54,7 +54,13 @@ jobs:
 
       - name: Install additional Python tools
         run: |
-          pip install pylint-json2html radon vulture pysmell || true
+          pip install pylint-json2html radon vulture getgauge || true
+
+      - name: Install Gauge
+        continue-on-error: true
+        run: |
+          curl -SsL https://downloads.gauge.org/stable | sh || true
+          gauge install python || true
 
       - name: Create reports directory
         run: mkdir -p reports
@@ -122,6 +128,11 @@ jobs:
         continue-on-error: true
         run: |
           pytest --cov=src --cov-report=html:reports/coverage --cov-report=json:reports/coverage.json --cov-report=term > reports/pytest.txt || true
+
+      - name: Run Gauge tests
+        continue-on-error: true
+        run: |
+          gauge run specs/ --simple-console > reports/gauge.txt 2>&1 || true
 
       - name: Generate HTML report
         run: python scripts/generate_report.py

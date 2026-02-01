@@ -71,11 +71,24 @@ This project generates comprehensive build reports including:
 - **Python Quality**: Ruff, Pylint, Mypy, Pydoclint
 - **Code Metrics**: Radon (complexity & maintainability), Vulture
 - **Shell & Docker**: ShellCheck, Hadolint
-- **Frontend**: ESLint, Stylelint, UNCSS
-- **Testing**: Unit tests, Coverage, Hypothesis property tests
-- **Gauge**: Acceptance tests
+- **Frontend**: ESLint, Stylelint
+- **Testing**: Unit tests, Coverage, Hypothesis property tests, Gauge acceptance tests
+
+### Viewing Build Reports
+
+Build reports are automatically generated on every push to the main branch and published to GitHub Pages.
 
 View the latest build report at: https://curtcox.github.io/cideldill/
+
+### Setting Up GitHub Pages (First Time)
+
+To enable GitHub Pages for this repository:
+
+1. Go to the repository Settings
+2. Navigate to "Pages" in the left sidebar
+3. Under "Build and deployment":
+   - Source: Select "GitHub Actions"
+4. The workflow will automatically deploy on the next push to main
 
 ## License
 
