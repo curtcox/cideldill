@@ -63,7 +63,7 @@ jobs:
         continue-on-error: true
         run: |
           ruff check src/ --output-format=json > reports/ruff.json || true
-          ruff check src/ --output-format=text > reports/ruff.txt || true
+          ruff check src/ --output-format=full > reports/ruff.txt || true
 
       - name: Run Pylint
         continue-on-error: true

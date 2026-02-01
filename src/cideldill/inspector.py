@@ -5,10 +5,10 @@ from typing import Any, Optional
 
 class Inspector:
     """Inspector for remote debugging and configuration.
-    
+
     This class provides functionality to inspect and debug
     remote execution through a configuration agent.
-    
+
     Attributes:
         host: The host address of the remote agent.
         port: The port number of the remote agent.
@@ -16,7 +16,7 @@ class Inspector:
 
     def __init__(self, host: str = "localhost", port: int = 8080) -> None:
         """Initialize the Inspector.
-        
+
         Args:
             host: The host address (default: "localhost").
             port: The port number (default: 8080).
@@ -27,7 +27,7 @@ class Inspector:
 
     def connect(self) -> bool:
         """Connect to the remote agent.
-        
+
         Returns:
             True if connection successful, False otherwise.
         """
@@ -41,7 +41,7 @@ class Inspector:
 
     def is_connected(self) -> bool:
         """Check if connected to the remote agent.
-        
+
         Returns:
             True if connected, False otherwise.
         """
@@ -49,10 +49,10 @@ class Inspector:
 
     def send_data(self, data: dict[str, Any]) -> Optional[dict[str, Any]]:
         """Send data to the remote agent.
-        
+
         Args:
             data: The data to send.
-            
+
         Returns:
             Response from the remote agent, or None if not connected.
         """
