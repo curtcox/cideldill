@@ -54,6 +54,8 @@ def check_cideldill_components() -> list[tuple[bool, str]]:
         ('Interceptor', 'cideldill.interceptor'),
         ('Logger', 'cideldill.logger'),
         ('Inspector', 'cideldill.inspector'),
+        ('BreakpointManager', 'cideldill.breakpoint_manager'),
+        ('BreakpointServer', 'cideldill.breakpoint_server'),
         ('html_generator', 'cideldill.html_generator'),
         ('source_viewer', 'cideldill.source_viewer'),
     ]
@@ -108,6 +110,7 @@ def main():
     print(f"{BOLD}4. Required Dependencies{RESET}")
     required_deps = [
         ('pygments', 'pygments'),
+        ('flask', 'flask'),
     ]
 
     for module_name, import_name in required_deps:
