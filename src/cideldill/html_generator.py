@@ -320,7 +320,14 @@ def _generate_source_viewer_pages(db_path: str, main_output_path: str) -> None:
                 call_record=record,
                 db_path=db_path,
             )
-        except Exception:
-            # If source generation fails, continue with other records
+        except OSError:
+            # Skip source generation if file cannot be read or written
+            # This is expected for some cases like temporary files or stdin
             pass
+        except Exception as e:
+            # Log unexpected errors but continue processing other records
+            # This prevents a single problematic file from breaking the entire report
+            import sys
+            print(f"Warning: Failed to generate source view for record {record['id']}: {e}",
+                  file=sys.stderr)
 
