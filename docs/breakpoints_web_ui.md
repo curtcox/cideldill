@@ -12,6 +12,12 @@ CID el Dill provides an interactive web interface for setting breakpoints, monit
 - **Examine values** at each breakpoint before deciding how to proceed
 - **Continue execution** with options to modify behavior
 
+## Important Notes
+
+- **Server Shutdown**: The Flask development server doesn't support clean programmatic shutdown. To stop the server, use Ctrl+C in the terminal. For production use, consider a proper WSGI server like Gunicorn.
+- **Development Tool**: This is designed for development and debugging. Not recommended for production environments.
+- **Thread Safety**: All components are thread-safe and can handle concurrent requests.
+
 ## Architecture
 
 The interactive breakpoint system consists of three main components:
@@ -359,16 +365,16 @@ def main():
     def sync_breakpoints():
         while True:
             current_breakpoints = set(manager.get_breakpoints())
-            interceptor_breakpoints = interceptor._breakpoints
-            
+            interceptor_breakpoints = interceptor.get_breakpoints()
+
             # Add new breakpoints
             for bp in current_breakpoints - interceptor_breakpoints:
                 interceptor.set_breakpoint(bp)
-            
+
             # Remove deleted breakpoints
             for bp in interceptor_breakpoints - current_breakpoints:
                 interceptor.remove_breakpoint(bp)
-            
+
             time.sleep(1)
     
     sync_thread = threading.Thread(target=sync_breakpoints, daemon=True)

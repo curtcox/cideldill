@@ -24,18 +24,18 @@ def sync_breakpoints(manager, interceptor):
     while True:
         try:
             current_breakpoints = set(manager.get_breakpoints())
-            interceptor_breakpoints = interceptor._breakpoints
-            
+            interceptor_breakpoints = interceptor.get_breakpoints()
+
             # Add new breakpoints
             for bp in current_breakpoints - interceptor_breakpoints:
                 interceptor.set_breakpoint(bp)
                 print(f"✅ Breakpoint set on {bp}()")
-            
+
             # Remove deleted breakpoints
             for bp in interceptor_breakpoints - current_breakpoints:
                 interceptor.remove_breakpoint(bp)
                 print(f"❌ Breakpoint removed from {bp}()")
-            
+
             time.sleep(0.5)
         except Exception as e:
             print(f"Error in sync: {e}")

@@ -211,10 +211,39 @@ def test_remove_breakpoint() -> None:
 
     # Remove breakpoint
     interceptor.remove_breakpoint("add")
-    
+
     # Should not pause
     wrapped_add(3, 4)
     assert len(paused_calls) == 1  # Still 1
+
+    interceptor.close()
+
+
+def test_get_breakpoints() -> None:
+    """Test that we can retrieve the list of active breakpoints."""
+    interceptor = Interceptor()
+
+    # Initially empty
+    assert len(interceptor.get_breakpoints()) == 0
+
+    # Add some breakpoints
+    interceptor.set_breakpoint("add")
+    interceptor.set_breakpoint("mul")
+
+    breakpoints = interceptor.get_breakpoints()
+    assert len(breakpoints) == 2
+    assert "add" in breakpoints
+    assert "mul" in breakpoints
+
+    # Remove one
+    interceptor.remove_breakpoint("add")
+    breakpoints = interceptor.get_breakpoints()
+    assert len(breakpoints) == 1
+    assert "mul" in breakpoints
+
+    # Ensure it's a copy (not the internal set)
+    breakpoints.add("should_not_affect_interceptor")
+    assert len(interceptor.get_breakpoints()) == 1
 
     interceptor.close()
 
