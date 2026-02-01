@@ -386,6 +386,73 @@ class CASStore:
 
         return self.get_call_record(row[0])
 
+    def filter_by_function(self, function_name: str) -> list[dict[str, Any]]:
+        """Filter call records by function name.
+
+        Args:
+            function_name: The name of the function to filter by.
+
+        Returns:
+            List of call records matching the function name, in chronological order.
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT id FROM call_records WHERE function_name = ? ORDER BY id",
+            (function_name,),
+        )
+        ids = [row[0] for row in cursor.fetchall()]
+
+        records = []
+        for call_id in ids:
+            record = self.get_call_record(call_id)
+            if record is not None:
+                records.append(record)
+        return records
+
+    def search_by_args(self, search_args: dict[str, Any]) -> list[dict[str, Any]]:
+        """Search call records by argument values.
+
+        Finds all calls where the recorded arguments contain all key-value pairs
+        from search_args (partial match). Nested dictionaries must match exactly
+        (exact equality, not partial matching for nested structures).
+
+        Args:
+            search_args: Dictionary of argument key-value pairs to search for.
+
+        Returns:
+            List of call records where args contain all search_args pairs.
+        """
+        all_records = self.get_all_call_records()
+        matching_records = []
+
+        for record in all_records:
+            args = record.get("args", {})
+            if self._args_match(args, search_args):
+                matching_records.append(record)
+
+        return matching_records
+
+    def _args_match(self, args: dict[str, Any], search_args: dict[str, Any]) -> bool:
+        """Check if args contain all key-value pairs from search_args.
+
+        Note: Nested values use exact equality comparison.
+
+        Args:
+            args: The actual arguments from a call record.
+            search_args: The search criteria.
+
+        Returns:
+            True if all search_args key-value pairs are present in args.
+        """
+        for key, value in search_args.items():
+            if key not in args:
+                return False
+            if args[key] != value:
+                return False
+        return True
+
     def close(self) -> None:
         """Close the database connection."""
         if self._conn:

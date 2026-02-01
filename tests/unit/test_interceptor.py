@@ -204,3 +204,46 @@ def test_wrapped_function_records_call_site() -> None:
     assert call_site["lineno"] > 0
 
     interceptor.close()
+
+
+def test_filter_by_function_on_interceptor() -> None:
+    """Test filtering call records by function name through interceptor."""
+    interceptor = Interceptor()
+    wrapped_add = interceptor.wrap(add)
+    wrapped_div = interceptor.wrap(div)
+
+    wrapped_add(1, 2)
+    wrapped_div(10, 2)
+    wrapped_add(3, 4)
+
+    # Filter for 'add' calls
+    add_records = interceptor.filter_by_function("add")
+
+    assert len(add_records) == 2
+    assert add_records[0]["function_name"] == "add"
+    assert add_records[0]["args"] == {"a": 1, "b": 2}
+    assert add_records[1]["function_name"] == "add"
+    assert add_records[1]["args"] == {"a": 3, "b": 4}
+
+    interceptor.close()
+
+
+def test_search_by_args_on_interceptor() -> None:
+    """Test searching call records by argument values through interceptor."""
+    interceptor = Interceptor()
+    wrapped_add = interceptor.wrap(add)
+    wrapped_div = interceptor.wrap(div)
+
+    wrapped_add(5, 2)
+    wrapped_add(10, 3)
+    wrapped_div(10, 2)
+
+    # Search for calls with {"a": 10}
+    records = interceptor.search_by_args({"a": 10})
+
+    assert len(records) == 2
+    assert records[0]["function_name"] == "add"
+    assert records[1]["function_name"] == "div"
+    assert all(record["args"]["a"] == 10 for record in records)
+
+    interceptor.close()
