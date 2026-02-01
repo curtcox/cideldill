@@ -1,5 +1,7 @@
 # CID el Dill
 
+[![Build Report](https://github.com/curtcox/cideldill/actions/workflows/build-report.yml/badge.svg)](https://github.com/curtcox/cideldill/actions/workflows/build-report.yml)
+
 CID el Dill is a Python library for logging execution to a remote inspector/debugger/configuration agent.
 
 ## Features
