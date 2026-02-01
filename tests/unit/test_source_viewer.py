@@ -78,7 +78,8 @@ class TestSourceViewerGeneration:
         """Test that source viewer generates an HTML file."""
         from cideldill.source_viewer import generate_source_view
 
-        output_path = tempfile.mktemp(suffix=".html")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False) as tmp:
+            output_path = tmp.name
 
         try:
             generate_source_view(
@@ -96,7 +97,8 @@ class TestSourceViewerGeneration:
         """Test that generated source view contains valid HTML."""
         from cideldill.source_viewer import generate_source_view
 
-        output_path = tempfile.mktemp(suffix=".html")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False) as tmp:
+            output_path = tmp.name
 
         try:
             generate_source_view(
@@ -120,7 +122,8 @@ class TestSourceViewerGeneration:
         """Test that source view includes syntax highlighting."""
         from cideldill.source_viewer import generate_source_view
 
-        output_path = tempfile.mktemp(suffix=".html")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False) as tmp:
+            output_path = tmp.name
 
         try:
             generate_source_view(
@@ -145,7 +148,8 @@ class TestSourceViewerGeneration:
         """Test that source view highlights the specified line."""
         from cideldill.source_viewer import generate_source_view
 
-        output_path = tempfile.mktemp(suffix=".html")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False) as tmp:
+            output_path = tmp.name
 
         try:
             highlight_lineno = 3
@@ -167,7 +171,8 @@ class TestSourceViewerGeneration:
         """Test that source view can include call context information."""
         from cideldill.source_viewer import generate_source_view
 
-        output_path = tempfile.mktemp(suffix=".html")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False) as tmp:
+            output_path = tmp.name
         store = CASStore(temp_db_with_multiple_calls)
 
         try:
@@ -194,7 +199,8 @@ class TestSourceViewerGeneration:
         """Test that source view displays callstack information."""
         from cideldill.source_viewer import generate_source_view
 
-        output_path = tempfile.mktemp(suffix=".html")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False) as tmp:
+            output_path = tmp.name
         store = CASStore(temp_db_with_multiple_calls)
 
         try:
@@ -226,7 +232,8 @@ class TestNavigationLinks:
         """Test that source view includes a navigation section."""
         from cideldill.source_viewer import generate_source_view
 
-        output_path = tempfile.mktemp(suffix=".html")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False) as tmp:
+            output_path = tmp.name
         store = CASStore(temp_db_with_multiple_calls)
 
         try:
@@ -255,7 +262,8 @@ class TestNavigationLinks:
         """Test that source view includes next/previous timestamp links."""
         from cideldill.source_viewer import generate_source_view
 
-        output_path = tempfile.mktemp(suffix=".html")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False) as tmp:
+            output_path = tmp.name
         store = CASStore(temp_db_with_multiple_calls)
 
         try:
@@ -284,7 +292,8 @@ class TestNavigationLinks:
         """Test that source view includes links to next/previous calls of same function."""
         from cideldill.source_viewer import generate_source_view
 
-        output_path = tempfile.mktemp(suffix=".html")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False) as tmp:
+            output_path = tmp.name
         store = CASStore(temp_db_with_multiple_calls)
 
         try:
@@ -446,7 +455,8 @@ class TestHTMLGeneratorSourceLinks:
         """Test that HTML generator includes links to source viewer."""
         from cideldill.html_generator import generate_html_viewer
 
-        output_path = tempfile.mktemp(suffix=".html")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False) as tmp:
+            output_path = tmp.name
 
         try:
             generate_html_viewer(
@@ -465,7 +475,8 @@ class TestHTMLGeneratorSourceLinks:
         """Test that call site information includes link to source viewer."""
         from cideldill.html_generator import generate_html_viewer
 
-        output_path = tempfile.mktemp(suffix=".html")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False) as tmp:
+            output_path = tmp.name
 
         try:
             generate_html_viewer(
@@ -486,7 +497,8 @@ class TestHTMLGeneratorSourceLinks:
         """Test that callstack frames include links to source viewer."""
         from cideldill.html_generator import generate_html_viewer
 
-        output_path = tempfile.mktemp(suffix=".html")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False) as tmp:
+            output_path = tmp.name
 
         try:
             generate_html_viewer(
