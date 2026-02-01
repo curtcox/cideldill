@@ -33,7 +33,7 @@ def main():
     print("=" * 60)
     print("CID el Dill - Interactive Breakpoint Server")
     print("=" * 60)
-    print(f"\nStarting server on {args.host}:{args.port}")
+    print(f"\nStarting server on {args.host}:{args.port}...")
     print("\nWeb UI available at:")
     print(f"  http://localhost:{args.port}/")
     print("\nAPI Endpoints:")
@@ -44,17 +44,17 @@ def main():
     print("  POST   /api/paused/<id>/continue - Continue execution")
     print("\nPress Ctrl+C to stop the server")
     print("=" * 60)
-    print()
 
     try:
         manager = BreakpointManager()
         server = BreakpointServer(manager, port=args.port)
+        print("\n✓ Server is starting...\n")
         server.start()
     except KeyboardInterrupt:
-        print("\n\nShutting down server...")
+        print("\n\n✓ Server stopped by user")
         sys.exit(0)
     except Exception as e:
-        print(f"\nError: {e}", file=sys.stderr)
+        print(f"\n✗ Error starting server: {e}", file=sys.stderr)
         sys.exit(1)
 
 

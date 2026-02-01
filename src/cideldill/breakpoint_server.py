@@ -10,9 +10,9 @@ from flask import Flask, jsonify, request
 
 from cideldill.breakpoint_manager import BreakpointManager
 
-# Disable Flask's default logging
+# Configure Flask's logging to show startup info but not request spam
 log = logging.getLogger('werkzeug')
-log.setLevel(logging.ERROR)
+log.setLevel(logging.INFO)
 
 
 class BreakpointServer:
