@@ -353,7 +353,6 @@ def test_frame_pages_are_generated(temp_db_with_data):
                         frame_page = output_dir / f"frame_{record['id']}_{i}.html"
                         # At least one frame page should exist
                         if frame_page.exists():
-                            assert frame_page.exists()
                             assert frame_page.stat().st_size > 0
                             break
     finally:

@@ -4,6 +4,7 @@ This module provides utilities to generate HTML views of source code files
 with syntax highlighting and navigation capabilities.
 """
 
+import json
 import os
 from datetime import datetime
 from pathlib import Path
@@ -272,7 +273,6 @@ def _generate_context_section(
 """
 
     if "args" in call_record:
-        import json
         args_str = json.dumps(call_record["args"], indent=2)
         html += f"""
     <div class="section">
@@ -660,7 +660,6 @@ def _generate_frame_context_section(
 
     # Arguments (if this is the first frame - the actual function call)
     if frame_index == 0 and "args" in call_record:
-        import json
         args_str = json.dumps(call_record["args"], indent=2)
         html += f"""
     <div class="section">
