@@ -46,25 +46,6 @@ class Interceptor:
             "code_context": frame.code_context[0].strip() if frame.code_context else None,
         }
 
-    def _extract_callstack(self) -> list[dict[str, Any]]:
-        """Extract the current call stack.
-
-        Returns:
-            List of dictionaries with stack frame information.
-        """
-        stack = inspect.stack()
-        # Skip the first few frames (this method, the wrapper, etc.)
-        # We want to start from the actual caller
-        callstack = []
-        for frame in stack[3:]:  # Skip _extract_callstack, wrapper, and wrap
-            callstack.append({
-                "filename": frame.filename,
-                "lineno": frame.lineno,
-                "function": frame.function,
-                "code_context": frame.code_context[0].strip() if frame.code_context else None,
-            })
-        return callstack
-
     def wrap(self, func: Callable[..., Any]) -> Callable[..., Any]:
         """Wrap a function to intercept and record its calls.
 
@@ -81,12 +62,16 @@ class Interceptor:
             timestamp = time.time()
 
             # Get the call stack and call site
+            # Stack frame layout:
+            #   [0]: this wrapper function
+            #   [1]: the function that called the wrapped function (call site)
+            #   [2+]: frames above the call site
             stack = inspect.stack()
-            # The call site is the frame that called the wrapped function (index 1)
+            # Extract call site from frame [1]
             call_site = self._extract_call_site(stack[1]) if len(stack) > 1 else None
-            # Get the full callstack starting from the caller
+            # Extract full callstack starting from frame [1] (caller and above)
             callstack = []
-            for frame in stack[1:]:  # Skip the wrapper frame itself
+            for frame in stack[1:]:  # Skip wrapper frame [0]
                 callstack.append({
                     "filename": frame.filename,
                     "lineno": frame.lineno,
