@@ -143,3 +143,18 @@ def test_get_port_number(server) -> None:
     # This is expected behavior
     port = server.get_port()
     assert port == 0  # Initial port value from fixture
+
+
+def test_root_page_serves_html(server) -> None:
+    """Test that the root page serves HTML UI."""
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+    
+    response = server.test_client().get("/")
+    assert response.status_code == 200
+    assert b"Interactive Breakpoints" in response.data
+    assert b"CID el Dill" in response.data
+    # Check for key UI elements
+    assert b"pausedExecutions" in response.data
+    assert b"breakpointsList" in response.data
