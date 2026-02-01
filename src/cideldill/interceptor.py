@@ -296,6 +296,14 @@ class Interceptor:
         """
         self._breakpoints.discard(function_name)
 
+    def get_breakpoints(self) -> set[str]:
+        """Get all active breakpoints.
+
+        Returns:
+            Set of function names with active breakpoints.
+        """
+        return self._breakpoints.copy()
+
     def set_breakpoint_on_all(self) -> None:
         """Set breakpoint to pause on all function calls."""
         self._break_on_all = True

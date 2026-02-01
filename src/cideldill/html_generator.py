@@ -997,14 +997,20 @@ def _generate_breakpoints_page(
     for func_name in functions:
         func_records = [r for r in records if r.get('function_name') == func_name]
         functions_html += f"""
-        <div class="function-card">
+        <div class="function-card" data-function="{func_name}">
             <div class="function-header">
                 <span class="function-name">{func_name}()</span>
                 <span class="function-calls">{len(func_records)} call(s)</span>
             </div>
-            <div class="breakpoint-info">
-                <span class="breakpoint-status">
-                    ℹ️ Breakpoint management is available in the live inspector
+            <div class="breakpoint-controls">
+                <button class="btn btn-set" onclick="setBreakpoint('{func_name}')">
+                    ➕ Set Breakpoint
+                </button>
+                <button class="btn btn-remove" onclick="removeBreakpoint('{func_name}')" style="display:none;">
+                    ❌ Remove Breakpoint
+                </button>
+                <span class="breakpoint-status-indicator" style="display:none;">
+                    🔴 Active
                 </span>
             </div>
         </div>
@@ -1015,7 +1021,7 @@ def _generate_breakpoints_page(
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Breakpoints</title>
+    <title>Breakpoints - Interactive Management</title>
     <style>
         body {{
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -1032,9 +1038,13 @@ def _generate_breakpoints_page(
             border-bottom: 3px solid #4CAF50;
             padding-bottom: 10px;
         }}
+        h2 {{
+            color: #555;
+            margin-top: 30px;
+        }}
         .info-box {{
-            background-color: #fff3cd;
-            border-left: 4px solid #ffc107;
+            background-color: #e3f2fd;
+            border-left: 4px solid #2196F3;
             padding: 15px;
             margin-bottom: 20px;
             border-radius: 4px;
@@ -1046,6 +1056,9 @@ def _generate_breakpoints_page(
             padding: 20px;
             margin-bottom: 15px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }}
+        .function-card.active-breakpoint {{
+            border-left: 4px solid #f44336;
         }}
         .function-header {{
             display: flex;
@@ -1062,14 +1075,105 @@ def _generate_breakpoints_page(
             color: #666;
             font-size: 0.9em;
         }}
-        .breakpoint-info {{
-            padding: 10px;
-            background-color: #f8f8f8;
-            border-radius: 4px;
-            color: #666;
+        .breakpoint-controls {{
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            margin-top: 10px;
         }}
-        .breakpoint-status {{
+        .btn {{
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
             font-size: 0.9em;
+            transition: all 0.2s;
+        }}
+        .btn-set {{
+            background-color: #4CAF50;
+            color: white;
+        }}
+        .btn-set:hover {{
+            background-color: #45a049;
+        }}
+        .btn-remove {{
+            background-color: #f44336;
+            color: white;
+        }}
+        .btn-remove:hover {{
+            background-color: #da190b;
+        }}
+        .btn-continue {{
+            background-color: #2196F3;
+            color: white;
+        }}
+        .btn-continue:hover {{
+            background-color: #0b7dda;
+        }}
+        .btn-skip {{
+            background-color: #ff9800;
+            color: white;
+        }}
+        .btn-skip:hover {{
+            background-color: #e68900;
+        }}
+        .breakpoint-status-indicator {{
+            color: #f44336;
+            font-weight: bold;
+        }}
+        .paused-card {{
+            background-color: #fff3cd;
+            border: 2px solid #ff9800;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 15px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }}
+        .paused-header {{
+            font-size: 1.1em;
+            font-weight: bold;
+            color: #f57c00;
+            margin-bottom: 10px;
+        }}
+        .call-data {{
+            background-color: #f8f8f8;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+        }}
+        .actions {{
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }}
+        .status-message {{
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 15px;
+            display: none;
+        }}
+        .status-success {{
+            background-color: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }}
+        .status-error {{
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }}
+        .server-status {{
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 15px;
+            background-color: #fff3cd;
+            border: 1px solid #ffc107;
+        }}
+        .server-status.connected {{
+            background-color: #d4edda;
+            border: 1px solid #c3e6cb;
         }}
     </style>
 </head>
@@ -1077,28 +1181,215 @@ def _generate_breakpoints_page(
     <div class="container">
         {nav_header}
 
-        <h1>Breakpoints</h1>
+        <h1>🔴 Interactive Breakpoints</h1>
 
-        <div class="info-box">
-            <strong>Note:</strong> This page shows functions available for breakpoint management.
-            To set/unset breakpoints during execution, use the Interceptor API in your code:
-            <ul>
-                <li>
-                    <code>interceptor.set_breakpoint(function_name)</code>
-                    - Set breakpoint on a function
-                </li>
-                <li>
-                    <code>interceptor.remove_breakpoint(function_name)</code>
-                    - Remove breakpoint
-                </li>
-                <li><code>interceptor.set_breakpoint_on_all()</code> - Break on all functions</li>
-                <li><code>interceptor.clear_breakpoints()</code> - Clear all breakpoints</li>
-            </ul>
+        <div id="statusMessage" class="status-message"></div>
+
+        <div class="server-status" id="serverStatus">
+            <strong>Server Status:</strong> <span id="serverStatusText">Checking...</span>
+            <div style="margin-top: 5px; font-size: 0.9em;">
+                To enable interactive breakpoints, start the server with:
+                <code style="background: #f0f0f0; padding: 2px 6px; border-radius: 3px;">
+                    python -m cideldill.breakpoint_server
+                </code>
+            </div>
+        </div>
+
+        <h2>⏸️ Paused Executions</h2>
+        <div id="pausedExecutions">
+            <p style="color: #666;">No executions currently paused. Set breakpoints and run your code.</p>
         </div>
 
         <h2>Available Functions</h2>
-        {functions_html if functions_html else '<p>No functions found.</p>'}
+        <div id="functionsContainer">
+            {functions_html if functions_html else '<p>No functions found.</p>'}
+        </div>
     </div>
+
+    <script>
+        const API_BASE = 'http://localhost:5000/api';
+        let updateInterval = null;
+
+        // Check server status
+        async function checkServerStatus() {{
+            try {{
+                const response = await fetch(`${{API_BASE}}/breakpoints`);
+                if (response.ok) {{
+                    document.getElementById('serverStatus').classList.add('connected');
+                    document.getElementById('serverStatusText').textContent = '🟢 Connected';
+                    loadBreakpoints();
+                    startPolling();
+                    return true;
+                }}
+            }} catch (e) {{
+                document.getElementById('serverStatus').classList.remove('connected');
+                document.getElementById('serverStatusText').textContent = '🔴 Not Connected';
+            }}
+            return false;
+        }}
+
+        // Load active breakpoints from server
+        async function loadBreakpoints() {{
+            try {{
+                const response = await fetch(`${{API_BASE}}/breakpoints`);
+                const data = await response.json();
+                
+                // Update UI to reflect active breakpoints
+                data.breakpoints.forEach(funcName => {{
+                    const card = document.querySelector(`[data-function="${{funcName}}"]`);
+                    if (card) {{
+                        card.classList.add('active-breakpoint');
+                        card.querySelector('.btn-set').style.display = 'none';
+                        card.querySelector('.btn-remove').style.display = 'inline-block';
+                        card.querySelector('.breakpoint-status-indicator').style.display = 'inline';
+                    }}
+                }});
+            }} catch (e) {{
+                console.error('Failed to load breakpoints:', e);
+            }}
+        }}
+
+        // Load paused executions
+        async function loadPausedExecutions() {{
+            try {{
+                const response = await fetch(`${{API_BASE}}/paused`);
+                const data = await response.json();
+                
+                const container = document.getElementById('pausedExecutions');
+                if (data.paused && data.paused.length > 0) {{
+                    container.innerHTML = data.paused.map(p => createPausedCard(p)).join('');
+                }} else {{
+                    container.innerHTML = '<p style="color: #666;">No executions currently paused.</p>';
+                }}
+            }} catch (e) {{
+                console.error('Failed to load paused executions:', e);
+            }}
+        }}
+
+        // Create HTML for a paused execution
+        function createPausedCard(paused) {{
+            const callData = paused.call_data;
+            const pausedAt = new Date(paused.paused_at * 1000).toLocaleTimeString();
+            
+            return `
+                <div class="paused-card">
+                    <div class="paused-header">
+                        ⏸️ ${{callData.function_name}}() - Paused at ${{pausedAt}}
+                    </div>
+                    <div class="call-data">
+                        <strong>Arguments:</strong>
+                        <pre>${{JSON.stringify(callData.args, null, 2)}}</pre>
+                    </div>
+                    <div class="actions">
+                        <button class="btn btn-continue" onclick="continueExecution('${{paused.id}}', 'continue')">
+                            ▶️ Continue
+                        </button>
+                        <button class="btn btn-skip" onclick="continueExecution('${{paused.id}}', 'skip')">
+                            ⏭️ Skip
+                        </button>
+                    </div>
+                </div>
+            `;
+        }}
+
+        // Set a breakpoint
+        async function setBreakpoint(funcName) {{
+            try {{
+                const response = await fetch(`${{API_BASE}}/breakpoints`, {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ function_name: funcName }})
+                }});
+                
+                if (response.ok) {{
+                    showMessage('Breakpoint set on ' + funcName, 'success');
+                    const card = document.querySelector(`[data-function="${{funcName}}"]`);
+                    card.classList.add('active-breakpoint');
+                    card.querySelector('.btn-set').style.display = 'none';
+                    card.querySelector('.btn-remove').style.display = 'inline-block';
+                    card.querySelector('.breakpoint-status-indicator').style.display = 'inline';
+                }}
+            }} catch (e) {{
+                showMessage('Failed to set breakpoint: ' + e.message, 'error');
+            }}
+        }}
+
+        // Remove a breakpoint
+        async function removeBreakpoint(funcName) {{
+            try {{
+                const response = await fetch(`${{API_BASE}}/breakpoints/${{funcName}}`, {{
+                    method: 'DELETE'
+                }});
+                
+                if (response.ok) {{
+                    showMessage('Breakpoint removed from ' + funcName, 'success');
+                    const card = document.querySelector(`[data-function="${{funcName}}"]`);
+                    card.classList.remove('active-breakpoint');
+                    card.querySelector('.btn-set').style.display = 'inline-block';
+                    card.querySelector('.btn-remove').style.display = 'none';
+                    card.querySelector('.breakpoint-status-indicator').style.display = 'none';
+                }}
+            }} catch (e) {{
+                showMessage('Failed to remove breakpoint: ' + e.message, 'error');
+            }}
+        }}
+
+        // Continue execution
+        async function continueExecution(pauseId, action) {{
+            try {{
+                const response = await fetch(`${{API_BASE}}/paused/${{pauseId}}/continue`, {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ action: action }})
+                }});
+                
+                if (response.ok) {{
+                    showMessage('Execution resumed', 'success');
+                    loadPausedExecutions();
+                }}
+            }} catch (e) {{
+                showMessage('Failed to continue execution: ' + e.message, 'error');
+            }}
+        }}
+
+        // Show status message
+        function showMessage(message, type) {{
+            const msgEl = document.getElementById('statusMessage');
+            msgEl.textContent = message;
+            msgEl.className = `status-message status-${{type}}`;
+            msgEl.style.display = 'block';
+            setTimeout(() => {{
+                msgEl.style.display = 'none';
+            }}, 3000);
+        }}
+
+        // Start polling for updates
+        function startPolling() {{
+            if (!updateInterval) {{
+                updateInterval = setInterval(() => {{
+                    loadPausedExecutions();
+                }}, 1000);  // Poll every second
+            }}
+        }}
+
+        // Stop polling
+        function stopPolling() {{
+            if (updateInterval) {{
+                clearInterval(updateInterval);
+                updateInterval = null;
+            }}
+        }}
+
+        // Initialize on page load
+        window.addEventListener('load', () => {{
+            checkServerStatus();
+        }});
+
+        // Clean up on page unload
+        window.addEventListener('beforeunload', () => {{
+            stopPolling();
+        }});
+    </script>
 </body>
 </html>
 """
