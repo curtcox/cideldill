@@ -4,10 +4,11 @@ This test suite validates the content-addressable storage functionality.
 """
 
 import tempfile
+from collections.abc import Generator
 from pathlib import Path
-from typing import Generator
 
 import pytest
+
 from cideldill import CASStore
 
 

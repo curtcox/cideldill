@@ -6,6 +6,7 @@ all argument data to the database and how it can be retrieved.
 """
 
 import tempfile
+
 from cideldill import CASStore, Interceptor
 from examples.level0_calculator import add, div, mul
 
