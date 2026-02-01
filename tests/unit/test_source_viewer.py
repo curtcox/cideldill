@@ -220,7 +220,9 @@ class TestSourceViewerGeneration:
 class TestNavigationLinks:
     """Tests for navigation link generation in source viewer."""
 
-    def test_source_view_has_navigation_section(self, sample_python_file, temp_db_with_multiple_calls):
+    def test_source_view_has_navigation_section(
+        self, sample_python_file, temp_db_with_multiple_calls
+    ):
         """Test that source view includes a navigation section."""
         from cideldill.source_viewer import generate_source_view
 
@@ -300,7 +302,10 @@ class TestNavigationLinks:
             html_content = Path(output_path).read_text()
 
             # Should have links for same function navigation
-            assert "same function" in html_content.lower() or call_record["function_name"] in html_content
+            assert (
+                "same function" in html_content.lower()
+                or call_record["function_name"] in html_content
+            )
         finally:
             store.close()
             Path(output_path).unlink(missing_ok=True)
@@ -352,7 +357,9 @@ class TestCASStoreNavigationQueries:
         finally:
             store.close()
 
-    def test_get_previous_call_by_timestamp_returns_none_at_start(self, temp_db_with_multiple_calls):
+    def test_get_previous_call_by_timestamp_returns_none_at_start(
+        self, temp_db_with_multiple_calls
+    ):
         """Test that get_previous_call_by_timestamp returns None for the first record."""
         store = CASStore(temp_db_with_multiple_calls)
 

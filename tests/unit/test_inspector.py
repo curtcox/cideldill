@@ -1,6 +1,5 @@
 """Unit tests for Inspector class."""
 
-import pytest
 from cideldill.inspector import Inspector
 
 

@@ -8,7 +8,6 @@ import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import quote
 
 from pygments import highlight
 from pygments.formatters import HtmlFormatter
@@ -305,7 +304,10 @@ def _generate_navigation_section(call_id: int, db_path: str) -> str:
         link = _create_source_link(prev_time, db_path)
         html += f'            <a href="{link}" class="nav-link">← Previous (Timestamp)</a>\n'
     else:
-        html += '            <span class="nav-link" style="background-color: #ccc;">← Previous (Timestamp)</span>\n'
+        html += (
+            '            <span class="nav-link" style="background-color: #ccc;">'
+            "← Previous (Timestamp)</span>\n"
+        )
 
     # Next by timestamp
     next_time = store.get_next_call_by_timestamp(call_id)
@@ -313,7 +315,10 @@ def _generate_navigation_section(call_id: int, db_path: str) -> str:
         link = _create_source_link(next_time, db_path)
         html += f'            <a href="{link}" class="nav-link">Next (Timestamp) →</a>\n'
     else:
-        html += '            <span class="nav-link" style="background-color: #ccc;">Next (Timestamp) →</span>\n'
+        html += (
+            '            <span class="nav-link" style="background-color: #ccc;">'
+            "Next (Timestamp) →</span>\n"
+        )
 
     # Previous same function
     prev_func = store.get_previous_call_of_same_function(call_id)
@@ -323,7 +328,10 @@ def _generate_navigation_section(call_id: int, db_path: str) -> str:
         html += f'            <a href="{link}" class="nav-link">← Previous {func_name}()</a>\n'
     else:
         func_name = current_record.get('function_name', 'function')
-        html += f'            <span class="nav-link" style="background-color: #ccc;">← Previous {func_name}()</span>\n'
+        html += (
+            f'            <span class="nav-link" style="background-color: #ccc;">'
+            f"← Previous {func_name}()</span>\n"
+        )
 
     # Next same function
     next_func = store.get_next_call_of_same_function(call_id)
@@ -333,7 +341,10 @@ def _generate_navigation_section(call_id: int, db_path: str) -> str:
         html += f'            <a href="{link}" class="nav-link">Next {func_name}() →</a>\n'
     else:
         func_name = current_record.get('function_name', 'function')
-        html += f'            <span class="nav-link" style="background-color: #ccc;">Next {func_name}() →</span>\n'
+        html += (
+            f'            <span class="nav-link" style="background-color: #ccc;">'
+            f"Next {func_name}() →</span>\n"
+        )
 
     html += """
         </div>
@@ -358,8 +369,6 @@ def _create_source_link(call_record: dict[str, Any], db_path: str) -> str:
     if not call_site:
         return "#"
 
-    filename = call_site.get("filename", "")
-    lineno = call_site.get("lineno", 1)
     call_id = call_record.get("id", 0)
 
     # Create a simple URL format: source_<call_id>.html

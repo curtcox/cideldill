@@ -197,7 +197,9 @@ def _format_record(record: dict[str, Any], db_path: str = "") -> str:
         call_site = record["call_site"]
         source_link = ""
         if db_path and "id" in record:
-            source_link = f' <a href="source_{record["id"]}.html" style="color: #2196F3; text-decoration: none; font-weight: bold;">[View Source]</a>'
+            link_url = f"source_{record['id']}.html"
+            link_style = "color: #2196F3; text-decoration: none; font-weight: bold;"
+            source_link = f' <a href="{link_url}" style="{link_style}">[View Source]</a>'
         html += f"""
         <div class="section">
             <div class="section-title">Call Site:{source_link}</div>
@@ -258,7 +260,9 @@ def _format_record(record: dict[str, Any], db_path: str = "") -> str:
             # Add source link for each frame
             frame_link = ""
             if db_path and frame.get('filename') and frame.get('lineno'):
-                frame_link = f' <a href="source_{record["id"]}.html" style="color: #2196F3; text-decoration: none; font-size: 0.9em;">[view]</a>'
+                link_url = f"source_{record['id']}.html"
+                link_style = "color: #2196F3; text-decoration: none; font-size: 0.9em;"
+                frame_link = f' <a href="{link_url}" style="{link_style}">[view]</a>'
             html += f"""                <div style="{frame_style}">
                     <strong>Frame {i}:</strong> {frame.get('function', 'N/A')}{frame_link}<br>
                     <strong>File:</strong> {frame.get('filename', 'N/A')}<br>

@@ -147,7 +147,7 @@ def test_wrapped_function_with_mixed_args() -> None:
 def test_wrapped_function_records_timestamp() -> None:
     """Test that wrapped function records the timestamp."""
     import time
-    
+
     interceptor = Interceptor()
     wrapped_add = interceptor.wrap(add)
 
