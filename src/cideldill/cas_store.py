@@ -52,10 +52,15 @@ class CASStore:
                 args_cid TEXT NOT NULL,
                 result_cid TEXT,
                 exception_cid TEXT,
+                timestamp REAL,
+                callstack_cid TEXT,
+                call_site_cid TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (args_cid) REFERENCES cas_objects(cid),
                 FOREIGN KEY (result_cid) REFERENCES cas_objects(cid),
-                FOREIGN KEY (exception_cid) REFERENCES cas_objects(cid)
+                FOREIGN KEY (exception_cid) REFERENCES cas_objects(cid),
+                FOREIGN KEY (callstack_cid) REFERENCES cas_objects(cid),
+                FOREIGN KEY (call_site_cid) REFERENCES cas_objects(cid)
             )
         """)
 
@@ -133,6 +138,9 @@ class CASStore:
         args: dict[str, Any],
         result: Optional[Any] = None,
         exception: Optional[dict[str, Any]] = None,
+        timestamp: Optional[float] = None,
+        callstack: Optional[list[dict[str, Any]]] = None,
+        call_site: Optional[dict[str, Any]] = None,
     ) -> int:
         """Record a function call with its arguments and result/exception.
 
@@ -141,6 +149,9 @@ class CASStore:
             args: Dictionary of function arguments.
             result: Return value of the function (if successful).
             exception: Exception information (if function raised an exception).
+            timestamp: Timestamp when the call was made (Unix time).
+            callstack: List of stack frame information.
+            call_site: Information about the call site (file, line, code context).
 
         Returns:
             The ID of the call record.
@@ -148,16 +159,20 @@ class CASStore:
         args_cid = self.store(args)
         result_cid = self.store(result) if result is not None else None
         exception_cid = self.store(exception) if exception is not None else None
+        callstack_cid = self.store(callstack) if callstack is not None else None
+        call_site_cid = self.store(call_site) if call_site is not None else None
 
         conn = self._get_connection()
         cursor = conn.cursor()
 
         cursor.execute(
             """
-            INSERT INTO call_records (function_name, args_cid, result_cid, exception_cid)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO call_records (function_name, args_cid, result_cid, exception_cid, 
+                                    timestamp, callstack_cid, call_site_cid)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (function_name, args_cid, result_cid, exception_cid),
+            (function_name, args_cid, result_cid, exception_cid, 
+             timestamp, callstack_cid, call_site_cid),
         )
         conn.commit()
 
@@ -179,7 +194,8 @@ class CASStore:
 
         cursor.execute(
             """
-            SELECT function_name, args_cid, result_cid, exception_cid
+            SELECT function_name, args_cid, result_cid, exception_cid, 
+                   timestamp, callstack_cid, call_site_cid
             FROM call_records
             WHERE id = ?
             """,
@@ -190,7 +206,7 @@ class CASStore:
         if row is None:
             return None
 
-        function_name, args_cid, result_cid, exception_cid = row
+        function_name, args_cid, result_cid, exception_cid, timestamp, callstack_cid, call_site_cid = row
 
         record: dict[str, Any] = {
             "id": call_id,
@@ -203,6 +219,15 @@ class CASStore:
 
         if exception_cid:
             record["exception"] = self.retrieve(exception_cid)
+
+        if timestamp is not None:
+            record["timestamp"] = timestamp
+
+        if callstack_cid:
+            record["callstack"] = self.retrieve(callstack_cid)
+
+        if call_site_cid:
+            record["call_site"] = self.retrieve(call_site_cid)
 
         return record
 
