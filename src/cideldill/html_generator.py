@@ -200,7 +200,8 @@ def _format_record(record: dict[str, Any]) -> str:
                 <strong>Function:</strong> {call_site.get('function', 'N/A')}<br>
 """
         if call_site.get('code_context'):
-            html += f"                <strong>Code:</strong> <code>{call_site['code_context']}</code><br>\n"
+            code_ctx = call_site['code_context']
+            html += f"                <strong>Code:</strong> <code>{code_ctx}</code><br>\n"
         html += """            </div>
         </div>
 """
@@ -243,13 +244,18 @@ def _format_record(record: dict[str, Any]) -> str:
             <div class="code-block">
 """
         for i, frame in enumerate(record["callstack"]):
-            html += f"""                <div style="margin-bottom: 10px; padding: 5px; background-color: #f9f9f9; border-left: 3px solid #ddd;">
+            frame_style = (
+                "margin-bottom: 10px; padding: 5px; "
+                "background-color: #f9f9f9; border-left: 3px solid #ddd;"
+            )
+            html += f"""                <div style="{frame_style}">
                     <strong>Frame {i}:</strong> {frame.get('function', 'N/A')}<br>
                     <strong>File:</strong> {frame.get('filename', 'N/A')}<br>
                     <strong>Line:</strong> {frame.get('lineno', 'N/A')}<br>
 """
             if frame.get('code_context'):
-                html += f"                    <strong>Code:</strong> <code>{frame['code_context']}</code><br>\n"
+                code_ctx = frame['code_context']
+                html += f"                    <strong>Code:</strong> <code>{code_ctx}</code><br>\n"
             html += "                </div>\n"
         html += """            </div>
         </div>

@@ -167,11 +167,11 @@ class CASStore:
 
         cursor.execute(
             """
-            INSERT INTO call_records (function_name, args_cid, result_cid, exception_cid, 
+            INSERT INTO call_records (function_name, args_cid, result_cid, exception_cid,
                                     timestamp, callstack_cid, call_site_cid)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (function_name, args_cid, result_cid, exception_cid, 
+            (function_name, args_cid, result_cid, exception_cid,
              timestamp, callstack_cid, call_site_cid),
         )
         conn.commit()
@@ -194,7 +194,7 @@ class CASStore:
 
         cursor.execute(
             """
-            SELECT function_name, args_cid, result_cid, exception_cid, 
+            SELECT function_name, args_cid, result_cid, exception_cid,
                    timestamp, callstack_cid, call_site_cid
             FROM call_records
             WHERE id = ?
@@ -206,7 +206,15 @@ class CASStore:
         if row is None:
             return None
 
-        function_name, args_cid, result_cid, exception_cid, timestamp, callstack_cid, call_site_cid = row
+        (
+            function_name,
+            args_cid,
+            result_cid,
+            exception_cid,
+            timestamp,
+            callstack_cid,
+            call_site_cid,
+        ) = row
 
         record: dict[str, Any] = {
             "id": call_id,

@@ -7,7 +7,6 @@ calls, arguments, and results to a CAS store.
 import functools
 import inspect
 import time
-import traceback
 from typing import Any, Callable, Optional
 
 from cideldill.cas_store import CASStore
@@ -66,7 +65,7 @@ class Interceptor:
             })
         return callstack
 
-    def wrap(self, func: Callable) -> Callable:
+    def wrap(self, func: Callable[..., Any]) -> Callable[..., Any]:
         """Wrap a function to intercept and record its calls.
 
         Args:
@@ -80,7 +79,7 @@ class Interceptor:
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             # Capture timestamp
             timestamp = time.time()
-            
+
             # Get the call stack and call site
             stack = inspect.stack()
             # The call site is the frame that called the wrapped function (index 1)
@@ -94,7 +93,7 @@ class Interceptor:
                     "function": frame.function,
                     "code_context": frame.code_context[0].strip() if frame.code_context else None,
                 })
-            
+
             # Get function signature to bind arguments properly
             sig = inspect.signature(func)
             bound_args = sig.bind(*args, **kwargs)
@@ -109,8 +108,8 @@ class Interceptor:
 
                 # Record successful call
                 self.store.record_call(
-                    function_name=func.__name__, 
-                    args=args_dict, 
+                    function_name=func.__name__,
+                    args=args_dict,
                     result=result,
                     timestamp=timestamp,
                     callstack=callstack,
@@ -126,8 +125,8 @@ class Interceptor:
                     "message": str(e),
                 }
                 self.store.record_call(
-                    function_name=func.__name__, 
-                    args=args_dict, 
+                    function_name=func.__name__,
+                    args=args_dict,
                     exception=exception_info,
                     timestamp=timestamp,
                     callstack=callstack,
