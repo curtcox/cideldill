@@ -106,8 +106,7 @@ All code must pass:
 
 ## Key Files to Know
 
-- `pyproject.toml` - Project configuration and dependencies
-- `pytest.ini` (in pyproject.toml) - Test configuration
+- `pyproject.toml` - Project configuration and dependencies (includes `[tool.pytest]` test configuration)
 - `.eslintrc.json` - JavaScript linting rules
 - `.stylelintrc.json` - CSS linting rules
 - `Dockerfile` - Container configuration
