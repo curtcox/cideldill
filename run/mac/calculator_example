@@ -35,9 +35,11 @@ repo_root = script_dir.parent.parent
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "examples"))
 
+# ruff: noqa: E402
+from level0_calculator import add, div, mul
+
 from cideldill import CASStore, Interceptor
 from cideldill.html_generator import generate_html_viewer
-from level0_calculator import add, div, mul
 
 
 def parse_args():
@@ -52,25 +54,25 @@ Examples:
   calculator_example --db /tmp/calc.db   # Use custom database path
         """
     )
-    
+
     parser.add_argument(
         "--db",
         default="calculator_example.db",
         help="Path to the database file (default: calculator_example.db)"
     )
-    
+
     parser.add_argument(
         "--output",
         default="calculator_example.html",
         help="Path to the HTML output file (default: calculator_example.html)"
     )
-    
+
     parser.add_argument(
         "--no-browser",
         action="store_true",
         help="Don't open the browser automatically"
     )
-    
+
     return parser.parse_args()
 
 
@@ -87,74 +89,74 @@ def run_calculator_with_logging(db_path: str) -> int:
     print("Calculator Example with Logging")
     print("=" * 60)
     print(f"\nDatabase: {db_path}\n")
-    
+
     # Create store and interceptor
     store = CASStore(db_path)
     interceptor = Interceptor(store)
-    
+
     # Wrap the calculator functions
     wrapped_add = interceptor.wrap(add)
     wrapped_mul = interceptor.wrap(mul)
     wrapped_div = interceptor.wrap(div)
-    
+
     # Run calculator operations
     print("Running calculator operations...")
     print(f"  add(2, 3) = {wrapped_add(2, 3)}")
     print(f"  mul(4, 5) = {wrapped_mul(4, 5)}")
     print(f"  div(10, 2) = {wrapped_div(10, 2)}")
     print(f"  Nested: mul(add(2, 3), 4) = {wrapped_mul(wrapped_add(2, 3), 4)}")
-    
+
     # Exception case
     print("\n  Testing division by zero:")
     try:
         wrapped_div(1, 0)
     except ZeroDivisionError as e:
         print(f"    div(1, 0) raised ZeroDivisionError: {e}")
-    
+
     # Get record count
     records = interceptor.get_call_records()
     record_count = len(records)
-    
+
     print(f"\n✓ Completed! {record_count} function calls recorded.")
-    
+
     store.close()
-    
+
     return record_count
 
 
 def main():
     """Main entry point for the script."""
     args = parse_args()
-    
+
     # Convert paths to absolute paths
     db_path = str(Path(args.db).resolve())
     output_path = str(Path(args.output).resolve())
-    
+
     # Run calculator with logging
     try:
         record_count = run_calculator_with_logging(db_path)
     except Exception as e:
         print(f"\n✗ Error running calculator: {e}", file=sys.stderr)
         return 1
-    
+
     # Generate HTML viewer
     print("\n" + "=" * 60)
     print("Generating HTML Viewer")
     print("=" * 60)
-    
+
     try:
         generate_html_viewer(db_path, output_path, title="Calculator Example Results")
         print(f"\n✓ HTML viewer generated: {output_path}")
     except Exception as e:
         print(f"\n✗ Error generating HTML: {e}", file=sys.stderr)
         return 1
-    
+
     # Open browser if requested
     if not args.no_browser:
         print("\n" + "=" * 60)
         print("Opening Browser")
         print("=" * 60)
-        
+
         try:
             file_url = f"file://{output_path}"
             print(f"\nOpening: {file_url}")
@@ -163,18 +165,18 @@ def main():
         except Exception as e:
             print(f"\n⚠ Could not open browser: {e}", file=sys.stderr)
             print(f"Please open the file manually: {output_path}")
-    
+
     print("\n" + "=" * 60)
     print("Done!")
     print("=" * 60)
-    print(f"\nSummary:")
+    print("\nSummary:")
     print(f"  - Database: {db_path}")
     print(f"  - HTML Viewer: {output_path}")
     print(f"  - Records: {record_count}")
-    
+
     if args.no_browser:
         print(f"\nTo view results, open: {output_path}")
-    
+
     return 0
 
 

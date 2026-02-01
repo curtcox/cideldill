@@ -19,14 +19,14 @@ def generate_html_viewer(db_path: str, output_path: str, title: str = "CAS Store
     """
     # Read data from database using CASStore
     from cideldill import CASStore
-    
+
     store = CASStore(db_path)
     records = store.get_all_call_records()
     store.close()
-    
+
     # Generate HTML
     html_content = _generate_html(title, db_path, records)
-    
+
     # Write to file
     Path(output_path).write_text(html_content)
 
@@ -45,7 +45,7 @@ def _generate_html(title: str, db_path: str, records: list[dict[str, Any]]) -> s
     records_html = ""
     for record in records:
         records_html += _format_record(record)
-    
+
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -134,20 +134,21 @@ def _generate_html(title: str, db_path: str, records: list[dict[str, Any]]) -> s
 </head>
 <body>
     <h1>{title}</h1>
-    
+
     <div class="info">
         <strong>Database:</strong> {db_path}
     </div>
-    
+
     <div class="summary">
         <strong>Total Function Calls:</strong> {len(records)}
     </div>
-    
+
     <h2>Function Call Records</h2>
-    
+
     {records_html}
-    
-    <div style="margin-top: 30px; padding: 20px; background-color: #e8f5e9; border-radius: 5px; text-align: center;">
+
+    <div style="margin-top: 30px; padding: 20px; background-color: #e8f5e9; \
+border-radius: 5px; text-align: center;">
         <strong>✓ All records loaded successfully!</strong>
     </div>
 </body>
@@ -172,7 +173,7 @@ def _format_record(record: dict[str, Any]) -> str:
             <span class="record-id">Record #{record['id']}</span>
         </div>
 """
-    
+
     # Arguments
     if "args" in record:
         args_str = json.dumps(record["args"], indent=2)
@@ -182,7 +183,7 @@ def _format_record(record: dict[str, Any]) -> str:
             <div class="code-block">{args_str}</div>
         </div>
 """
-    
+
     # Result
     if "result" in record:
         result_str = json.dumps(record["result"], indent=2)
@@ -192,7 +193,7 @@ def _format_record(record: dict[str, Any]) -> str:
             <div class="code-block result">{result_str}</div>
         </div>
 """
-    
+
     # Exception
     if "exception" in record:
         exception_str = json.dumps(record["exception"], indent=2)
@@ -202,9 +203,9 @@ def _format_record(record: dict[str, Any]) -> str:
             <div class="code-block exception">{exception_str}</div>
         </div>
 """
-    
+
     html += """
     </div>
 """
-    
+
     return html
