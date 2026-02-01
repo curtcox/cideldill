@@ -33,6 +33,9 @@ def generate_html_viewer(db_path: str, output_path: str, title: str = "CAS Store
     # Generate source viewer pages for each record with call site information
     _generate_source_viewer_pages(db_path, output_path)
 
+    # Generate additional web UI pages
+    _generate_web_ui_pages(db_path, output_path, records)
+
 
 def _generate_html(title: str, db_path: str, records: list[dict[str, Any]]) -> str:
     """Generate the HTML content.
@@ -48,6 +51,8 @@ def _generate_html(title: str, db_path: str, records: list[dict[str, Any]]) -> s
     records_html = ""
     for record in records:
         records_html += _format_record(record, db_path)
+
+    nav_header = _generate_navigation_header("")
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -136,6 +141,8 @@ def _generate_html(title: str, db_path: str, records: list[dict[str, Any]]) -> s
     </style>
 </head>
 <body>
+    {nav_header}
+    
     <h1>{title}</h1>
 
     <div class="info">
@@ -358,5 +365,729 @@ def _generate_source_viewer_pages(db_path: str, main_output_path: str) -> None:
                 import sys
                 print(f"Warning: Failed to generate frame view for record {record['id']}, "
                       f"frame {frame_index}: {e}", file=sys.stderr)
+
+
+def _generate_navigation_header(current_page: str = "") -> str:
+    """Generate a common navigation header for all pages.
+
+    Args:
+        current_page: Name of the current page (for highlighting).
+
+    Returns:
+        HTML string for the navigation header.
+    """
+    pages = [
+        ("index.html", "Home"),
+        ("timeline.html", "Timeline"),
+        ("sources.html", "Source Files"),
+        ("callstacks.html", "Call Stacks"),
+        ("breakpoints.html", "Breakpoints"),
+    ]
+
+    nav_links = []
+    for page, label in pages:
+        if page == current_page:
+            nav_links.append(f'<span style="font-weight: bold;">{label}</span>')
+        else:
+            nav_links.append(f'<a href="{page}" class="nav-link">{label}</a>')
+
+    nav_html = f"""
+    <nav style="background-color: #2196F3; padding: 15px; margin: -20px -20px 20px -20px; 
+                border-radius: 0;">
+        <div style="max-width: 1200px; margin: 0 auto; display: flex; gap: 20px; 
+                    flex-wrap: wrap; align-items: center;">
+            <h2 style="margin: 0; color: white; font-size: 1.2em;">CID el Dill Viewer</h2>
+            <div style="display: flex; gap: 15px; flex-wrap: wrap; margin-left: auto;">
+                {' | '.join(nav_links)}
+            </div>
+        </div>
+    </nav>
+    <style>
+        .nav-link {{
+            color: white;
+            text-decoration: none;
+            padding: 8px 16px;
+            background-color: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+            transition: background-color 0.2s;
+        }}
+        .nav-link:hover {{
+            background-color: rgba(255, 255, 255, 0.2);
+        }}
+    </style>
+"""
+    return nav_html
+
+
+def _generate_web_ui_pages(db_path: str, main_output_path: str, records: list[dict[str, Any]]) -> None:
+    """Generate additional web UI pages for navigation and viewing.
+
+    Args:
+        db_path: Path to the database.
+        main_output_path: Path to the main HTML output file.
+        records: List of all call records.
+    """
+    output_dir = Path(main_output_path).parent
+
+    # Generate home/index page
+    _generate_home_page(output_dir, db_path, records)
+
+    # Generate timeline page
+    _generate_timeline_page(output_dir, db_path, records)
+
+    # Generate source files list page
+    _generate_sources_page(output_dir, db_path, records)
+
+    # Generate call stacks list page
+    _generate_callstacks_page(output_dir, db_path, records)
+
+    # Generate breakpoints management page
+    _generate_breakpoints_page(output_dir, db_path, records)
+
+
+def _generate_home_page(output_dir: Path, db_path: str, records: list[dict[str, Any]]) -> None:
+    """Generate the home/index page.
+
+    Args:
+        output_dir: Directory for output files.
+        db_path: Path to the database.
+        records: List of all call records.
+    """
+    nav_header = _generate_navigation_header("index.html")
+
+    # Get statistics
+    total_calls = len(records)
+    unique_functions = len(set(r.get('function_name', '') for r in records))
+    unique_files = len(set(
+        r.get('call_site', {}).get('filename', '')
+        for r in records
+        if r.get('call_site', {}).get('filename')
+    ))
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CID el Dill Viewer - Home</title>
+    <style>
+        body {{
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }}
+        .container {{
+            max-width: 1200px;
+            margin: 0 auto;
+        }}
+        h1 {{
+            color: #333;
+            border-bottom: 3px solid #4CAF50;
+            padding-bottom: 10px;
+        }}
+        .stats-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin: 30px 0;
+        }}
+        .stat-card {{
+            background-color: white;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            text-align: center;
+        }}
+        .stat-value {{
+            font-size: 3em;
+            font-weight: bold;
+            color: #2196F3;
+            margin: 10px 0;
+        }}
+        .stat-label {{
+            font-size: 1.1em;
+            color: #666;
+        }}
+        .quick-links {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin: 30px 0;
+        }}
+        .quick-link-card {{
+            background-color: white;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 30px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            text-align: center;
+            text-decoration: none;
+            color: inherit;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }}
+        .quick-link-card:hover {{
+            transform: translateY(-4px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }}
+        .quick-link-icon {{
+            font-size: 3em;
+            margin-bottom: 15px;
+        }}
+        .quick-link-title {{
+            font-size: 1.3em;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 10px;
+        }}
+        .quick-link-desc {{
+            color: #666;
+            font-size: 0.95em;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        {nav_header}
+        
+        <h1>Welcome to CID el Dill Viewer</h1>
+        
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value">{total_calls}</div>
+                <div class="stat-label">Total Function Calls</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{unique_functions}</div>
+                <div class="stat-label">Unique Functions</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{unique_files}</div>
+                <div class="stat-label">Source Files</div>
+            </div>
+        </div>
+        
+        <h2>Quick Access</h2>
+        <div class="quick-links">
+            <a href="timeline.html" class="quick-link-card">
+                <div class="quick-link-icon">📊</div>
+                <div class="quick-link-title">Timeline View</div>
+                <div class="quick-link-desc">View all function calls chronologically</div>
+            </a>
+            
+            <a href="sources.html" class="quick-link-card">
+                <div class="quick-link-icon">📄</div>
+                <div class="quick-link-title">Source Files</div>
+                <div class="quick-link-desc">Browse all source files with calls</div>
+            </a>
+            
+            <a href="callstacks.html" class="quick-link-card">
+                <div class="quick-link-icon">📚</div>
+                <div class="quick-link-title">Call Stacks</div>
+                <div class="quick-link-desc">Explore function call stacks</div>
+            </a>
+            
+            <a href="breakpoints.html" class="quick-link-card">
+                <div class="quick-link-icon">🔴</div>
+                <div class="quick-link-title">Breakpoints</div>
+                <div class="quick-link-desc">View and manage breakpoints</div>
+            </a>
+        </div>
+        
+        <div style="margin-top: 40px; padding: 20px; background-color: #e8f5e9; 
+                    border-radius: 5px; border-left: 4px solid #4CAF50;">
+            <strong>Database:</strong> {db_path}
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+    index_path = output_dir / "index.html"
+    index_path.write_text(html, encoding="utf-8")
+
+
+def _generate_timeline_page(output_dir: Path, db_path: str, records: list[dict[str, Any]]) -> None:
+    """Generate the timeline/graph page.
+
+    Args:
+        output_dir: Directory for output files.
+        db_path: Path to the database.
+        records: List of all call records.
+    """
+    nav_header = _generate_navigation_header("timeline.html")
+
+    # Sort records by timestamp
+    sorted_records = sorted(records, key=lambda r: r.get('timestamp', 0))
+
+    timeline_html = ""
+    for record in sorted_records:
+        timestamp = record.get('timestamp', 0)
+        from datetime import datetime
+        dt = datetime.fromtimestamp(timestamp)
+        timestamp_str = dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+        result_str = "Exception" if "exception" in record else str(record.get('result', 'N/A'))
+        link_url = f"source_{record['id']}.html"
+
+        timeline_html += f"""
+        <div class="timeline-item">
+            <div class="timeline-time">{timestamp_str}</div>
+            <div class="timeline-content">
+                <div class="timeline-function">{record.get('function_name', 'Unknown')}()</div>
+                <div class="timeline-result">Result: {result_str}</div>
+                <a href="{link_url}" class="timeline-link">View Details →</a>
+            </div>
+        </div>
+"""
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Timeline View</title>
+    <style>
+        body {{
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }}
+        .container {{
+            max-width: 1200px;
+            margin: 0 auto;
+        }}
+        h1 {{
+            color: #333;
+            border-bottom: 3px solid #4CAF50;
+            padding-bottom: 10px;
+        }}
+        .timeline-item {{
+            background-color: white;
+            border-left: 4px solid #2196F3;
+            padding: 20px;
+            margin-bottom: 15px;
+            border-radius: 4px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }}
+        .timeline-time {{
+            color: #666;
+            font-size: 0.9em;
+            margin-bottom: 8px;
+        }}
+        .timeline-function {{
+            font-size: 1.3em;
+            font-weight: bold;
+            color: #1976D2;
+            margin-bottom: 5px;
+        }}
+        .timeline-result {{
+            color: #555;
+            margin-bottom: 10px;
+        }}
+        .timeline-link {{
+            color: #2196F3;
+            text-decoration: none;
+            font-weight: bold;
+        }}
+        .timeline-link:hover {{
+            text-decoration: underline;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        {nav_header}
+        
+        <h1>Timeline View</h1>
+        <p>All function calls ordered by time</p>
+        
+        {timeline_html}
+    </div>
+</body>
+</html>
+"""
+
+    timeline_path = output_dir / "timeline.html"
+    timeline_path.write_text(html, encoding="utf-8")
+
+
+def _generate_sources_page(output_dir: Path, db_path: str, records: list[dict[str, Any]]) -> None:
+    """Generate the source files list page.
+
+    Args:
+        output_dir: Directory for output files.
+        db_path: Path to the database.
+        records: List of all call records.
+    """
+    nav_header = _generate_navigation_header("sources.html")
+
+    # Group records by source file
+    files_dict: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        filename = record.get('call_site', {}).get('filename')
+        if filename:
+            if filename not in files_dict:
+                files_dict[filename] = []
+            files_dict[filename].append(record)
+
+    files_html = ""
+    for filename, file_records in sorted(files_dict.items()):
+        files_html += f"""
+        <div class="file-card">
+            <div class="file-name">{filename}</div>
+            <div class="file-stats">{len(file_records)} call(s)</div>
+            <div class="file-calls">
+"""
+        for record in file_records[:5]:  # Show first 5 calls
+            link_url = f"source_{record['id']}.html"
+            files_html += f"""
+                <a href="{link_url}" class="call-link">
+                    {record.get('function_name', 'Unknown')}() 
+                    [Line {record.get('call_site', {}).get('lineno', '?')}]
+                </a>
+"""
+        if len(file_records) > 5:
+            files_html += f'<div class="more">... and {len(file_records) - 5} more</div>'
+
+        files_html += """
+            </div>
+        </div>
+"""
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Source Files</title>
+    <style>
+        body {{
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }}
+        .container {{
+            max-width: 1200px;
+            margin: 0 auto;
+        }}
+        h1 {{
+            color: #333;
+            border-bottom: 3px solid #4CAF50;
+            padding-bottom: 10px;
+        }}
+        .file-card {{
+            background-color: white;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }}
+        .file-name {{
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #1976D2;
+            margin-bottom: 10px;
+            word-break: break-all;
+        }}
+        .file-stats {{
+            color: #666;
+            margin-bottom: 15px;
+        }}
+        .file-calls {{
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }}
+        .call-link {{
+            color: #2196F3;
+            text-decoration: none;
+            padding: 8px;
+            background-color: #f8f8f8;
+            border-radius: 4px;
+            transition: background-color 0.2s;
+        }}
+        .call-link:hover {{
+            background-color: #e3f2fd;
+        }}
+        .more {{
+            color: #666;
+            font-style: italic;
+            padding: 8px;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        {nav_header}
+        
+        <h1>Source Files</h1>
+        <p>All source files with recorded function calls</p>
+        
+        {files_html if files_html else '<p>No source files found.</p>'}
+    </div>
+</body>
+</html>
+"""
+
+    sources_path = output_dir / "sources.html"
+    sources_path.write_text(html, encoding="utf-8")
+
+
+def _generate_callstacks_page(output_dir: Path, db_path: str, records: list[dict[str, Any]]) -> None:
+    """Generate the call stacks list page.
+
+    Args:
+        output_dir: Directory for output files.
+        db_path: Path to the database.
+        records: List of all call records.
+    """
+    nav_header = _generate_navigation_header("callstacks.html")
+
+    stacks_html = ""
+    for record in records:
+        if not record.get('callstack'):
+            continue
+
+        callstack = record.get('callstack', [])
+        link_url = f"source_{record['id']}.html"
+
+        stacks_html += f"""
+        <div class="stack-card">
+            <div class="stack-header">
+                <span class="stack-function">{record.get('function_name', 'Unknown')}()</span>
+                <span class="stack-depth">Depth: {len(callstack)}</span>
+            </div>
+            <div class="stack-frames">
+"""
+        for i, frame in enumerate(callstack[:5]):  # Show first 5 frames
+            stacks_html += f"""
+                <div class="stack-frame">
+                    Frame {i}: {frame.get('function', 'Unknown')} 
+                    [{frame.get('filename', 'Unknown')}:{frame.get('lineno', '?')}]
+                </div>
+"""
+        if len(callstack) > 5:
+            stacks_html += f"<div class='more'>... and {len(callstack) - 5} more frames</div>"
+
+        stacks_html += f"""
+            </div>
+            <a href="{link_url}" class="view-link">View Full Stack →</a>
+        </div>
+"""
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Call Stacks</title>
+    <style>
+        body {{
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }}
+        .container {{
+            max-width: 1200px;
+            margin: 0 auto;
+        }}
+        h1 {{
+            color: #333;
+            border-bottom: 3px solid #4CAF50;
+            padding-bottom: 10px;
+        }}
+        .stack-card {{
+            background-color: white;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }}
+        .stack-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #eee;
+        }}
+        .stack-function {{
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #1976D2;
+        }}
+        .stack-depth {{
+            color: #666;
+            font-size: 0.9em;
+        }}
+        .stack-frames {{
+            background-color: #f8f8f8;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 15px;
+        }}
+        .stack-frame {{
+            padding: 8px;
+            margin-bottom: 5px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            color: #333;
+        }}
+        .view-link {{
+            color: #2196F3;
+            text-decoration: none;
+            font-weight: bold;
+        }}
+        .view-link:hover {{
+            text-decoration: underline;
+        }}
+        .more {{
+            color: #666;
+            font-style: italic;
+            padding: 8px;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        {nav_header}
+        
+        <h1>Call Stacks</h1>
+        <p>All recorded function call stacks</p>
+        
+        {stacks_html if stacks_html else '<p>No call stacks found.</p>'}
+    </div>
+</body>
+</html>
+"""
+
+    stacks_path = output_dir / "callstacks.html"
+    stacks_path.write_text(html, encoding="utf-8")
+
+
+def _generate_breakpoints_page(output_dir: Path, db_path: str, records: list[dict[str, Any]]) -> None:
+    """Generate the breakpoints management page.
+
+    Args:
+        output_dir: Directory for output files.
+        db_path: Path to the database.
+        records: List of all call records.
+    """
+    nav_header = _generate_navigation_header("breakpoints.html")
+
+    # Get unique functions
+    functions = sorted(set(r.get('function_name', '') for r in records if r.get('function_name')))
+
+    functions_html = ""
+    for func_name in functions:
+        func_records = [r for r in records if r.get('function_name') == func_name]
+        functions_html += f"""
+        <div class="function-card">
+            <div class="function-header">
+                <span class="function-name">{func_name}()</span>
+                <span class="function-calls">{len(func_records)} call(s)</span>
+            </div>
+            <div class="breakpoint-info">
+                <span class="breakpoint-status">ℹ️ Breakpoint management is available in the live inspector</span>
+            </div>
+        </div>
+"""
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Breakpoints</title>
+    <style>
+        body {{
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }}
+        .container {{
+            max-width: 1200px;
+            margin: 0 auto;
+        }}
+        h1 {{
+            color: #333;
+            border-bottom: 3px solid #4CAF50;
+            padding-bottom: 10px;
+        }}
+        .info-box {{
+            background-color: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 4px;
+        }}
+        .function-card {{
+            background-color: white;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 15px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }}
+        .function-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }}
+        .function-name {{
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #1976D2;
+        }}
+        .function-calls {{
+            color: #666;
+            font-size: 0.9em;
+        }}
+        .breakpoint-info {{
+            padding: 10px;
+            background-color: #f8f8f8;
+            border-radius: 4px;
+            color: #666;
+        }}
+        .breakpoint-status {{
+            font-size: 0.9em;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        {nav_header}
+        
+        <h1>Breakpoints</h1>
+        
+        <div class="info-box">
+            <strong>Note:</strong> This page shows functions available for breakpoint management.
+            To set/unset breakpoints during execution, use the Interceptor API in your code:
+            <ul>
+                <li><code>interceptor.set_breakpoint(function_name)</code> - Set breakpoint on a function</li>
+                <li><code>interceptor.remove_breakpoint(function_name)</code> - Remove breakpoint</li>
+                <li><code>interceptor.set_breakpoint_on_all()</code> - Break on all functions</li>
+                <li><code>interceptor.clear_breakpoints()</code> - Clear all breakpoints</li>
+            </ul>
+        </div>
+        
+        <h2>Available Functions</h2>
+        {functions_html if functions_html else '<p>No functions found.</p>'}
+    </div>
+</body>
+</html>
+"""
+
+    breakpoints_path = output_dir / "breakpoints.html"
+    breakpoints_path.write_text(html, encoding="utf-8")
 
 
