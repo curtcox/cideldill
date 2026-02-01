@@ -40,9 +40,6 @@ def div(a: int, b: int) -> int:
 2. `mul(add(2, 3), 4)` → 20, nested calls recorded separately
 3. `div(1, 0)` → error recorded
 
-**Open questions**:
-- Should nested calls (`mul(add(...), ...)`) show parent-child relationship in call log, or just flat sequence?
-
 ---
 
 ## Level 1: Calculator with State

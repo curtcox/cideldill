@@ -52,7 +52,7 @@ Minimal setup is two processes (app + debugger core).
 
 ### Call Log
 - Append-only table of CID tuples
-- Schema: `(call_id, timestamp_cid, caller_cid, function_cid, args_cid, kwargs_cid, result_cid, error_cid)`
+- Schema: `(timestamp, stack_trace_cid, function_cid, args_cid, kwargs_cid, result_cid, error_cid)`
 - All fields are CIDs pointing into CAS store
 
 ### Interceptor
