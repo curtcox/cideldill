@@ -27,6 +27,20 @@ For development (includes testing and linting tools):
 ./install_deps.sh --dev
 ```
 
+### Verify Installation
+
+After installation, verify everything is working correctly:
+
+```bash
+python doctor.py
+```
+
+This will check:
+- Python version compatibility
+- CID el Dill package installation
+- All required dependencies (including Pygments)
+- Optional development dependencies
+
 ### Manual Installation
 
 Alternatively, you can install manually using pip:
@@ -49,7 +63,7 @@ After installation, you can run the examples:
 ./run/mac/calculator_example
 ```
 
-**Note**: The examples require the package to be installed first to ensure all dependencies (including `pygments` for syntax-highlighted HTML reports) are available.
+**Note**: The examples require the package to be installed first (via `./install_deps.sh`) to ensure all dependencies (including `pygments` for syntax-highlighted HTML reports) are available.
 
 ## Usage
 
