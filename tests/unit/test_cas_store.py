@@ -5,13 +5,14 @@ This test suite validates the content-addressable storage functionality.
 
 import tempfile
 from pathlib import Path
+from typing import Generator
 
 import pytest
 from cideldill import CASStore
 
 
 @pytest.fixture
-def temp_db_path():
+def temp_db_path() -> Generator[str, None, None]:
     """Create a temporary database file for testing."""
     with tempfile.NamedTemporaryFile(mode="w", suffix=".db", delete=False) as tmp:
         db_path = tmp.name

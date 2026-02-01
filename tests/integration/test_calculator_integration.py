@@ -6,6 +6,7 @@ and retrieves all argument data to/from the database using the CAS store.
 
 import tempfile
 from pathlib import Path
+from typing import Generator
 
 import pytest
 from cideldill import CASStore, Interceptor
@@ -13,7 +14,7 @@ from examples.level0_calculator import add, div, mul
 
 
 @pytest.fixture
-def temp_db_path():
+def temp_db_path() -> Generator[str, None, None]:
     """Create a temporary database file for testing."""
     with tempfile.NamedTemporaryFile(mode="w", suffix=".db", delete=False) as tmp:
         db_path = tmp.name
