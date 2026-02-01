@@ -51,9 +51,12 @@ def test_export_history_to_file() -> None:
 
     wrapped_add(10, 20)
 
-    # Export to file
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
-        output_path = tmp.name
+    # Export to file using safer tempfile approach
+    import tempfile
+    import os
+
+    fd, output_path = tempfile.mkstemp(suffix=".json")
+    os.close(fd)  # Close the file descriptor
 
     try:
         interceptor.export_history_to_file(output_path)

@@ -104,12 +104,14 @@ class Interceptor:
             self._notify_observers("call_start", call_data)
 
             # Check for breakpoint before execution
-            should_break = (
+            should_break_before_call = (
                 self._break_on_all
                 or func.__name__ in self._breakpoints
             )
 
-            if should_break and self._pause_handler:
+            modified_args_dict = None  # Track if args were modified
+
+            if should_break_before_call and self._pause_handler:
                 pause_response = self._pause_handler(call_data)
                 action = pause_response.get("action", "continue")
 
@@ -130,16 +132,17 @@ class Interceptor:
                 elif action == "continue":
                     # Check if args were modified
                     if "modified_args" in pause_response:
-                        args_dict = pause_response["modified_args"]
-                        # Rebuild args/kwargs from modified args_dict
-                        # For simplicity, pass modified args as kwargs
-                        kwargs = args_dict
-                        args = ()
+                        modified_args_dict = pause_response["modified_args"]
 
             try:
-                # Call the original function
-                if "modified_args" in locals() and should_break:
-                    result = func(**kwargs)
+                # Call the original function with original or modified args
+                if modified_args_dict is not None:
+                    # Apply modified args using function signature
+                    bound_modified = sig.bind(**modified_args_dict)
+                    bound_modified.apply_defaults()
+                    result = func(*bound_modified.args, **bound_modified.kwargs)
+                    # Update args_dict for recording
+                    args_dict = modified_args_dict
                 else:
                     result = func(*args, **kwargs)
 

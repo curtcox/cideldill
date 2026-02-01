@@ -415,7 +415,8 @@ class CASStore:
         """Search call records by argument values.
 
         Finds all calls where the recorded arguments contain all key-value pairs
-        from search_args (partial match).
+        from search_args (partial match). Nested dictionaries must match exactly
+        (exact equality, not partial matching for nested structures).
 
         Args:
             search_args: Dictionary of argument key-value pairs to search for.
@@ -435,6 +436,8 @@ class CASStore:
 
     def _args_match(self, args: dict[str, Any], search_args: dict[str, Any]) -> bool:
         """Check if args contain all key-value pairs from search_args.
+
+        Note: Nested values use exact equality comparison.
 
         Args:
             args: The actual arguments from a call record.
