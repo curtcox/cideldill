@@ -167,7 +167,7 @@ class Interceptor:
                     "type": type(e).__name__,
                     "message": str(e),
                 }
-                
+
                 # Check for breakpoint on exception
                 if self._break_on_exception and self._pause_handler:
                     exception_call_data = {
@@ -176,7 +176,7 @@ class Interceptor:
                     }
                     pause_response = self._pause_handler(exception_call_data)
                     # After handling, continue with normal exception flow
-                
+
                 self.store.record_call(
                     function_name=func.__name__,
                     args=args_dict,
@@ -306,6 +306,36 @@ class Interceptor:
         self._breakpoints.clear()
         self._break_on_all = False
         self._break_on_exception = False
+
+    def export_history(self, format: str = "json") -> str:
+        """Export call history for offline analysis.
+
+        Args:
+            format: Export format. Currently only "json" is supported.
+
+        Returns:
+            Exported data as a string in the specified format.
+
+        Raises:
+            ValueError: If format is not supported.
+        """
+        if format != "json":
+            raise ValueError(f"Unsupported export format: {format}")
+
+        import json
+        records = self.get_call_records()
+        return json.dumps(records, indent=2)
+
+    def export_history_to_file(self, file_path: str, format: str = "json") -> None:
+        """Export call history to a file.
+
+        Args:
+            file_path: Path to the output file.
+            format: Export format. Currently only "json" is supported.
+        """
+        data = self.export_history(format=format)
+        with open(file_path, "w") as f:
+            f.write(data)
 
     def close(self) -> None:
         """Close the underlying store."""
