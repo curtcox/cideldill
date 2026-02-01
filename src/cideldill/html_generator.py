@@ -5,6 +5,7 @@ particularly for visualizing function call records from the calculator examples.
 """
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -626,11 +627,12 @@ def _generate_timeline_page(output_dir: Path, db_path: str, records: list[dict[s
     timeline_html = ""
     for record in sorted_records:
         timestamp = record.get('timestamp', 0)
-        from datetime import datetime
         dt = datetime.fromtimestamp(timestamp)
         timestamp_str = dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
-        result_str = "Exception" if "exception" in record else str(record.get('result', 'N/A'))
+        # Check if the record has an exception
+        has_exception = 'exception' in record and record['exception'] is not None
+        result_str = "Exception" if has_exception else str(record.get('result', 'N/A'))
         link_url = f"source_{record['id']}.html"
 
         timeline_html += f"""

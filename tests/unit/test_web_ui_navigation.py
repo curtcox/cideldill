@@ -148,8 +148,8 @@ def test_timeline_page_shows_all_calls(temp_db_with_data):
             assert "sample_add" in timeline_content
             assert "sample_mul" in timeline_content
 
-            # Should have links to individual call records
-            assert 'href="source_' in timeline_content or 'href="#record_' in timeline_content
+            # Should have links to individual call records (format: source_<id>.html)
+            assert 'href="source_' in timeline_content
     finally:
         Path(html_path).unlink(missing_ok=True)
         # Cleanup
