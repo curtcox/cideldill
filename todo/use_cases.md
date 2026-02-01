@@ -201,14 +201,62 @@ As a user, I do **not** expect:
 
 ---
 
-## Open Questions
+## AI-as-User Support
 
-1. **Conditional breakpoints**: What expression language? Python eval? Simple predicates (tool name, arg contains)?
+Use cases where the debugger user is an AI agent rather than a human.
 
-2. **Replay fidelity**: Should replay actually call the tool, or just show what *would* happen? Real replay has side effects.
+### Programmatic Access
 
-3. **Recording overhead**: Is always-on recording acceptable, or should it be opt-in?
+As an **AI agent**, I want a structured API (not just a web UI), so that I can inspect and control the debugger programmatically.
 
-4. **Multi-user**: Should the debugger support multiple browser sessions viewing the same app? Probably not initially.
+As an **AI agent**, I want responses in machine-readable formats (JSON), so that I can parse and act on debugger state without scraping HTML.
 
-5. **Permissions**: Should breakpoints require confirmation before modifying args? Or trust the dev?
+As an **AI agent**, I want to set breakpoints via API calls, so that I can automate debugging workflows.
+
+As an **AI agent**, I want to query call history with filters and pagination, so that I can efficiently search large execution traces.
+
+### Automated Inspection
+
+As an **AI agent**, I want to receive structured notifications when breakpoints are hit, so that I can respond without polling.
+
+As an **AI agent**, I want to read and modify arguments at breakpoints programmatically, so that I can implement automated testing scenarios.
+
+As an **AI agent**, I want to skip calls and inject return values via API, so that I can mock tool behavior during automated debugging.
+
+As an **AI agent**, I want clear error codes and messages, so that I can handle failures gracefully without human interpretation.
+
+### Batch Operations
+
+As an **AI agent**, I want to set multiple breakpoints in a single API call, so that I can configure debugging efficiently.
+
+As an **AI agent**, I want to export full session data in structured format, so that I can analyze execution traces offline.
+
+As an **AI agent**, I want to replay sequences of calls programmatically, so that I can automate regression testing.
+
+### Integration with AI Workflows
+
+As an **AI agent**, I want to attach metadata to sessions and calls, so that I can correlate debugger data with my own reasoning traces.
+
+As an **AI agent**, I want to subscribe to a stream of events (calls, breakpoints, exceptions), so that I can build reactive debugging workflows.
+
+As an **AI agent**, I want to control multiple debugging sessions simultaneously, so that I can compare behavior across different runs or configurations.
+
+---
+
+## Design Decisions
+
+Answers to key design questions.
+
+1. **Conditional breakpoints**: Use Python `eval()` for conditional expressions. This provides full expressiveness for developers who already know Python.
+
+2. **Replay fidelity**: Support multiple replay modes:
+   - Stepping through past execution (read-only review)
+   - Stepping through past execution with different arguments (modified replay)
+   - Stepping through past execution with a code change (testing fixes)
+   - Executing against the target system using a previously issued call (real replay with side effects)
+
+3. **Recording overhead**: Use a simple boolean flag to enable/disable recording. This keeps the interface simple while allowing users to opt out if overhead is a concern.
+
+4. **Multi-user**: Yes, support multiple browser sessions viewing the same app. This enables collaborative debugging and AI-human joint debugging scenarios.
+
+5. **Permissions**: No confirmation required before modifying args at breakpoints. Trust the developer/agent to make appropriate modifications.
