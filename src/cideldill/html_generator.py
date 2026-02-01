@@ -257,10 +257,10 @@ def _format_record(record: dict[str, Any], db_path: str = "") -> str:
                 "margin-bottom: 10px; padding: 5px; "
                 "background-color: #f9f9f9; border-left: 3px solid #ddd;"
             )
-            # Add source link for each frame
+            # Add source link for each frame with unique URL
             frame_link = ""
             if db_path and frame.get('filename') and frame.get('lineno'):
-                link_url = f"source_{record['id']}.html"
+                link_url = f"frame_{record['id']}_{i}.html"
                 link_style = "color: #2196F3; text-decoration: none; font-size: 0.9em;"
                 frame_link = f' <a href="{link_url}" style="{link_style}">[view]</a>'
             html += f"""                <div style="{frame_style}">
@@ -284,14 +284,14 @@ def _format_record(record: dict[str, Any], db_path: str = "") -> str:
 
 
 def _generate_source_viewer_pages(db_path: str, main_output_path: str) -> None:
-    """Generate source viewer pages for all call records.
+    """Generate source viewer pages for all call records and their frames.
 
     Args:
         db_path: Path to the database.
         main_output_path: Path to the main HTML output file (used for determining output directory).
     """
     from cideldill import CASStore
-    from cideldill.source_viewer import generate_source_view
+    from cideldill.source_viewer import generate_frame_view, generate_source_view
 
     store = CASStore(db_path)
     records = store.get_all_call_records()
@@ -330,4 +330,33 @@ def _generate_source_viewer_pages(db_path: str, main_output_path: str) -> None:
             import sys
             print(f"Warning: Failed to generate source view for record {record['id']}: {e}",
                   file=sys.stderr)
+
+        # Generate individual pages for each frame in the callstack
+        callstack = record.get("callstack", [])
+        for frame_index, frame in enumerate(callstack):
+            frame_filename = frame.get("filename")
+            frame_lineno = frame.get("lineno")
+
+            if not frame_filename or not Path(frame_filename).exists():
+                continue
+
+            frame_output = output_dir / f"frame_{record['id']}_{frame_index}.html"
+            try:
+                generate_frame_view(
+                    source_file=frame_filename,
+                    output_path=str(frame_output),
+                    highlight_line=frame_lineno,
+                    call_record=record,
+                    frame_index=frame_index,
+                    db_path=db_path,
+                )
+            except OSError:
+                # Skip frame generation if file cannot be read or written
+                pass
+            except Exception as e:
+                # Log unexpected errors but continue processing other frames
+                import sys
+                print(f"Warning: Failed to generate frame view for record {record['id']}, "
+                      f"frame {frame_index}: {e}", file=sys.stderr)
+
 
