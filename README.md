@@ -27,12 +27,14 @@ For development (includes testing and linting tools):
 ./install_deps.sh --dev
 ```
 
+**Important**: The install script uses `python3` by default. Make sure you run the doctor script and examples with the same Python version.
+
 ### Verify Installation
 
 After installation, verify everything is working correctly:
 
 ```bash
-python doctor.py
+python3 doctor.py
 ```
 
 This will check:
@@ -40,6 +42,8 @@ This will check:
 - CID el Dill package installation
 - All required dependencies (including Pygments)
 - Optional development dependencies
+
+If the doctor script reports issues, ensure you're using the same Python version for both installation and running scripts.
 
 ### Manual Installation
 

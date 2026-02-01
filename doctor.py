@@ -73,6 +73,8 @@ def main():
     """Run all checks and report results."""
     print(f"{BOLD}CID el Dill Installation Doctor{RESET}")
     print("=" * 60)
+    print(f"Using Python: {sys.executable}")
+    print(f"Python path: {':'.join(sys.path[:3])}...")
     print()
 
     all_passed = True
@@ -150,11 +152,17 @@ def main():
     else:
         print(f"{RED}{BOLD}✗ Some checks failed.{RESET}")
         print()
-        print("To fix installation issues, run:")
-        print("  ./install_deps.sh")
+        print("Common issues:")
+        print("  1. Package installed with different Python version")
+        print(f"     Current Python: {sys.executable}")
+        print("     Solution: Run ./install_deps.sh to install for this Python")
         print()
-        print("For development dependencies:")
-        print("  ./install_deps.sh --dev")
+        print("  2. Package not installed at all")
+        print("     Solution: Run ./install_deps.sh")
+        print()
+        print("To install dependencies:")
+        print("  ./install_deps.sh        # Runtime dependencies")
+        print("  ./install_deps.sh --dev  # Development dependencies")
         sys.exit(1)
 
     print()
