@@ -174,6 +174,37 @@ def _format_record(record: dict[str, Any]) -> str:
         </div>
 """
 
+    # Timestamp
+    if "timestamp" in record:
+        from datetime import datetime
+        timestamp = record["timestamp"]
+        # Format timestamp as human-readable date
+        dt = datetime.fromtimestamp(timestamp)
+        timestamp_str = dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]  # Include milliseconds
+        html += f"""
+        <div class="section">
+            <div class="section-title">Timestamp:</div>
+            <div class="timestamp">{timestamp_str} (Unix: {timestamp})</div>
+        </div>
+"""
+
+    # Call Site
+    if "call_site" in record:
+        call_site = record["call_site"]
+        html += f"""
+        <div class="section">
+            <div class="section-title">Call Site:</div>
+            <div class="code-block">
+                <strong>File:</strong> {call_site.get('filename', 'N/A')}<br>
+                <strong>Line:</strong> {call_site.get('lineno', 'N/A')}<br>
+                <strong>Function:</strong> {call_site.get('function', 'N/A')}<br>
+"""
+        if call_site.get('code_context'):
+            html += f"                <strong>Code:</strong> <code>{call_site['code_context']}</code><br>\n"
+        html += """            </div>
+        </div>
+"""
+
     # Arguments
     if "args" in record:
         args_str = json.dumps(record["args"], indent=2)
@@ -201,6 +232,26 @@ def _format_record(record: dict[str, Any]) -> str:
         <div class="section">
             <div class="section-title exception">Exception:</div>
             <div class="code-block exception">{exception_str}</div>
+        </div>
+"""
+
+    # Callstack
+    if "callstack" in record and record["callstack"]:
+        html += """
+        <div class="section">
+            <div class="section-title">Call Stack:</div>
+            <div class="code-block">
+"""
+        for i, frame in enumerate(record["callstack"]):
+            html += f"""                <div style="margin-bottom: 10px; padding: 5px; background-color: #f9f9f9; border-left: 3px solid #ddd;">
+                    <strong>Frame {i}:</strong> {frame.get('function', 'N/A')}<br>
+                    <strong>File:</strong> {frame.get('filename', 'N/A')}<br>
+                    <strong>Line:</strong> {frame.get('lineno', 'N/A')}<br>
+"""
+            if frame.get('code_context'):
+                html += f"                    <strong>Code:</strong> <code>{frame['code_context']}</code><br>\n"
+            html += "                </div>\n"
+        html += """            </div>
         </div>
 """
 
