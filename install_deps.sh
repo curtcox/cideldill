@@ -22,12 +22,44 @@ echo "Python executable: $($PYTHON_CMD -c 'import sys; print(sys.executable)')"
 echo "Installing CID el Dill dependencies..."
 echo ""
 
-if [ "$1" = "--dev" ]; then
-    echo "Installing with development dependencies..."
-    $PYTHON_CMD -m pip install -e ".[dev]"
+# Determine install flags
+INSTALL_FLAGS="-e"
+
+# Check if we're in a virtual environment
+if [ -z "$VIRTUAL_ENV" ]; then
+    # Not in a virtual environment
+    # Try installing without --user first, fall back to --user if externally managed
+    echo "Note: Not in a virtual environment."
+    echo "Attempting system installation..."
+    echo ""
+    
+    if [ "$1" = "--dev" ]; then
+        if ! $PYTHON_CMD -m pip install -e ".[dev]" 2>/dev/null; then
+            echo ""
+            echo "System installation failed (externally-managed environment)."
+            echo "Installing to user site-packages with --user flag..."
+            echo ""
+            $PYTHON_CMD -m pip install --user -e ".[dev]"
+        fi
+    else
+        if ! $PYTHON_CMD -m pip install -e . 2>/dev/null; then
+            echo ""
+            echo "System installation failed (externally-managed environment)."
+            echo "Installing to user site-packages with --user flag..."
+            echo ""
+            $PYTHON_CMD -m pip install --user -e .
+        fi
+    fi
 else
-    echo "Installing runtime dependencies only..."
-    $PYTHON_CMD -m pip install -e .
+    # In a virtual environment, install normally
+    echo "Installing in virtual environment: $VIRTUAL_ENV"
+    echo ""
+    
+    if [ "$1" = "--dev" ]; then
+        $PYTHON_CMD -m pip install -e ".[dev]"
+    else
+        $PYTHON_CMD -m pip install -e .
+    fi
 fi
 
 echo ""

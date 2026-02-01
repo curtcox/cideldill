@@ -27,7 +27,30 @@ For development (includes testing and linting tools):
 ./install_deps.sh --dev
 ```
 
-**Important**: The install script uses `python3` by default. Make sure you run the doctor script and examples with the same Python version.
+**Important**: 
+- The install script uses `python3 -m pip` by default. Make sure you run the doctor script and examples with the same Python version.
+- On systems with externally-managed Python (e.g., Homebrew on macOS), the script will automatically use the `--user` flag to install to user site-packages.
+- For best results, consider using a virtual environment (see below).
+
+### Using a Virtual Environment (Recommended)
+
+For a cleaner installation that doesn't affect your system Python, use a virtual environment:
+
+```bash
+# Create a virtual environment
+python3 -m venv venv
+
+# Activate it
+source venv/bin/activate  # On macOS/Linux
+# or
+venv\Scripts\activate  # On Windows
+
+# Install dependencies
+./install_deps.sh --dev
+
+# When done, deactivate
+deactivate
+```
 
 ### Verify Installation
 
