@@ -122,7 +122,10 @@ inspector.disconnect()
 Set breakpoints and control execution via an interactive web UI:
 
 ```bash
-# Start the breakpoint server
+# Start the breakpoint server (convenience script)
+./run/mac/breakpoint_server
+
+# Or use the Python module directly
 python -m cideldill.breakpoint_server
 
 # In another terminal, run your application

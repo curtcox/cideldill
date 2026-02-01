@@ -30,7 +30,21 @@ The interactive breakpoint system consists of three main components:
 
 ### 1. Start the Breakpoint Server
 
-First, start the web server that handles breakpoint management:
+First, start the web server that handles breakpoint management.
+
+**Option A: Using the convenience script (recommended)**
+
+```bash
+./run/mac/breakpoint_server
+```
+
+Or specify a custom port:
+
+```bash
+./run/mac/breakpoint_server --port 8080
+```
+
+**Option B: Using Python module directly**
 
 ```bash
 python -m cideldill.breakpoint_server
@@ -49,21 +63,16 @@ You should see:
 CID el Dill - Interactive Breakpoint Server
 ============================================================
 
-Starting server on 0.0.0.0:5000
+Starting server on 0.0.0.0:5000...
 
-Web UI available at:
-  http://localhost:5000/
+✓ Server is starting...
 
-API Endpoints:
-  GET    /api/breakpoints        - List breakpoints
-  POST   /api/breakpoints        - Add breakpoint
-  DELETE /api/breakpoints/<name> - Remove breakpoint
-  GET    /api/paused             - List paused executions
-  POST   /api/paused/<id>/continue - Continue execution
-
-Press Ctrl+C to stop the server
-============================================================
+ * Serving Flask app 'cideldill.breakpoint_server'
+ * Running on http://127.0.0.1:5000
+Press CTRL+C to quit
 ```
+
+The server will run continuously until you stop it with Ctrl+C.
 
 ### 2. Configure Your Application
 

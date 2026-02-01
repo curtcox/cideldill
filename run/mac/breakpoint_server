@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""Breakpoint Server Runner Script.
+
+This script starts the interactive breakpoint web server for debugging
+and controlling execution flow through a web interface.
+
+Usage:
+    breakpoint_server [OPTIONS]
+
+Options:
+    --port PORT         Port to listen on (default: 5000)
+    --host HOST         Host to bind to (default: 0.0.0.0)
+    -h, --help          Show this help message
+
+Examples:
+    # Run with default settings (port 5000)
+    breakpoint_server
+
+    # Run on a custom port
+    breakpoint_server --port 8080
+
+    # Bind to localhost only
+    breakpoint_server --host 127.0.0.1
+"""
+
+import argparse
+import sys
+from pathlib import Path
+
+# Try to import from installed package first, fall back to local source
+try:
+    from cideldill import BreakpointManager
+    from cideldill.breakpoint_server import BreakpointServer
+    # If cideldill is installed, we're good
+except ImportError:
+    # Fall back to local source if package not installed
+    script_dir = Path(__file__).parent
+    repo_root = script_dir.parent.parent
+    sys.path.insert(0, str(repo_root / "src"))
+    from cideldill import BreakpointManager
+    from cideldill.breakpoint_server import BreakpointServer
+
+
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Start the CID el Dill interactive breakpoint web server",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  breakpoint_server                  # Run on default port 5000
+  breakpoint_server --port 8080      # Run on custom port
+  breakpoint_server --host 127.0.0.1 # Bind to localhost only
+        """
+    )
+
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=5000,
+        help="Port to listen on (default: 5000)"
+    )
+
+    parser.add_argument(
+        "--host",
+        default="0.0.0.0",
+        help="Host to bind to (default: 0.0.0.0)"
+    )
+
+    return parser.parse_args()
+
+
+def main():
+    """Main entry point for the script."""
+    args = parse_args()
+
+    print("=" * 60)
+    print("CID el Dill - Interactive Breakpoint Server")
+    print("=" * 60)
+    print(f"\nStarting server on {args.host}:{args.port}...")
+    print("\nWeb UI available at:")
+    print(f"  http://localhost:{args.port}/")
+    print("\nAPI Endpoints:")
+    print("  GET    /api/breakpoints        - List breakpoints")
+    print("  POST   /api/breakpoints        - Add breakpoint")
+    print("  DELETE /api/breakpoints/<name> - Remove breakpoint")
+    print("  GET    /api/paused             - List paused executions")
+    print("  POST   /api/paused/<id>/continue - Continue execution")
+    print("\nPress Ctrl+C to stop the server")
+    print("=" * 60)
+
+    try:
+        manager = BreakpointManager()
+        server = BreakpointServer(manager, port=args.port)
+        print("\n✓ Server is starting...\n")
+        server.start()
+    except KeyboardInterrupt:
+        print("\n\n✓ Server stopped by user")
+        return 0
+    except Exception as e:
+        print(f"\n✗ Error starting server: {e}", file=sys.stderr)
+        return 1
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
