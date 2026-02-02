@@ -98,10 +98,6 @@ def test_web_ui_has_toggle_breakpoint_functionality():
     """Test that the web UI HTML includes functionality to toggle breakpoints."""
     from cideldill.breakpoint_server import HTML_TEMPLATE
 
-    # Check for add breakpoint functionality
-    assert "add" in HTML_TEMPLATE.lower() or "new" in HTML_TEMPLATE.lower(), \
-        "Web UI should have add breakpoint functionality"
-
     # Check for per-breakpoint stop/go toggle
     assert "setbreakpointbehavior" in HTML_TEMPLATE.lower(), \
         "Web UI should include per-breakpoint behavior toggle functionality"
@@ -112,9 +108,9 @@ def test_web_ui_has_toggle_breakpoint_functionality():
     assert "removebreakpoint" not in HTML_TEMPLATE.lower(), \
         "Web UI should not expose breakpoint removal controls"
 
-    # Check for input field to add new breakpoints
-    assert "input" in HTML_TEMPLATE.lower() or "text" in HTML_TEMPLATE.lower(), \
-        "Web UI should have input field to add breakpoints"
+    # There should be no add-breakpoint UI
+    assert "newbreakpointinput" not in HTML_TEMPLATE.lower(), \
+        "Web UI should not expose add breakpoint controls"
 
 
 def test_breakpoint_manager_tracks_function_names():

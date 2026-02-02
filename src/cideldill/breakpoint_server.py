@@ -203,17 +203,6 @@ HTML_TEMPLATE = """
                     When "Go" is selected, breakpoints are logged but don't pause.
                 </div>
             </div>
-            <div style="margin-bottom: 15px;">
-                <input type="text" id="newBreakpointInput"
-                       placeholder="Enter function name..."
-                       style="padding: 8px; width: 300px; border: 1px solid #ddd;
-                              border-radius: 4px;">
-                <button class="btn" onclick="addBreakpoint()"
-                        style="background-color: #4CAF50; color: white;
-                               margin-left: 10px;">
-                    ➕ Add Breakpoint
-                </button>
-            </div>
         </div>
         <div id="breakpointsList">
             <div class="empty-state">No breakpoints set.</div>
@@ -256,36 +245,6 @@ HTML_TEMPLATE = """
                 document.getElementById(`behavior-${behavior}`).checked = true;
             } catch (e) {
                 console.error('Failed to load behavior:', e);
-            }
-        }
-
-        // Add a new breakpoint
-        async function addBreakpoint() {
-            const input = document.getElementById('newBreakpointInput');
-            const functionName = input.value.trim();
-
-            if (!functionName) {
-                showMessage('Please enter a function name', 'error');
-                return;
-            }
-
-            try {
-                const response = await fetch(`${API_BASE}/breakpoints`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ function_name: functionName })
-                });
-
-                if (response.ok) {
-                    showMessage(`Breakpoint added: ${functionName}`, 'success');
-                    input.value = '';  // Clear input
-                    loadBreakpoints();  // Refresh list
-                } else {
-                    showMessage('Failed to add breakpoint', 'error');
-                }
-            } catch (e) {
-                console.error('Failed to add breakpoint:', e);
-                showMessage('Error adding breakpoint', 'error');
             }
         }
 
@@ -376,16 +335,6 @@ HTML_TEMPLATE = """
             loadBehavior();
             loadBreakpoints();
             loadPausedExecutions();
-
-            // Set up Enter key handler
-            const input = document.getElementById('newBreakpointInput');
-            if (input) {
-                input.addEventListener('keypress', function(e) {
-                    if (e.key === 'Enter') {
-                        addBreakpoint();
-                    }
-                });
-            }
 
             // Poll for updates every 2 seconds
             updateInterval = setInterval(() => {
