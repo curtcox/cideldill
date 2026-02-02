@@ -207,12 +207,12 @@ class DebugProxy:
         exc_class = getattr(builtins, exc_type, Exception)
         return exc_class(message)
 
-    def _intercept_dunder(self, name: str, *args: Any) -> Any:
+    def _intercept_dunder(self, name: str, *args: Any, **kwargs: Any) -> Any:
         attr = getattr(self._target, name)
         if callable(attr):
             if self._is_enabled():
-                return self._wrap_method(attr, name)(*args)
-            return attr(*args)
+                return self._wrap_method(attr, name)(*args, **kwargs)
+            return attr(*args, **kwargs)
         return attr
 
     def __str__(self) -> str:

@@ -237,7 +237,7 @@ HTML_TEMPLATE = """
                         ⏸️ ${displayName}() - Paused at ${pausedAt}
                     </div>
                     <div class="call-data"><strong>Arguments:</strong>
-${JSON.stringify(callData.args || callData.kwargs || {}, null, 2)}</div>
+${JSON.stringify({ args: callData.args || [], kwargs: callData.kwargs || {} }, null, 2)}</div>
                     <div class="actions">
                         <button class="btn btn-continue" onclick="continueExecution('${paused.id}', 'continue')">
                             ▶️ Continue
