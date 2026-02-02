@@ -25,6 +25,8 @@ debug_obj = with_debug(original_obj)
 
 ### API Behavior by Mode
 
+**Important**: `with_debug('ON')` or `with_debug('OFF')` is called **once at application startup**. The debug state does not change while the application is running. This simplifies implementation significantly.
+
 #### `with_debug('ON')`
 
 - Enables debugging **globally for all threads** in the current process
@@ -103,7 +105,7 @@ def compute_cid(obj):
 
 - First time an object is sent: Send both the **dill pickle** and the **CID**
 - Subsequent times: Send **only the CID** (server already has the pickled data)
-- Client maintains a **finite LRU cache** of recently sent CIDs
+- Client maintains an **LRU cache of 10,000 entries** for recently sent CIDs
 - **Server is the source of truth** for CID→data mappings
 
 **CID Verification Protocol:**
@@ -177,8 +179,11 @@ When debugging is enabled, every intercepted call follows this protocol:
 
 #### Server Response Format
 
+Every response from `/api/call/start` includes a **timestamp-based call ID** for tracking:
+
 ```python
 {
+    "call_id": "1234567890.123456-001",  # Timestamp-based ID (Unix timestamp + sequence)
     "action": "continue" | "poll" | "skip" | "raise" | "modify",
 
     # For action="continue": proceed with original call
@@ -416,6 +421,10 @@ info = with_debug('ON')
 | Dill failure | **No fallback** | Raise `DebugSerializationError`; fail-closed policy |
 | Call completion | **Yes, notify server** | POST /api/call/complete with result CID and timestamp |
 | Proxy for None | **Wrap in proxy** | Consistent behavior; no special cases |
+| CID cache size | **10,000 entries** | Balance between memory usage and hit rate |
+| Call ID format | **Timestamp-based** | Human-readable, sortable, includes sequence number |
+| Arithmetic return type | **Raw value (unwrapped)** | Simpler implementation; avoids proxy explosion |
+| Debug state changes | **Startup only** | with_debug('ON'/'OFF') called once; state never changes at runtime |
 
 ---
 
@@ -518,12 +527,6 @@ def test_with_debug_on_twice_is_idempotent():
 
 def test_with_debug_off_twice_is_idempotent():
     """Calling with_debug('OFF') twice doesn't cause issues."""
-
-def test_with_debug_on_then_off():
-    """Can enable then disable debugging."""
-
-def test_with_debug_off_then_on():
-    """Can disable then enable debugging."""
 
 def test_with_debug_on_affects_all_threads():
     """with_debug('ON') enables debugging for all threads."""
@@ -936,6 +939,15 @@ def test_wrap_int():
 
 def test_wrap_float():
     """Can wrap float objects."""
+
+def test_wrap_int_add_returns_raw():
+    """Wrapped int + int returns raw int, not proxy."""
+
+def test_wrap_int_mul_returns_raw():
+    """Wrapped int * int returns raw int, not proxy."""
+
+def test_wrap_float_arithmetic_returns_raw():
+    """Arithmetic on wrapped float returns raw float."""
 ```
 
 ### 8. Async Proxy Tests
@@ -977,6 +989,12 @@ def test_endpoint_call_start_accepts_dill_data():
 
 def test_endpoint_call_start_returns_action():
     """POST /api/call/start returns an action."""
+
+def test_endpoint_call_start_returns_call_id():
+    """POST /api/call/start returns a timestamp-based call_id."""
+
+def test_call_id_format_is_timestamp_based():
+    """Call ID format is Unix timestamp with sequence number."""
 
 def test_endpoint_call_start_stores_cid_data():
     """POST /api/call/start stores CID->data mapping."""
@@ -1116,14 +1134,8 @@ def test_poll_timeout_raises():
 def test_dill_failure_raises():
     """Dill pickle failure raises DebugSerializationError."""
 
-def test_rapid_on_off_toggling():
-    """Rapid toggling of debug ON/OFF works correctly."""
-
 def test_wrap_during_active_call():
     """Wrapping objects during an active call works."""
-
-def test_disable_during_active_call():
-    """Disabling debug during an active call works."""
 
 def test_circular_reference_serialization():
     """Objects with circular references serialize correctly."""
@@ -1142,28 +1154,16 @@ def test_cid_recovery_resend():
 
 ## Open Questions
 
-1. **Client CID cache size**: What should be the default size of the client's LRU cache for sent CIDs?
-   - a) 1,000 entries
-   - b) 10,000 entries
-   - c) Configurable with a sensible default
-   - d) Unlimited (memory permitting)
-
-2. **Call ID format**: What format should be used for call IDs returned by `/api/call/start`?
-   - a) UUID4
-   - b) Incrementing integer
-   - c) Timestamp-based ID
-   - d) Hash of call details
-
-3. **Arithmetic operator return type**: When intercepting `__add__` etc. on wrapped `int`, should the result be:
-   - a) Wrapped in a new proxy
-   - b) Returned as raw value (unwrapped)
-   - c) Depends on debug ON/OFF state
+**All questions have been resolved.** The design is complete and ready for implementation.
 
 ---
 
 ## Next Steps
 
-1. Resolve remaining open questions through discussion
-2. Add any additional tests identified during discussion
-3. Begin implementation starting with core `with_debug()` function
-4. Iterate on implementation with test-driven development
+1. Begin implementation starting with core `with_debug()` function
+2. Implement serialization module (dill + CID computation)
+3. Implement DebugProxy and AsyncDebugProxy classes
+4. Update server with new endpoints (`/api/call/start`, `/api/call/complete`, `/api/poll/{id}`)
+5. Write tests following the comprehensive test list above
+6. Remove old API (Interceptor, Inspector, etc.)
+7. Update documentation
