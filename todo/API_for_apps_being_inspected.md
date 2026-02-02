@@ -27,11 +27,12 @@ debug_obj = with_debug(original_obj)
 
 #### `with_debug('ON')`
 
-- Enables debugging globally for the current process
+- Enables debugging **globally for all threads** in the current process
 - Returns a `DebugInfo` object that can be interrogated
-- All subsequent `with_debug(obj)` calls return debug-wrapped objects
+- All subsequent `with_debug(obj)` calls return debug-wrapped proxy objects
 - Network requests are made to the debug server for each intercepted call
 - Breakpoints can trigger and pause execution
+- **If the server is unreachable, raises an exception** (fail-closed)
 
 ```python
 info = with_debug('ON')
@@ -42,13 +43,13 @@ info.connection_status()  # Returns 'connected', 'disconnected', 'error'
 
 #### `with_debug('OFF')`
 
-- Disables debugging globally for the current process
+- Disables debugging **globally for all threads** in the current process
 - Returns a `DebugInfo` object that can be interrogated
-- All subsequent `with_debug(obj)` calls return the original object unchanged
+- All subsequent `with_debug(obj)` calls return a no-op proxy
 - **No breakpoints trigger**
 - **No network requests are made**
 - **No calls are logged**
-- Minimal performance overhead (simple passthrough)
+- Minimal performance overhead
 
 ```python
 info = with_debug('OFF')
@@ -59,9 +60,13 @@ info.connection_status()  # Returns 'disabled'
 
 #### `with_debug(obj)`
 
-- When debug is ON: Returns a proxy object that intercepts all method calls
-- When debug is OFF: Returns the original object unchanged (identity function)
+- **Always returns a proxy object** (never the original)
+- When debug is ON: Proxy intercepts all method calls and communicates with server
+- When debug is OFF: Proxy is a no-op that delegates directly to target without interception
 - The proxy object is transparent - client code uses it exactly like the original
+- **`proxy == original` is always False**
+- **`proxy is original` is always False**
+- Can wrap **any object** including built-in types (`list`, `dict`, etc.)
 
 ```python
 # Example usage
@@ -70,13 +75,86 @@ calculator = with_debug(calculator)  # Wrap for debugging
 
 # Use exactly like the original
 result = calculator.add(1, 2)  # Intercepted if debug is ON
+
+# Identity is never preserved
+assert calculator is not Calculator()  # Always true
+assert (calculator == Calculator()) == False  # Proxy != original
+```
+
+### Serialization with Dill and CID
+
+All objects (arguments, return values, etc.) are serialized using **dill** (not cloudpickle or JSON).
+
+#### Content-Addressed Storage
+
+Every object is assigned a **CID (Content Identifier)** - a hash of its dill-pickled representation.
+
+```python
+import dill
+import hashlib
+
+def compute_cid(obj):
+    """Compute the CID for any object."""
+    pickled = dill.dumps(obj)
+    return hashlib.sha256(pickled).hexdigest()
+```
+
+#### Transmission Protocol
+
+- First time an object is sent: Send both the **dill pickle** and the **CID**
+- Subsequent times: Send **only the CID** (server already has the pickled data)
+- Client tracks which CIDs have been sent in the current session
+
+```python
+# Request format
+{
+    "method_name": "calculate",
+    "target_cid": "abc123...",           # CID of the proxied object
+    "args": [
+        {"cid": "def456...", "data": "<base64 dill pickle>"},  # First time
+        {"cid": "ghi789..."}                                    # Already sent
+    ],
+    "call_site": {
+        "stack_trace": [...],
+        "timestamp": 1234567890.123,
+        "target_cid": "abc123..."
+    }
+}
+```
+
+### Call Site Information
+
+Every intercepted call includes comprehensive call site information:
+
+```python
+call_site = {
+    "timestamp": 1234567890.123456,      # Unix timestamp with microseconds
+    "target_cid": "abc123...",           # CID of the object being called
+    "stack_trace": [                     # Full stack trace
+        {
+            "filename": "/path/to/file.py",
+            "lineno": 42,
+            "function": "main",
+            "code_context": "result = calculator.add(1, 2)",
+            "locals": {...}              # Optional: local variables
+        },
+        {
+            "filename": "/path/to/other.py",
+            "lineno": 15,
+            "function": "helper",
+            "code_context": "return do_calculation()",
+            "locals": {...}
+        }
+        # ... all frames up to the call
+    ]
+}
 ```
 
 ### Server Response Protocol
 
 When debugging is enabled, every intercepted call follows this protocol:
 
-1. Client sends call information to server (function name, args, call site, etc.)
+1. Client sends call information to server (function name, args as dill+CID, call site)
 2. Server responds with an action dictating client behavior
 3. Client executes based on the action
 
@@ -92,16 +170,24 @@ When debugging is enabled, every intercepted call follows this protocol:
     # For action="poll": wait and poll until allowed to continue
     "poll_interval_ms": 100,     # How often to poll
     "poll_url": "/api/poll/{id}", # URL to poll for status
+    "timeout_ms": 60000,          # When to give up (raises exception)
 
     # For action="skip": skip the call, return fake result
-    "fake_result": <any>,        # The result to return instead
+    "fake_result_cid": "xyz...", # CID of result (if known)
+    "fake_result_data": "...",   # Base64 dill pickle (if new)
 
     # For action="raise": raise an exception instead of calling
     "exception_type": "ValueError",
     "exception_message": "Forced error for testing",
 
     # For action="modify": continue with modified arguments
-    "modified_args": {"x": 100, "y": 200}
+    "modified_args": [           # Positional args as CID or CID+data
+        {"cid": "abc...", "data": "..."},
+        {"cid": "def..."}
+    ],
+    "modified_kwargs": {         # Keyword args as CID or CID+data
+        "x": {"cid": "ghi...", "data": "..."}
+    }
 }
 ```
 
@@ -114,12 +200,13 @@ When server returns `action="poll"`, the client:
 3. Each poll response is either:
    - `{"status": "waiting"}` - continue polling
    - `{"status": "ready", "action": {...}}` - proceed with the enclosed action
-4. Client continues based on the final action received
+4. **If timeout is reached, raises `DebugTimeoutError`** (fail-closed)
+5. Client continues based on the final action received
 
 ```python
 # Polling sequence example
 POST /api/call/start
-  <- {"action": "poll", "poll_interval_ms": 50, "poll_url": "/api/poll/abc123"}
+  <- {"action": "poll", "poll_interval_ms": 50, "poll_url": "/api/poll/abc123", "timeout_ms": 60000}
 
 GET /api/poll/abc123
   <- {"status": "waiting"}
@@ -133,40 +220,103 @@ GET /api/poll/abc123
 # Now client proceeds with the call
 ```
 
+### Async Support
+
+The debug proxy provides **full async support** with async-aware proxies:
+
+```python
+class AsyncDebugProxy:
+    """Async-aware proxy that intercepts both sync and async method calls."""
+
+    async def _wrap_async_method(self, method, name):
+        async def wrapper(*args, **kwargs):
+            # Notify server and get action (sync HTTP call)
+            action = self._client.record_call_start(...)
+
+            # Handle polling asynchronously if needed
+            if action["action"] == "poll":
+                action = await self._async_poll(action)
+
+            # Execute based on action
+            if action["action"] == "continue":
+                return await method(*args, **kwargs)
+            # ... handle other actions
+
+        return wrapper
+```
+
+- Sync methods on proxied objects work synchronously
+- Async methods on proxied objects work asynchronously
+- Server communication is always synchronous HTTP (debugging latency is acceptable)
+- Async polling uses `asyncio.sleep()` instead of `time.sleep()`
+
 ### Debug Object Proxy Behavior
 
-The debug proxy wraps objects and intercepts method calls:
+The debug proxy wraps objects and intercepts **all** method calls including dunder methods:
 
 ```python
 class DebugProxy:
-    """Transparent proxy that intercepts method calls for debugging."""
+    """Transparent proxy that intercepts all method calls for debugging."""
 
-    def __init__(self, target, debug_client):
-        self._target = target
-        self._client = debug_client
+    def __init__(self, target, debug_client, is_enabled_func):
+        object.__setattr__(self, '_target', target)
+        object.__setattr__(self, '_client', debug_client)
+        object.__setattr__(self, '_is_enabled', is_enabled_func)
+        object.__setattr__(self, '_cid', compute_cid(target))
 
     def __getattr__(self, name):
         attr = getattr(self._target, name)
         if callable(attr):
-            return self._wrap_method(attr, name)
+            if self._is_enabled():
+                return self._wrap_method(attr, name)
+            else:
+                return attr  # No-op when disabled
         return attr
 
-    def _wrap_method(self, method, name):
-        def wrapper(*args, **kwargs):
-            # Notify server and get action
-            action = self._client.record_call_start(
-                object_type=type(self._target).__name__,
-                method_name=name,
-                args=args,
-                kwargs=kwargs,
-                call_site=get_call_site()
-            )
+    # Intercept ALL dunder methods for built-in types
+    def __str__(self):
+        return self._intercept_dunder('__str__')
 
-            # Execute based on action
-            return self._execute_action(action, method, args, kwargs)
+    def __repr__(self):
+        return self._intercept_dunder('__repr__')
 
-        return wrapper
+    def __iter__(self):
+        return self._intercept_dunder('__iter__')
+
+    def __len__(self):
+        return self._intercept_dunder('__len__')
+
+    def __getitem__(self, key):
+        return self._intercept_dunder('__getitem__', key)
+
+    def __setitem__(self, key, value):
+        return self._intercept_dunder('__setitem__', key, value)
+
+    # ... all other dunder methods
+
+    def __eq__(self, other):
+        # Proxy equality is always False vs non-proxy
+        if not isinstance(other, DebugProxy):
+            return False
+        return self._target == other._target
+
+    def __hash__(self):
+        return hash(self._target)
 ```
+
+### Error Handling
+
+All errors follow a **fail-closed** policy:
+
+| Scenario | Behavior |
+|----------|----------|
+| Server unreachable on `with_debug('ON')` | Raises `DebugServerError` |
+| Server unreachable during call | Raises `DebugServerError` |
+| Poll timeout | Raises `DebugTimeoutError` |
+| Malformed server response | Raises `DebugProtocolError` |
+| Unknown action type | Raises `DebugProtocolError` |
+| Proxy internal error | **Propagates the exception** |
+| Object cannot be dill pickled | Raises `DebugSerializationError` |
 
 ### Configuration
 
@@ -185,6 +335,29 @@ info = with_debug('ON')
 # Looks for server on localhost:5000
 ```
 
+**Security Model**: No authentication, localhost only. The server should only bind to 127.0.0.1.
+
+---
+
+## Design Decisions (Resolved)
+
+| Question | Decision | Rationale |
+|----------|----------|-----------|
+| Serialization | **Dill** | More capable than cloudpickle, handles more Python objects |
+| Timeout behavior | **Fail-closed** (raise exception) | Debugging should be explicit; silent failures hide problems |
+| Server unavailable | **Raise exception** | Same rationale; debugging is opt-in and should fail loudly |
+| Thread isolation | **Global** | Debugging is typically for entire application, not per-thread |
+| Async support | **Full async proxies** | Modern Python apps use async; must be first-class |
+| Object identity | **Never True** | Proxies are distinct objects; identity checks should reflect this |
+| Built-in wrapping | **Wrap everything** | Consistent behavior; no special cases |
+| Call site info | **Full stack + timestamp + CID** | Maximum observability for debugging |
+| Return values | **Dill + CID deduplication** | Efficient transmission, full fidelity |
+| Proxy exceptions | **Propagate** | Don't hide infrastructure errors |
+| Multiple servers | **Single only** | Simplicity; can extend later if needed |
+| Security | **No auth, localhost only** | Development tool; not designed for production |
+| Latency | **Accept it** | Debugging isn't performance-critical |
+| Old API | **Remove entirely** | Clean break; no maintenance burden |
+
 ---
 
 ## Files That Need to Be Updated
@@ -193,49 +366,64 @@ info = with_debug('ON')
 
 | File | Current State | Required Changes |
 |------|---------------|------------------|
-| `src/cideldill/__init__.py` | Exports Interceptor, Logger, etc. | Add `with_debug` as primary export |
-| `src/cideldill/interceptor.py` | Function-based wrapping with sync | Refactor to object proxy model, remove sync |
-| `src/cideldill/breakpoint_manager.py` | Thread-based polling sync | Remove sync thread, pure request-response |
-| `src/cideldill/breakpoint_server.py` | Current REST API | Add `/api/call/start`, `/api/poll/{id}` endpoints |
-| `src/cideldill/inspector.py` | Stub for remote agent | Implement actual HTTP client |
-| **NEW** `src/cideldill/debug_proxy.py` | Does not exist | Create DebugProxy class |
+| `src/cideldill/__init__.py` | Exports Interceptor, Logger, etc. | Export only `with_debug`, `configure_debug`; remove old exports |
+| `src/cideldill/interceptor.py` | Function-based wrapping with sync | **DELETE** - replaced by new implementation |
+| `src/cideldill/breakpoint_manager.py` | Thread-based polling sync | Simplify to pure state management, remove sync thread |
+| `src/cideldill/breakpoint_server.py` | Current REST API | Add `/api/call/start`, `/api/poll/{id}` endpoints; update for dill/CID |
+| `src/cideldill/inspector.py` | Stub for remote agent | **DELETE** - replaced by debug_client |
+| `src/cideldill/cas_store.py` | SHA256-based CAS | Update to use dill serialization |
+| **NEW** `src/cideldill/debug_proxy.py` | Does not exist | Create DebugProxy and AsyncDebugProxy classes |
 | **NEW** `src/cideldill/debug_info.py` | Does not exist | Create DebugInfo class |
 | **NEW** `src/cideldill/debug_client.py` | Does not exist | Create HTTP client for server communication |
-| **NEW** `src/cideldill/with_debug.py` | Does not exist | Implement `with_debug()` function |
+| **NEW** `src/cideldill/with_debug.py` | Does not exist | Implement `with_debug()` function and global state |
+| **NEW** `src/cideldill/serialization.py` | Does not exist | Dill serialization and CID computation |
+| **NEW** `src/cideldill/exceptions.py` | Does not exist | Custom exception classes |
+
+### Dependencies
+
+| Package | Purpose |
+|---------|---------|
+| `dill` | Object serialization (more capable than pickle/cloudpickle) |
+| `requests` | HTTP client for server communication |
+| `flask` | Already present for breakpoint server |
 
 ### Test Files
 
 | File | Current State | Required Changes |
 |------|---------------|------------------|
-| `tests/unit/test_interceptor.py` | Tests current wrap() API | Update for new with_debug API |
-| `tests/unit/test_interceptor_realtime.py` | Tests observers/breakpoints | Refactor for request-response model |
-| `tests/unit/test_breakpoint_server.py` | Tests current endpoints | Add tests for new endpoints |
+| `tests/unit/test_interceptor.py` | Tests current wrap() API | **DELETE** - old API removed |
+| `tests/unit/test_interceptor_realtime.py` | Tests observers/breakpoints | **DELETE** - old API removed |
+| `tests/unit/test_breakpoint_server.py` | Tests current endpoints | Update for new endpoints |
 | `tests/integration/test_breakpoint_workflow.py` | Tests sync-based workflow | Refactor for new workflow |
 | **NEW** `tests/unit/test_with_debug.py` | Does not exist | Comprehensive with_debug tests |
 | **NEW** `tests/unit/test_debug_proxy.py` | Does not exist | Proxy behavior tests |
+| **NEW** `tests/unit/test_async_proxy.py` | Does not exist | Async proxy tests |
 | **NEW** `tests/unit/test_debug_client.py` | Does not exist | HTTP client tests |
+| **NEW** `tests/unit/test_serialization.py` | Does not exist | Dill/CID tests |
+| **NEW** `tests/unit/test_builtin_wrapping.py` | Does not exist | Built-in type proxy tests |
 | **NEW** `tests/integration/test_request_response_workflow.py` | Does not exist | End-to-end tests |
+| **NEW** `tests/integration/test_async_workflow.py` | Does not exist | Async end-to-end tests |
 
 ### Documentation Files
 
 | File | Current State | Required Changes |
 |------|---------------|------------------|
-| `README.md` | Documents current API | Update examples to use with_debug |
+| `README.md` | Documents current API | Complete rewrite for with_debug API |
 | `docs/breakpoints_web_ui.md` | Current breakpoint guide | Update for new API |
-| `P0_IMPLEMENTATION_SUMMARY.md` | Current feature summary | Update for new architecture |
-| `done/use_cases.md` | Maps use cases to code | Update references |
+| `P0_IMPLEMENTATION_SUMMARY.md` | Current feature summary | **DELETE** - superseded |
+| `done/use_cases.md` | Maps use cases to code | Update for new architecture |
 | **NEW** `docs/with_debug_api.md` | Does not exist | Complete API reference |
-| **NEW** `docs/migration_guide.md` | Does not exist | Guide for migrating from old API |
 
 ### Example Files
 
 | File | Current State | Required Changes |
 |------|---------------|------------------|
-| `examples/p0_features_demo.py` | Uses Interceptor.wrap() | Convert to with_debug() |
-| `examples/interactive_breakpoint_demo.py` | Uses sync thread | Remove sync, use new API |
-| `examples/demo_call_tracking.py` | Basic tracking demo | Update for new API |
+| `examples/p0_features_demo.py` | Uses Interceptor.wrap() | **DELETE** - old API |
+| `examples/interactive_breakpoint_demo.py` | Uses sync thread | **DELETE** - old API |
+| `examples/demo_call_tracking.py` | Basic tracking demo | **DELETE** - old API |
 | **NEW** `examples/with_debug_basic.py` | Does not exist | Simple with_debug example |
-| **NEW** `examples/with_debug_advanced.py` | Does not exist | Advanced features example |
+| **NEW** `examples/with_debug_async.py` | Does not exist | Async example |
+| **NEW** `examples/with_debug_builtins.py` | Does not exist | Built-in types example |
 
 ---
 
@@ -277,6 +465,15 @@ def test_with_debug_on_then_off():
 
 def test_with_debug_off_then_on():
     """Can disable then enable debugging."""
+
+def test_with_debug_on_affects_all_threads():
+    """with_debug('ON') enables debugging for all threads."""
+
+def test_with_debug_off_affects_all_threads():
+    """with_debug('OFF') disables debugging for all threads."""
+
+def test_with_debug_on_requires_server():
+    """with_debug('ON') raises if server unreachable."""
 ```
 
 #### 1.2 Object Wrapping Tests (Debug ON)
@@ -285,7 +482,10 @@ def test_with_debug_obj_returns_proxy_when_on():
     """with_debug(obj) returns a DebugProxy when debugging is ON."""
 
 def test_with_debug_obj_proxy_is_not_original():
-    """The proxy is a different object than the original."""
+    """The proxy is a different object than the original (is)."""
+
+def test_with_debug_obj_proxy_not_equal_original():
+    """The proxy is not equal to the original (==)."""
 
 def test_with_debug_obj_proxy_has_same_methods():
     """The proxy has all the same methods as the original."""
@@ -311,29 +511,32 @@ def test_with_debug_obj_can_wrap_functions():
 def test_with_debug_obj_can_wrap_lambdas():
     """Can wrap lambda functions."""
 
-def test_with_debug_obj_can_wrap_builtin_types():
-    """Can wrap built-in types like list, dict (or gracefully decline)."""
-
 def test_with_debug_obj_nested_wrapping():
     """Wrapping an already-wrapped object doesn't double-wrap."""
+
+def test_with_debug_obj_computes_cid():
+    """Proxy has a CID computed from the target."""
 ```
 
 #### 1.3 Object Wrapping Tests (Debug OFF)
 ```python
-def test_with_debug_obj_returns_original_when_off():
-    """with_debug(obj) returns the original object when debugging is OFF."""
+def test_with_debug_obj_returns_noop_proxy_when_off():
+    """with_debug(obj) returns a no-op proxy when debugging is OFF."""
 
-def test_with_debug_obj_identity_when_off():
-    """with_debug(obj) is obj when debugging is OFF."""
+def test_with_debug_obj_noop_proxy_not_original():
+    """No-op proxy is still not the original object."""
 
-def test_with_debug_obj_no_overhead_when_off():
-    """No measurable overhead when debugging is OFF."""
+def test_with_debug_obj_noop_proxy_not_equal_original():
+    """No-op proxy is not equal to original."""
 
 def test_with_debug_obj_no_network_when_off():
     """No network requests are made when debugging is OFF."""
 
 def test_with_debug_obj_no_logging_when_off():
     """No calls are logged when debugging is OFF."""
+
+def test_with_debug_obj_noop_proxy_minimal_overhead():
+    """No-op proxy has minimal overhead."""
 ```
 
 ### 2. DebugInfo Object Tests
@@ -354,14 +557,8 @@ def test_debug_info_server_url_none_when_off():
 def test_debug_info_connection_status_connected():
     """info.connection_status() returns 'connected' when server reachable."""
 
-def test_debug_info_connection_status_disconnected():
-    """info.connection_status() returns 'disconnected' when server unreachable."""
-
 def test_debug_info_connection_status_disabled():
     """info.connection_status() returns 'disabled' when OFF."""
-
-def test_debug_info_connection_status_error():
-    """info.connection_status() returns 'error' on connection errors."""
 ```
 
 ### 3. Server Response Handling Tests
@@ -392,11 +589,11 @@ def test_action_poll_stops_when_ready():
 def test_action_poll_executes_final_action():
     """Client executes the action from the ready response."""
 
-def test_action_poll_timeout_handling():
-    """Polling times out after reasonable period."""
+def test_action_poll_timeout_raises_exception():
+    """Polling timeout raises DebugTimeoutError."""
 
-def test_action_poll_server_error_handling():
-    """Poll errors are handled gracefully."""
+def test_action_poll_server_error_raises_exception():
+    """Poll errors raise DebugServerError."""
 
 def test_action_poll_can_lead_to_continue():
     """Poll can resolve to continue action."""
@@ -423,10 +620,13 @@ def test_action_skip_fake_result_none():
     """action='skip' can return None as fake result."""
 
 def test_action_skip_fake_result_complex_type():
-    """action='skip' can return complex objects as fake result."""
+    """action='skip' can return complex dill-pickled objects as fake result."""
 
 def test_action_skip_no_side_effects():
     """action='skip' causes no side effects from original method."""
+
+def test_action_skip_result_by_cid():
+    """action='skip' can return result by CID reference."""
 ```
 
 #### 3.4 Raise Action
@@ -455,61 +655,104 @@ def test_action_modify_executes_with_new_args():
 def test_action_modify_partial_args():
     """action='modify' can modify only some arguments."""
 
-def test_action_modify_add_args():
+def test_action_modify_add_kwargs():
     """action='modify' can add new keyword arguments."""
-
-def test_action_modify_remove_args():
-    """action='modify' can effectively remove arguments."""
 
 def test_action_modify_preserves_unmodified_args():
     """action='modify' preserves arguments not in modified_args."""
+
+def test_action_modify_args_by_cid():
+    """action='modify' can specify args by CID reference."""
+
+def test_action_modify_args_with_data():
+    """action='modify' can include new dill-pickled arg data."""
 ```
 
-### 4. Network Communication Tests
+### 4. Serialization Tests
 
 ```python
-def test_call_sends_function_name():
-    """Call start request includes function/method name."""
+def test_compute_cid_deterministic():
+    """Same object always produces same CID."""
 
-def test_call_sends_args():
-    """Call start request includes positional arguments."""
+def test_compute_cid_different_for_different_objects():
+    """Different objects produce different CIDs."""
 
-def test_call_sends_kwargs():
-    """Call start request includes keyword arguments."""
+def test_dill_serialize_basic_types():
+    """Can serialize basic Python types."""
 
-def test_call_sends_call_site():
-    """Call start request includes call site information."""
+def test_dill_serialize_class_instances():
+    """Can serialize class instances."""
+
+def test_dill_serialize_functions():
+    """Can serialize functions."""
+
+def test_dill_serialize_lambdas():
+    """Can serialize lambdas."""
+
+def test_dill_serialize_closures():
+    """Can serialize closures with captured variables."""
+
+def test_dill_serialize_circular_references():
+    """Can serialize objects with circular references."""
+
+def test_dill_failure_raises_serialization_error():
+    """Objects that can't be dill pickled raise DebugSerializationError."""
+
+def test_cid_deduplication_first_send():
+    """First send includes both CID and data."""
+
+def test_cid_deduplication_subsequent_send():
+    """Subsequent send includes only CID."""
+
+def test_cid_tracking_per_session():
+    """CID tracking is per debug session."""
+```
+
+### 5. Network Communication Tests
+
+```python
+def test_call_sends_method_name():
+    """Call start request includes method name."""
+
+def test_call_sends_args_as_cid_and_data():
+    """Call start request includes args as CID+data."""
+
+def test_call_sends_kwargs_as_cid_and_data():
+    """Call start request includes kwargs as CID+data."""
+
+def test_call_sends_full_stack_trace():
+    """Call start request includes full stack trace."""
 
 def test_call_sends_timestamp():
     """Call start request includes timestamp."""
 
-def test_call_sends_object_type():
-    """Call start request includes the object type being called."""
+def test_call_sends_target_cid():
+    """Call start request includes CID of proxied object."""
 
 def test_no_network_when_debug_off():
     """No network requests when debugging is OFF."""
 
-def test_network_error_handling():
-    """Network errors are handled gracefully."""
+def test_server_unreachable_raises_exception():
+    """Server unreachable raises DebugServerError."""
 
-def test_server_error_handling():
-    """Server 5xx errors are handled gracefully."""
+def test_server_5xx_raises_exception():
+    """Server 5xx errors raise DebugServerError."""
 
-def test_timeout_handling():
-    """Request timeouts are handled gracefully."""
+def test_request_timeout_raises_exception():
+    """Request timeout raises DebugServerError."""
 
-def test_retry_on_transient_failure():
-    """Transient failures are retried appropriately."""
+def test_malformed_response_raises_exception():
+    """Malformed server response raises DebugProtocolError."""
 ```
 
-### 5. DebugProxy Tests
+### 6. DebugProxy Tests
 
 ```python
 def test_proxy_intercepts_method_calls():
     """Proxy intercepts all method calls."""
 
 def test_proxy_passes_through_attributes():
-    """Proxy allows attribute access without interception."""
+    """Proxy allows attribute access."""
 
 def test_proxy_handles_properties():
     """Proxy handles @property correctly."""
@@ -520,36 +763,143 @@ def test_proxy_handles_class_methods():
 def test_proxy_handles_static_methods():
     """Proxy handles @staticmethod correctly."""
 
-def test_proxy_handles_dunder_methods():
-    """Proxy handles __str__, __repr__, etc."""
+def test_proxy_intercepts_str():
+    """Proxy intercepts __str__."""
 
-def test_proxy_handles_iteration():
-    """Proxy handles __iter__ for iterable objects."""
+def test_proxy_intercepts_repr():
+    """Proxy intercepts __repr__."""
+
+def test_proxy_intercepts_iter():
+    """Proxy intercepts __iter__."""
+
+def test_proxy_intercepts_len():
+    """Proxy intercepts __len__."""
+
+def test_proxy_intercepts_getitem():
+    """Proxy intercepts __getitem__."""
+
+def test_proxy_intercepts_setitem():
+    """Proxy intercepts __setitem__."""
+
+def test_proxy_intercepts_delitem():
+    """Proxy intercepts __delitem__."""
+
+def test_proxy_intercepts_contains():
+    """Proxy intercepts __contains__."""
+
+def test_proxy_intercepts_call():
+    """Proxy intercepts __call__ for callable objects."""
 
 def test_proxy_handles_context_manager():
     """Proxy handles __enter__/__exit__ for context managers."""
 
-def test_proxy_handles_callable_objects():
-    """Proxy handles objects with __call__."""
+def test_proxy_equality_false_vs_non_proxy():
+    """proxy == non_proxy is always False."""
 
-def test_proxy_isinstance_check():
-    """isinstance() works correctly with proxied objects."""
+def test_proxy_equality_compares_targets():
+    """proxy1 == proxy2 compares underlying targets."""
 
-def test_proxy_type_check():
-    """type() returns appropriate information."""
+def test_proxy_hash_matches_target():
+    """hash(proxy) == hash(target)."""
 
 def test_proxy_thread_safety():
     """Proxy is thread-safe for concurrent calls."""
+
+def test_proxy_internal_error_propagates():
+    """Proxy internal errors propagate as exceptions."""
 ```
 
-### 6. Server Endpoint Tests
+### 7. Built-in Type Wrapping Tests
+
+```python
+def test_wrap_list():
+    """Can wrap list objects."""
+
+def test_wrap_list_append_intercepted():
+    """list.append() is intercepted."""
+
+def test_wrap_list_getitem_intercepted():
+    """list[i] is intercepted."""
+
+def test_wrap_list_setitem_intercepted():
+    """list[i] = x is intercepted."""
+
+def test_wrap_list_iter_intercepted():
+    """for x in list is intercepted."""
+
+def test_wrap_dict():
+    """Can wrap dict objects."""
+
+def test_wrap_dict_getitem_intercepted():
+    """dict[key] is intercepted."""
+
+def test_wrap_dict_setitem_intercepted():
+    """dict[key] = value is intercepted."""
+
+def test_wrap_dict_keys_intercepted():
+    """dict.keys() is intercepted."""
+
+def test_wrap_set():
+    """Can wrap set objects."""
+
+def test_wrap_set_add_intercepted():
+    """set.add() is intercepted."""
+
+def test_wrap_tuple():
+    """Can wrap tuple objects (immutable)."""
+
+def test_wrap_string():
+    """Can wrap string objects."""
+
+def test_wrap_int():
+    """Can wrap int objects."""
+
+def test_wrap_float():
+    """Can wrap float objects."""
+```
+
+### 8. Async Proxy Tests
+
+```python
+def test_async_proxy_wraps_async_methods():
+    """Async proxy can wrap objects with async methods."""
+
+def test_async_proxy_awaitable():
+    """Async method calls are awaitable."""
+
+def test_async_proxy_poll_uses_asyncio_sleep():
+    """Async polling uses asyncio.sleep not time.sleep."""
+
+def test_async_proxy_concurrent_calls():
+    """Multiple async calls can be in flight concurrently."""
+
+def test_async_proxy_timeout_raises():
+    """Async poll timeout raises DebugTimeoutError."""
+
+def test_async_proxy_mixed_sync_async():
+    """Object with both sync and async methods works correctly."""
+
+def test_async_proxy_generator():
+    """Async generators are handled correctly."""
+
+def test_async_proxy_context_manager():
+    """Async context managers (__aenter__/__aexit__) work."""
+```
+
+### 9. Server Endpoint Tests
 
 ```python
 def test_endpoint_call_start_exists():
     """POST /api/call/start endpoint exists."""
 
+def test_endpoint_call_start_accepts_dill_data():
+    """POST /api/call/start accepts dill-pickled data."""
+
 def test_endpoint_call_start_returns_action():
     """POST /api/call/start returns an action."""
+
+def test_endpoint_call_start_stores_cid_data():
+    """POST /api/call/start stores CID->data mapping."""
 
 def test_endpoint_poll_exists():
     """GET /api/poll/{id} endpoint exists."""
@@ -570,11 +920,11 @@ def test_endpoint_breakpoint_triggers_poll():
     """Hitting a breakpoint causes poll action."""
 ```
 
-### 7. Configuration Tests
+### 10. Configuration Tests
 
 ```python
 def test_config_from_environment():
-    """Server URL can be set via environment variable."""
+    """Server URL can be set via CIDELDILL_SERVER_URL."""
 
 def test_config_from_code():
     """Server URL can be set via configure_debug()."""
@@ -583,19 +933,16 @@ def test_config_code_overrides_environment():
     """Code configuration overrides environment."""
 
 def test_config_default_url():
-    """Default URL is localhost:5000."""
+    """Default URL is http://localhost:5000."""
 
 def test_config_custom_port():
     """Custom port can be specified."""
 
-def test_config_https_url():
-    """HTTPS URLs are supported."""
-
-def test_config_with_auth():
-    """Authentication can be configured."""
+def test_config_localhost_only():
+    """Non-localhost URLs are rejected (security)."""
 ```
 
-### 8. Integration Tests
+### 11. Integration Tests
 
 ```python
 def test_full_workflow_debug_on():
@@ -625,154 +972,93 @@ def test_nested_method_calls():
 def test_recursive_method_calls():
     """Recursive calls are handled correctly."""
 
-def test_concurrent_calls():
+def test_concurrent_calls_multiple_threads():
     """Concurrent calls from multiple threads work."""
 
 def test_web_ui_integration():
     """Web UI can control breakpoints."""
+
+def test_cid_deduplication_across_calls():
+    """CIDs are deduplicated across multiple calls."""
 ```
 
-### 9. Performance Tests
+### 12. Error Handling Tests
 
 ```python
-def test_debug_off_no_overhead():
-    """Debug OFF has negligible overhead (<1%)."""
-
-def test_debug_on_reasonable_overhead():
-    """Debug ON overhead is reasonable for debugging."""
-
-def test_high_frequency_calls():
-    """High-frequency calls don't overwhelm the system."""
-
-def test_large_argument_handling():
-    """Large arguments are handled efficiently."""
-
-def test_memory_usage_reasonable():
-    """Memory usage doesn't grow unboundedly."""
-```
-
-### 10. Edge Cases and Error Handling
-
-```python
-def test_server_not_running():
-    """Graceful handling when server is not running."""
+def test_server_not_running_on_enable():
+    """with_debug('ON') raises when server not running."""
 
 def test_server_crashes_mid_call():
-    """Graceful handling when server crashes during call."""
+    """Server crash during call raises DebugServerError."""
 
 def test_malformed_server_response():
-    """Graceful handling of malformed server responses."""
+    """Malformed response raises DebugProtocolError."""
 
 def test_unknown_action_type():
-    """Graceful handling of unknown action types."""
+    """Unknown action raises DebugProtocolError."""
 
 def test_missing_required_fields():
-    """Graceful handling of missing fields in response."""
+    """Missing fields in response raises DebugProtocolError."""
 
-def test_very_long_poll_duration():
-    """Handling of very long poll durations."""
+def test_poll_timeout_raises():
+    """Poll timeout raises DebugTimeoutError."""
+
+def test_dill_failure_raises():
+    """Dill pickle failure raises DebugSerializationError."""
 
 def test_rapid_on_off_toggling():
-    """Rapid toggling of debug ON/OFF."""
+    """Rapid toggling of debug ON/OFF works correctly."""
 
-def test_wrap_during_call():
-    """Wrapping objects during an active call."""
+def test_wrap_during_active_call():
+    """Wrapping objects during an active call works."""
 
-def test_unwrap_during_call():
-    """Disabling debug during an active call."""
+def test_disable_during_active_call():
+    """Disabling debug during an active call works."""
 
-def test_circular_references():
-    """Objects with circular references."""
-
-def test_unpicklable_objects():
-    """Objects that can't be serialized."""
-
-def test_lambda_with_closure():
-    """Lambdas with closure variables."""
+def test_circular_reference_serialization():
+    """Objects with circular references serialize correctly."""
 ```
 
 ---
 
 ## Open Questions
 
-1. **Serialization of arguments**: How should non-JSON-serializable arguments be handled? Options:
-   - a) Convert to string representation
-   - b) Hash the object and send hash only
-   - c) Skip non-serializable args with a placeholder
-   - d) Raise an error
+1. **CID session tracking**: When is the "sent CIDs" set reset?
+   - a) When `with_debug('ON')` is called (new session)
+   - b) When `with_debug('OFF')` is called
+   - c) Never (persist across sessions)
+   - d) Server tells client to reset via handshake
 
-2. **Timeout behavior**: What should happen when a poll times out?
-   - a) Continue execution (fail-open)
-   - b) Raise a timeout exception (fail-closed)
-   - c) Configurable behavior
-
-3. **Server unavailable behavior**: What should happen when the debug server is unreachable?
-   - a) Silently continue without debugging
-   - b) Raise an exception
-   - c) Queue calls and retry
-   - d) Configurable behavior
-
-4. **Thread isolation**: Should `with_debug('ON')` affect all threads or just the calling thread?
-   - a) Global (all threads)
-   - b) Thread-local
+2. **Async server communication**: Should HTTP calls to the server also be async when inside async code?
+   - a) Always sync (simpler, debugging latency acceptable)
+   - b) Async when called from async context
    - c) Configurable
 
-5. **Async support**: How should async methods and coroutines be handled?
-   - a) Full async support with async proxies
-   - b) Sync-only initially, async in later version
-   - c) Async calls fall through without interception
+3. **Built-in arithmetic operations**: For wrapped `int`/`float`, should arithmetic operators be intercepted?
+   - a) Yes, intercept `__add__`, `__mul__`, etc.
+   - b) No, only intercept explicit method calls
+   - c) Configurable per-type
 
-6. **Object identity**: When `with_debug(obj)` returns a proxy:
-   - a) Should `proxy == original` return True?
-   - b) Should `proxy is original` ever return True (when OFF)?
-   - c) How to handle identity-based operations?
+4. **Dill failure fallback**: If dill fails to serialize an object, should there be a fallback?
+   - a) No fallback, always raise DebugSerializationError
+   - b) Fallback to repr() string
+   - c) Fallback to type name + id
 
-7. **Wrapping built-in types**: Can/should we wrap built-in types like `list`, `dict`?
-   - a) Yes, wrap everything
-   - b) No, only wrap user-defined classes
-   - c) Wrap but only intercept certain methods
+5. **Call completion notification**: Should the client notify the server when a call completes?
+   - a) Yes, send POST /api/call/complete with result CID
+   - b) No, server only needs call start info
+   - c) Optional, configurable
 
-8. **Call site information**: What level of call site detail should be included?
-   - a) Just filename and line number
-   - b) Full stack trace
-   - c) Configurable depth
-
-9. **Return value serialization**: How should complex return values be sent to the server?
-   - a) Full serialization (for logging)
-   - b) Type and summary only
-   - c) Don't send return values to server at all
-
-10. **Exception in proxy**: If the proxy itself throws an exception (not the wrapped code), how should this be handled?
-    - a) Propagate the exception
-    - b) Log and continue with original call
-    - c) Different behavior for different exception types
-
-11. **Multiple server support**: Should clients be able to connect to multiple debug servers?
-    - a) Single server only
-    - b) Multiple servers with routing rules
-    - c) Out of scope for initial version
-
-12. **Security considerations**: What security measures are needed?
-    - a) No authentication (localhost only)
-    - b) Token-based authentication
-    - c) TLS/mTLS required
-
-13. **Graceful degradation**: If network latency is high, should the system:
-    - a) Accept the latency (debugging isn't performance-critical)
-    - b) Switch to fire-and-forget mode
-    - c) Disable debugging automatically
-
-14. **Backward compatibility**: How should the old `Interceptor.wrap()` API coexist with `with_debug()`?
-    - a) Deprecated but still functional
-    - b) Removed entirely
-    - c) Both APIs work but are independent
+6. **Proxy for None**: What happens with `with_debug(None)`?
+   - a) Return a proxy that wraps None
+   - b) Return None directly (special case)
+   - c) Raise an exception
 
 ---
 
 ## Next Steps
 
-1. Resolve all open questions through discussion
-2. Update this document with answers to open questions
-3. Add any additional tests identified during discussion
-4. Begin implementation starting with core `with_debug()` function
-5. Iterate on implementation with test-driven development
+1. Resolve remaining open questions through discussion
+2. Add any additional tests identified during discussion
+3. Begin implementation starting with core `with_debug()` function
+4. Iterate on implementation with test-driven development
