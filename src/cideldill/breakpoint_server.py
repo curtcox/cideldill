@@ -178,6 +178,32 @@ HTML_TEMPLATE = """
 
         <h2>🔴 Active Breakpoints</h2>
         <div class="breakpoint-list">
+            <div style="margin-bottom: 20px; padding: 15px; background-color: #fff3cd;
+                        border: 1px solid #ffc107; border-radius: 8px;">
+                <div style="margin-bottom: 10px;">
+                    <strong>Default Breakpoint Behavior:</strong>
+                </div>
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <label style="display: flex; align-items: center; cursor: pointer;">
+                        <input type="radio" name="behavior" value="stop"
+                               id="behavior-stop" checked
+                               onchange="setBehavior('stop')"
+                               style="margin-right: 5px; cursor: pointer;">
+                        <span>⏸️ Stop at breakpoints</span>
+                    </label>
+                    <label style="display: flex; align-items: center; cursor: pointer;">
+                        <input type="radio" name="behavior" value="continue"
+                               id="behavior-continue"
+                               onchange="setBehavior('continue')"
+                               style="margin-right: 5px; cursor: pointer;">
+                        <span>▶️ Continue (log only)</span>
+                    </label>
+                </div>
+                <div style="margin-top: 10px; font-size: 0.9em; color: #856404;">
+                    When "Stop" is selected, execution pauses at breakpoints.
+                    When "Continue" is selected, breakpoints are logged but don't pause.
+                </div>
+            </div>
             <div style="margin-bottom: 15px;">
                 <input type="text" id="newBreakpointInput"
                        placeholder="Enter function name..."
@@ -198,6 +224,41 @@ HTML_TEMPLATE = """
     <script>
         const API_BASE = '/api';
         let updateInterval = null;
+
+        // Set breakpoint behavior
+        async function setBehavior(behavior) {
+            try {
+                const response = await fetch(`${API_BASE}/behavior`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ behavior: behavior })
+                });
+
+                if (response.ok) {
+                    const icon = behavior === 'stop' ? '⏸️' : '▶️';
+                    const action = behavior === 'stop' ? 'stop at' : 'continue through';
+                    showMessage(`${icon} Will ${action} breakpoints`, 'success');
+                } else {
+                    showMessage('Failed to set behavior', 'error');
+                }
+            } catch (e) {
+                console.error('Failed to set behavior:', e);
+                showMessage('Error setting behavior', 'error');
+            }
+        }
+
+        // Load current behavior setting
+        async function loadBehavior() {
+            try {
+                const response = await fetch(`${API_BASE}/behavior`);
+                const data = await response.json();
+
+                const behavior = data.behavior || 'stop';
+                document.getElementById(`behavior-${behavior}`).checked = true;
+            } catch (e) {
+                console.error('Failed to load behavior:', e);
+            }
+        }
 
         // Add a new breakpoint
         async function addBreakpoint() {
@@ -297,6 +358,12 @@ HTML_TEMPLATE = """
 
         // Handle Enter key in input field
         document.addEventListener('DOMContentLoaded', function() {
+            // Load initial state
+            loadBehavior();
+            loadBreakpoints();
+            loadPausedExecutions();
+
+            // Set up Enter key handler
             const input = document.getElementById('newBreakpointInput');
             if (input) {
                 input.addEventListener('keypress', function(e) {
@@ -305,6 +372,12 @@ HTML_TEMPLATE = """
                     }
                 });
             }
+
+            // Poll for updates every 2 seconds
+            updateInterval = setInterval(() => {
+                loadPausedExecutions();
+                loadBreakpoints();
+            }, 2000);
         });
 
         // Load paused executions
@@ -493,6 +566,24 @@ class BreakpointServer:
             self.manager.remove_breakpoint(function_name)
             return jsonify({"status": "ok", "function_name": function_name})
 
+        @self.app.route('/api/behavior', methods=['GET'])
+        def get_behavior():
+            """Get the default breakpoint behavior."""
+            return jsonify({
+                "behavior": self.manager.get_default_behavior()
+            })
+
+        @self.app.route('/api/behavior', methods=['POST'])
+        def set_behavior():
+            """Set the default breakpoint behavior."""
+            data = request.get_json()
+            behavior = data.get('behavior')
+            if behavior not in {'stop', 'continue'}:
+                return jsonify({"error": "behavior must be 'stop' or 'continue'"}), 400
+
+            self.manager.set_default_behavior(behavior)
+            return jsonify({"status": "ok", "behavior": behavior})
+
         @self.app.route('/api/call/start', methods=['POST'])
         def call_start():
             """Handle call start from debug client."""
@@ -520,7 +611,8 @@ class BreakpointServer:
             call_id = next_call_id()
             action = {"call_id": call_id, "action": "continue"}
 
-            if method_name in self.manager.get_breakpoints():
+            # Check if we should pause at this breakpoint
+            if self.manager.should_pause_at_breakpoint(method_name):
                 pause_id = self.manager.add_paused_execution({
                     "method_name": method_name,
                     "args": args,
