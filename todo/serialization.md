@@ -14,6 +14,11 @@ This document specifies the exact serialization mechanism for the cideldill debu
 | Partial failure | **Fail entire request** | Consistent with fail-closed policy |
 | CID store eviction | **No limit (store forever)** | Debugging data is valuable; storage is cheap |
 | Dill settings | **`recurse=True`** | Better closure/nested function handling |
+| Decomposition depth | **No limit** | Decompose fully for maximum deduplication |
+| Decompose dict keys | **Yes** | Keys can be large objects too; consistent behavior |
+| CIDRef hashability | **Yes, hash based on cid string** | Allows CIDRef as dict key or set element |
+| Circular references | **Let dill handle naturally** | Don't decompose circular refs; dill handles them |
+| Component transmission | **All in one request** | Simpler protocol; atomic delivery |
 
 ---
 
@@ -128,13 +133,25 @@ class ObjectDecomposer:
 When an object is decomposed, components are replaced with a special **CID reference marker**:
 
 ```python
-@dataclass
+@dataclass(frozen=True)
 class CIDRef:
-    """Marker indicating a reference to another object by CID."""
+    """
+    Marker indicating a reference to another object by CID.
+
+    Hashable (frozen dataclass) so it can be used as dict key or set element.
+    """
     cid: str
 
     def __repr__(self):
         return f"CIDRef({self.cid[:16]}...)"
+
+    def __hash__(self):
+        return hash(self.cid)
+
+    def __eq__(self, other):
+        if isinstance(other, CIDRef):
+            return self.cid == other.cid
+        return False
 ```
 
 #### Decomposition Examples
@@ -153,13 +170,23 @@ shell = [CIDRef("abc123..."), CIDRef("def456..."), small_value]
 # Shell is serialized with its own CID
 ```
 
-**Dict decomposition:**
+**Dict decomposition (values):**
 ```python
 # Original object
 data = {"key1": large_value, "key2": small_value}
 
-# After decomposition:
+# After decomposition (large value replaced):
 shell = {"key1": CIDRef("abc123..."), "key2": small_value}
+```
+
+**Dict decomposition (keys and values):**
+```python
+# Original object with large key
+data = {large_key_object: large_value, "small_key": small_value}
+
+# After decomposition (both key and value replaced):
+shell = {CIDRef("key123..."): CIDRef("val456..."), "small_key": small_value}
+# CIDRef is hashable, so it works as a dict key
 ```
 
 **Class instance decomposition:**
@@ -696,13 +723,20 @@ cid = compute_cid(None)  # Always produces the same CID
 
 ### 2. Circular References
 
-Dill handles circular references natively. Decomposition does NOT break circular references - if a component references its parent, the CIDRef system handles it:
+Dill handles circular references natively. **Circular structures are not decomposed** - they are serialized as-is because decomposing them would break the circularity:
+
 ```python
 a = []
 a.append(a)  # Circular reference
-# Serialized as-is (not decomposed) since circularity would break
+# Serialized as-is (dill handles the circularity)
 cid = compute_cid(a)  # Works correctly
+
+# Detection: Before decomposing, we check if the serialized size
+# is larger than expected given the object's apparent structure.
+# Circular refs often have smaller serialized size due to backreferences.
 ```
+
+The decomposer tracks object IDs during traversal to detect cycles and skips decomposition for any object that would create a cycle.
 
 ### 3. CIDRef Marker
 
@@ -1235,29 +1269,7 @@ def test_roundtrip_with_decomposition():
 
 ## Open Questions
 
-1. **Decomposition depth limit**: Should there be a maximum depth for recursive decomposition?
-   - a) No limit (decompose fully)
-   - b) Fixed limit (e.g., 10 levels)
-   - c) Configurable
-
-2. **Decomposition of keys**: Should dict keys be decomposed (replaced with CIDRef)?
-   - a) Yes, decompose keys too
-   - b) No, only decompose values (keys must be hashable)
-   - c) Only decompose non-hashable keys
-
-3. **CIDRef hashability**: Should CIDRef be hashable (for use as dict key/set element)?
-   - a) Yes, hash based on cid string
-   - b) No, CIDRef should not be used as key
-
-4. **Circular reference detection**: How to handle circular references during decomposition?
-   - a) Detect and skip decomposition for circular structures
-   - b) Track seen objects to avoid infinite recursion
-   - c) Let dill handle it naturally (don't decompose circular refs)
-
-5. **Component transmission order**: When sending decomposed objects, should components be sent:
-   - a) All in one request (current design)
-   - b) Depth-first (leaf components first)
-   - c) Breadth-first
+All questions have been resolved. See Design Decisions table above.
 
 ---
 
@@ -1290,7 +1302,7 @@ src/cideldill/
 
 ## Next Steps
 
-1. Resolve open questions
+1. ~~Resolve open questions~~ ✓ All resolved
 2. Implement core serialization module
 3. Implement decomposition logic
 4. Implement CID store
