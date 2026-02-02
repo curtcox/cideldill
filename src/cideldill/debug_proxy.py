@@ -5,7 +5,7 @@ from __future__ import annotations
 import builtins
 import inspect
 import time
-from typing import Any, Callable, Dict, Tuple
+from typing import Any, Callable
 
 from .debug_client import DebugClient
 from .exceptions import DebugProtocolError
@@ -143,10 +143,10 @@ class DebugProxy:
 
     def _execute_action(
         self,
-        action: Dict[str, Any],
+        action: dict[str, Any],
         method: Callable[..., Any],
-        args: Tuple[Any, ...],
-        kwargs: Dict[str, Any],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
     ) -> Any:
         if action.get("action") == "poll":
             action = self._client.poll(action)
@@ -165,10 +165,10 @@ class DebugProxy:
 
     async def _execute_action_async(
         self,
-        action: Dict[str, Any],
+        action: dict[str, Any],
         method: Callable[..., Any],
-        args: Tuple[Any, ...],
-        kwargs: Dict[str, Any],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
     ) -> Any:
         if action.get("action") == "poll":
             action = await self._client.async_poll(action)
@@ -185,14 +185,16 @@ class DebugProxy:
             raise self._deserialize_exception(action)
         raise DebugProtocolError(f"Unknown action: {action_type}")
 
-    def _deserialize_modified(self, action: Dict[str, Any]) -> Tuple[Tuple[Any, ...], Dict[str, Any]]:
+    def _deserialize_modified(
+        self, action: dict[str, Any]
+    ) -> tuple[tuple[Any, ...], dict[str, Any]]:
         modified_args = action.get("modified_args", [])
         modified_kwargs = action.get("modified_kwargs", {})
         args = tuple(self._client.deserialize_payload_list(modified_args))
         kwargs = self._client.deserialize_payload_dict(modified_kwargs)
         return args, kwargs
 
-    def _deserialize_fake_result(self, action: Dict[str, Any]) -> Any:
+    def _deserialize_fake_result(self, action: dict[str, Any]) -> Any:
         if "fake_result_data" in action:
             return self._client.deserialize_payload_item({"data": action["fake_result_data"]})
         if "fake_result" in action:
@@ -201,7 +203,7 @@ class DebugProxy:
             return self._client.deserialize_payload_item({"cid": action["fake_result_cid"]})
         return None
 
-    def _deserialize_exception(self, action: Dict[str, Any]) -> Exception:
+    def _deserialize_exception(self, action: dict[str, Any]) -> Exception:
         exc_type = action.get("exception_type", "Exception")
         message = action.get("exception_message", "")
         exc_class = getattr(builtins, exc_type, Exception)
@@ -240,6 +242,13 @@ class DebugProxy:
         return self._intercept_dunder("__contains__", item)
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        # For wrapped functions, use the actual function name for breakpoint matching
+        # instead of "__call__"
+        if callable(self._target) and hasattr(self._target, '__name__'):
+            # Call the target function directly with the correct name for breakpoint matching
+            if self._is_enabled():
+                return self._wrap_method(self._target, self._target.__name__)(*args, **kwargs)
+            return self._target(*args, **kwargs)
         return self._intercept_dunder("__call__", *args, **kwargs)
 
     def __enter__(self) -> Any:

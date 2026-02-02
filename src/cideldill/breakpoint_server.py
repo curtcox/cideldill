@@ -9,7 +9,7 @@ import logging
 import threading
 import time
 
-from flask import Flask, jsonify, request, render_template_string
+from flask import Flask, jsonify, render_template_string, request
 
 from cideldill.breakpoint_manager import BreakpointManager
 from cideldill.cid_store import CIDStore
@@ -177,6 +177,19 @@ HTML_TEMPLATE = """
         </div>
 
         <h2>🔴 Active Breakpoints</h2>
+        <div class="breakpoint-list">
+            <div style="margin-bottom: 15px;">
+                <input type="text" id="newBreakpointInput"
+                       placeholder="Enter function name..."
+                       style="padding: 8px; width: 300px; border: 1px solid #ddd;
+                              border-radius: 4px;">
+                <button class="btn" onclick="addBreakpoint()"
+                        style="background-color: #4CAF50; color: white;
+                               margin-left: 10px;">
+                    ➕ Add Breakpoint
+                </button>
+            </div>
+        </div>
         <div id="breakpointsList">
             <div class="empty-state">No breakpoints set.</div>
         </div>
@@ -186,34 +199,120 @@ HTML_TEMPLATE = """
         const API_BASE = '/api';
         let updateInterval = null;
 
+        // Add a new breakpoint
+        async function addBreakpoint() {
+            const input = document.getElementById('newBreakpointInput');
+            const functionName = input.value.trim();
+
+            if (!functionName) {
+                showMessage('Please enter a function name', 'error');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE}/breakpoints`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ function_name: functionName })
+                });
+
+                if (response.ok) {
+                    showMessage(`Breakpoint added: ${functionName}`, 'success');
+                    input.value = '';  // Clear input
+                    loadBreakpoints();  // Refresh list
+                } else {
+                    showMessage('Failed to add breakpoint', 'error');
+                }
+            } catch (e) {
+                console.error('Failed to add breakpoint:', e);
+                showMessage('Error adding breakpoint', 'error');
+            }
+        }
+
+        // Remove a breakpoint
+        async function removeBreakpoint(functionName) {
+            try {
+                const encoded = encodeURIComponent(functionName);
+                const response = await fetch(
+                    `${API_BASE}/breakpoints/${encoded}`,
+                    { method: 'DELETE' }
+                );
+
+                if (response.ok) {
+                    showMessage(`Breakpoint removed: ${functionName}`, 'success');
+                    loadBreakpoints();  // Refresh list
+                } else {
+                    showMessage('Failed to remove breakpoint', 'error');
+                }
+            } catch (e) {
+                console.error('Failed to remove breakpoint:', e);
+                showMessage('Error removing breakpoint', 'error');
+            }
+        }
+
+        // Show a status message
+        function showMessage(message, type) {
+            const msgDiv = document.getElementById('statusMessage');
+            msgDiv.textContent = message;
+            msgDiv.style.display = 'block';
+            const successColor = type === 'success';
+            msgDiv.style.backgroundColor = successColor ? '#d4edda' : '#f8d7da';
+            msgDiv.style.color = successColor ? '#155724' : '#721c24';
+            msgDiv.style.border = `1px solid ${successColor ? '#c3e6cb' : '#f5c6cb'}`;
+            msgDiv.style.padding = '10px';
+            msgDiv.style.borderRadius = '4px';
+            msgDiv.style.marginBottom = '20px';
+
+            setTimeout(() => {
+                msgDiv.style.display = 'none';
+            }, 3000);
+        }
+
         // Load active breakpoints
         async function loadBreakpoints() {
             try {
                 const response = await fetch(`${API_BASE}/breakpoints`);
                 const data = await response.json();
-                
+
                 const container = document.getElementById('breakpointsList');
                 if (data.breakpoints && data.breakpoints.length > 0) {
-                    container.innerHTML = '<div class="breakpoint-list">' + 
+                    container.innerHTML = '<div class="breakpoint-list">' +
                         data.breakpoints.map(bp => `
                             <div class="breakpoint-item">
                                 <span><strong>${bp}</strong>()</span>
+                                <button class="btn btn-remove"
+                                        onclick="removeBreakpoint('${bp}')">
+                                    🗑️ Remove
+                                </button>
                             </div>
                         `).join('') + '</div>';
                 } else {
-                    container.innerHTML = '<div class="empty-state">No breakpoints set.</div>';
+                    container.innerHTML = '<div class="empty-state">' +
+                        'No breakpoints set.</div>';
                 }
             } catch (e) {
                 console.error('Failed to load breakpoints:', e);
             }
         }
 
+        // Handle Enter key in input field
+        document.addEventListener('DOMContentLoaded', function() {
+            const input = document.getElementById('newBreakpointInput');
+            if (input) {
+                input.addEventListener('keypress', function(e) {
+                    if (e.key === 'Enter') {
+                        addBreakpoint();
+                    }
+                });
+            }
+        });
+
         // Load paused executions
         async function loadPausedExecutions() {
             try {
                 const response = await fetch(`${API_BASE}/paused`);
                 const data = await response.json();
-                
+
                 const container = document.getElementById('pausedExecutions');
                 if (data.paused && data.paused.length > 0) {
                     container.innerHTML = data.paused.map(p => createPausedCard(p)).join('');
@@ -230,7 +329,7 @@ HTML_TEMPLATE = """
             const callData = paused.call_data;
             const displayName = callData.method_name || callData.function_name || 'unknown';
             const pausedAt = new Date(paused.paused_at * 1000).toLocaleTimeString();
-            
+
             return `
                 <div class="paused-card">
                     <div class="paused-header">
@@ -258,7 +357,7 @@ ${JSON.stringify({ args: callData.args || [], kwargs: callData.kwargs || {} }, n
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ action: action })
                 });
-                
+
                 if (response.ok) {
                     showMessage('Execution resumed', 'success');
                     loadPausedExecutions();
