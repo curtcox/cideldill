@@ -16,6 +16,7 @@ class _StubClient:
     def __init__(self, action: dict) -> None:
         self._action = action
         self.completed = []
+        self.poll_calls = 0
 
     def record_call_start(self, **kwargs) -> dict:
         return self._action
@@ -24,6 +25,7 @@ class _StubClient:
         self.completed.append(kwargs)
 
     def poll(self, action: dict) -> dict:
+        self.poll_calls += 1
         return action["resolved_action"]
 
     def deserialize_payload_list(self, items):
@@ -116,3 +118,26 @@ def test_async_debug_proxy_call_uses_async_wrapper() -> None:
     result = asyncio.run(proxy(3))
     assert result == 4
     assert client.completed[0]["status"] == "success"
+
+
+def test_debug_proxy_polls_until_non_poll_action() -> None:
+    poll_then_continue = {
+        "call_id": "1",
+        "action": "poll",
+        "poll_url": "/api/poll/abc",
+        "poll_interval_ms": 1,
+        "timeout_ms": 0,
+        "resolved_action": {"action": "poll"},
+    }
+
+    class _PollClient(_StubClient):
+        def poll(self, action: dict) -> dict:
+            self.poll_calls += 1
+            if self.poll_calls < 3:
+                return {"action": "poll"}
+            return {"action": "continue"}
+
+    client = _PollClient(poll_then_continue)
+    proxy = DebugProxy(_Target(), client, lambda: True)
+    assert proxy.add(1, 2) == 3
+    assert client.poll_calls >= 3

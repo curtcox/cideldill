@@ -177,7 +177,7 @@ class DebugProxy:
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
     ) -> Any:
-        if action.get("action") == "poll":
+        while action.get("action") == "poll":
             action = self._client.poll(action)
 
         action_type = action.get("action")
@@ -199,7 +199,7 @@ class DebugProxy:
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
     ) -> Any:
-        if action.get("action") == "poll":
+        while action.get("action") == "poll":
             action = await self._client.async_poll(action)
 
         action_type = action.get("action")

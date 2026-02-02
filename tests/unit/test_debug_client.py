@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import logging
 
 import pytest
 
@@ -73,3 +75,44 @@ def test_record_call_complete_serializes_result(monkeypatch) -> None:
     assert payload["status"] == "success"
     assert payload["result_cid"]
     assert base64.b64decode(payload["result_data"]) == dill.dumps({"a": 1}, protocol=4)
+
+
+def test_poll_timeout_returns_poll_action(monkeypatch, caplog) -> None:
+    caplog.set_level(logging.INFO)
+
+    def fake_get(url: str, timeout: float) -> _Response:  # pragma: no cover
+        raise AssertionError("Should not be called when timeout_ms=0")
+
+    monkeypatch.setattr("requests.get", fake_get)
+
+    client = DebugClient("http://localhost:5000")
+    action = {
+        "action": "poll",
+        "poll_url": "/api/poll/abc",
+        "poll_interval_ms": 1,
+        "timeout_ms": 0,
+    }
+    result = client.poll(action)
+    assert result == action
+    assert "poll timed out" in caplog.text.lower()
+
+
+def test_async_poll_timeout_returns_poll_action(monkeypatch, caplog) -> None:
+    caplog.set_level(logging.INFO)
+
+    def fake_get(url: str, timeout: float) -> _Response:  # pragma: no cover
+        raise AssertionError("Should not be called when timeout_ms=0")
+
+    monkeypatch.setattr("requests.get", fake_get)
+
+    client = DebugClient("http://localhost:5000")
+    action = {
+        "action": "poll",
+        "poll_url": "/api/poll/abc",
+        "poll_interval_ms": 1,
+        "timeout_ms": 0,
+    }
+
+    result = asyncio.run(client.async_poll(action))
+    assert result == action
+    assert "poll timed out" in caplog.text.lower()

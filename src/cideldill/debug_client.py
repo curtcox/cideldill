@@ -15,7 +15,6 @@ from .exceptions import (
     DebugCIDNotFoundError,
     DebugProtocolError,
     DebugServerError,
-    DebugTimeoutError,
 )
 from .serialization import Serializer
 
@@ -140,7 +139,12 @@ class DebugClient:
             if status == "ready":
                 return response.get("action", {})
             raise DebugProtocolError("Malformed poll response")
-        raise DebugTimeoutError("Polling timed out")
+        logger.info(
+            "Debug server poll timed out after %sms (poll_url=%s). Continuing to wait...",
+            timeout_ms,
+            poll_url,
+        )
+        return action
 
     async def async_poll(self, action: dict[str, Any]) -> dict[str, Any]:
         poll_url = action.get("poll_url")
@@ -171,7 +175,12 @@ class DebugClient:
             if status == "ready":
                 return response.get("action", {})
             raise DebugProtocolError("Malformed poll response")
-        raise DebugTimeoutError("Polling timed out")
+        logger.info(
+            "Debug server poll timed out after %sms (poll_url=%s). Continuing to wait...",
+            timeout_ms,
+            poll_url,
+        )
+        return action
 
     def deserialize_payload_item(self, item: dict[str, Any]) -> Any:
         if "data" in item:
