@@ -36,11 +36,22 @@ def configure_debug(server_url: Optional[str] = None) -> None:
 
 def with_debug(target: Any) -> Any:
     """Enable/disable debugging or wrap objects for debugging."""
+    # Check if it's a control command (ON/OFF)
     if isinstance(target, str):
         mode = target.strip().upper()
-        if mode not in {"ON", "OFF"}:
-            raise ValueError("with_debug expects 'ON', 'OFF', or an object")
-        return _set_debug_mode(mode == "ON")
+        if mode in {"ON", "OFF"}:
+            return _set_debug_mode(mode == "ON")
+        # If it's a string but not ON/OFF, it might be a typo - raise an error
+        # unless we're in a debug-disabled state where we should just return it
+        if not _is_debug_enabled():
+            # When debug is OFF, any object (including non-command strings) is returned as-is
+            return target
+        # When debug is ON, reject invalid command strings as likely typos
+        raise ValueError("with_debug expects 'ON', 'OFF', or an object to wrap")
+
+    # When debug is OFF, return the original object unchanged (true NOP)
+    if not _is_debug_enabled():
+        return target
 
     if isinstance(target, (DebugProxy, AsyncDebugProxy)):
         return target
