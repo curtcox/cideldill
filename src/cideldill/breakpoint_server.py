@@ -106,19 +106,12 @@ HTML_TEMPLATE = """
             font-size: 0.9em;
             transition: all 0.2s;
         }
-        .btn-continue {
-            background-color: #2196F3;
+        .btn-go {
+            background-color: #2E7D32;
             color: white;
         }
-        .btn-continue:hover {
-            background-color: #0b7dda;
-        }
-        .btn-skip {
-            background-color: #ff9800;
-            color: white;
-        }
-        .btn-skip:hover {
-            background-color: #e68900;
+        .btn-go:hover {
+            background-color: #1B5E20;
         }
         .breakpoint-list {
             background-color: white;
@@ -131,20 +124,34 @@ HTML_TEMPLATE = """
             padding: 10px;
             margin: 5px 0;
             background-color: #f8f8f8;
-            border-left: 4px solid #f44336;
+            border-left: 4px solid transparent;
             border-radius: 4px;
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
-        .btn-remove {
-            background-color: #f44336;
-            color: white;
-            padding: 5px 12px;
-            font-size: 0.85em;
+        .breakpoint-item.stop {
+            border-left-color: #f44336;
         }
-        .btn-remove:hover {
-            background-color: #da190b;
+        .breakpoint-item.go {
+            border-left-color: #2E7D32;
+        }
+        .state-toggle {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        .state-btn {
+            border: 2px solid transparent;
+            background: white;
+            cursor: pointer;
+            padding: 6px 10px;
+            border-radius: 999px;
+            font-size: 16px;
+            line-height: 1;
+        }
+        .state-btn.selected {
+            border-color: #333;
         }
         .empty-state {
             color: #666;
@@ -156,7 +163,7 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <div class="container">
-        <h1>🔴 Interactive Breakpoints</h1>
+        <h1>🛑 Interactive Breakpoints</h1>
 
         <div id="statusMessage" class="status-message"></div>
 
@@ -166,7 +173,7 @@ HTML_TEMPLATE = """
             <ul>
                 <li>View currently active breakpoints</li>
                 <li>See paused executions in real-time</li>
-                <li>Control execution flow (continue, skip)</li>
+                <li>Control execution flow (🟢 go)</li>
             </ul>
             <p><strong>Note:</strong> Use <code>with_debug()</code> in your Python app to enable debugging and wrap objects.</p>
         </div>
@@ -189,19 +196,19 @@ HTML_TEMPLATE = """
                                id="behavior-stop" checked
                                onchange="setBehavior('stop')"
                                style="margin-right: 5px; cursor: pointer;">
-                        <span>⏸️ Stop at breakpoints</span>
+                        <span>🛑 Stop at breakpoints</span>
                     </label>
                     <label style="display: flex; align-items: center; cursor: pointer;">
-                        <input type="radio" name="behavior" value="continue"
-                               id="behavior-continue"
-                               onchange="setBehavior('continue')"
+                        <input type="radio" name="behavior" value="go"
+                               id="behavior-go"
+                               onchange="setBehavior('go')"
                                style="margin-right: 5px; cursor: pointer;">
-                        <span>▶️ Continue (log only)</span>
+                        <span>🟢 Go (log only)</span>
                     </label>
                 </div>
                 <div style="margin-top: 10px; font-size: 0.9em; color: #856404;">
                     When "Stop" is selected, execution pauses at breakpoints.
-                    When "Continue" is selected, breakpoints are logged but don't pause.
+                    When "Go" is selected, breakpoints are logged but don't pause.
                 </div>
             </div>
             <div style="margin-bottom: 15px;">
@@ -235,8 +242,8 @@ HTML_TEMPLATE = """
                 });
 
                 if (response.ok) {
-                    const icon = behavior === 'stop' ? '⏸️' : '▶️';
-                    const action = behavior === 'stop' ? 'stop at' : 'continue through';
+                    const icon = behavior === 'stop' ? '🛑' : '🟢';
+                    const action = behavior === 'stop' ? 'stop at' : 'go through';
                     showMessage(`${icon} Will ${action} breakpoints`, 'success');
                 } else {
                     showMessage('Failed to set behavior', 'error');
@@ -290,24 +297,25 @@ HTML_TEMPLATE = """
             }
         }
 
-        // Remove a breakpoint
-        async function removeBreakpoint(functionName) {
+        async function setBreakpointBehavior(functionName, behavior) {
             try {
                 const encoded = encodeURIComponent(functionName);
-                const response = await fetch(
-                    `${API_BASE}/breakpoints/${encoded}`,
-                    { method: 'DELETE' }
-                );
+                const response = await fetch(`${API_BASE}/breakpoints/${encoded}/behavior`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ behavior: behavior })
+                });
 
                 if (response.ok) {
-                    showMessage(`Breakpoint removed: ${functionName}`, 'success');
-                    loadBreakpoints();  // Refresh list
+                    const icon = behavior === 'stop' ? '🛑' : '🟢';
+                    showMessage(`${icon} Set breakpoint behavior: ${functionName}`, 'success');
+                    loadBreakpoints();
                 } else {
-                    showMessage('Failed to remove breakpoint', 'error');
+                    showMessage('Failed to set breakpoint behavior', 'error');
                 }
             } catch (e) {
-                console.error('Failed to remove breakpoint:', e);
-                showMessage('Error removing breakpoint', 'error');
+                console.error('Failed to set breakpoint behavior:', e);
+                showMessage('Error setting breakpoint behavior', 'error');
             }
         }
 
@@ -337,14 +345,23 @@ HTML_TEMPLATE = """
 
                 const container = document.getElementById('breakpointsList');
                 if (data.breakpoints && data.breakpoints.length > 0) {
+                    const states = data.breakpoint_behaviors || {};
                     container.innerHTML = '<div class="breakpoint-list">' +
                         data.breakpoints.map(bp => `
-                            <div class="breakpoint-item">
+                            <div class="breakpoint-item ${states[bp] === 'go' ? 'go' : 'stop'}">
                                 <span><strong>${bp}</strong>()</span>
-                                <button class="btn btn-remove"
-                                        onclick="removeBreakpoint('${bp}')">
-                                    🗑️ Remove
-                                </button>
+                                <div class="state-toggle">
+                                    <button class="state-btn ${states[bp] === 'stop' ? 'selected' : ''}"
+                                            onclick="setBreakpointBehavior('${bp}', 'stop')"
+                                            title="Stop (pause)">
+                                        🛑
+                                    </button>
+                                    <button class="state-btn ${states[bp] === 'go' ? 'selected' : ''}"
+                                            onclick="setBreakpointBehavior('${bp}', 'go')"
+                                            title="Go (don't pause)">
+                                        🟢
+                                    </button>
+                                </div>
                             </div>
                         `).join('') + '</div>';
                 } else {
@@ -411,11 +428,8 @@ HTML_TEMPLATE = """
                     <div class="call-data"><strong>Arguments:</strong>
 ${JSON.stringify({ args: callData.args || [], kwargs: callData.kwargs || {} }, null, 2)}</div>
                     <div class="actions">
-                        <button class="btn btn-continue" onclick="continueExecution('${paused.id}', 'continue')">
-                            ▶️ Continue
-                        </button>
-                        <button class="btn btn-skip" onclick="continueExecution('${paused.id}', 'skip')">
-                            ⏭️ Skip
+                        <button class="btn btn-go" onclick="continueExecution('${paused.id}')">
+                            🟢
                         </button>
                     </div>
                 </div>
@@ -423,12 +437,12 @@ ${JSON.stringify({ args: callData.args || [], kwargs: callData.kwargs || {} }, n
         }
 
         // Continue execution
-        async function continueExecution(pauseId, action) {
+        async function continueExecution(pauseId) {
             try {
                 const response = await fetch(`${API_BASE}/paused/${pauseId}/continue`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action: action })
+                    body: JSON.stringify({ action: 'continue' })
                 });
 
                 if (response.ok) {
@@ -546,13 +560,14 @@ class BreakpointServer:
         def get_breakpoints():
             """Get list of all breakpoints."""
             return jsonify({
-                "breakpoints": self.manager.get_breakpoints()
+                "breakpoints": self.manager.get_breakpoints(),
+                "breakpoint_behaviors": self.manager.get_breakpoint_behaviors(),
             })
 
         @self.app.route('/api/breakpoints', methods=['POST'])
         def add_breakpoint():
             """Add a new breakpoint."""
-            data = request.get_json()
+            data = request.get_json() or {}
             function_name = data.get('function_name')
             if not function_name:
                 return jsonify({"error": "function_name required"}), 400
@@ -566,6 +581,21 @@ class BreakpointServer:
             self.manager.remove_breakpoint(function_name)
             return jsonify({"status": "ok", "function_name": function_name})
 
+        @self.app.route('/api/breakpoints/<function_name>/behavior', methods=['POST'])
+        def set_breakpoint_behavior(function_name):
+            """Set behavior for a single breakpoint."""
+            data = request.get_json() or {}
+            behavior = data.get('behavior')
+            if behavior == 'continue':
+                behavior = 'go'
+            if behavior not in {'stop', 'go'}:
+                return jsonify({"error": "behavior must be 'stop' or 'go'"}), 400
+            try:
+                self.manager.set_breakpoint_behavior(function_name, behavior)
+            except KeyError:
+                return jsonify({"error": "breakpoint_not_found"}), 404
+            return jsonify({"status": "ok", "function_name": function_name, "behavior": behavior})
+
         @self.app.route('/api/behavior', methods=['GET'])
         def get_behavior():
             """Get the default breakpoint behavior."""
@@ -576,10 +606,12 @@ class BreakpointServer:
         @self.app.route('/api/behavior', methods=['POST'])
         def set_behavior():
             """Set the default breakpoint behavior."""
-            data = request.get_json()
+            data = request.get_json() or {}
             behavior = data.get('behavior')
-            if behavior not in {'stop', 'continue'}:
-                return jsonify({"error": "behavior must be 'stop' or 'continue'"}), 400
+            if behavior == 'continue':
+                behavior = 'go'
+            if behavior not in {'stop', 'go'}:
+                return jsonify({"error": "behavior must be 'stop' or 'go'"}), 400
 
             self.manager.set_default_behavior(behavior)
             return jsonify({"status": "ok", "behavior": behavior})
@@ -663,8 +695,11 @@ class BreakpointServer:
         @self.app.route('/api/paused/<pause_id>/continue', methods=['POST'])
         def continue_execution(pause_id):
             """Continue a paused execution."""
-            data = request.get_json()
+            data = request.get_json() or {}
             action = data.get('action', 'continue')
+
+            if action == 'skip':
+                return jsonify({"error": "skip_not_supported"}), 400
 
             action_dict = {"action": action}
 

@@ -37,17 +37,17 @@ def test_server_can_start_and_stop() -> None:
     """Test that server can start and stop."""
     manager = BreakpointManager()
     server = BreakpointServer(manager, port=0)
-    
+
     # Start in background thread
     thread = threading.Thread(target=server.start, daemon=True)
     thread.start()
     time.sleep(0.2)  # Give it time to start
-    
+
     assert server.is_running()
-    
+
     server.stop()
     time.sleep(0.2)
-    
+
     assert not server.is_running()
 
 
@@ -57,17 +57,19 @@ def test_get_breakpoints_endpoint(server) -> None:
     thread = threading.Thread(target=server.start, daemon=True)
     thread.start()
     time.sleep(0.2)
-    
+
     # Add some breakpoints
     server.manager.add_breakpoint("func1")
     server.manager.add_breakpoint("func2")
-    
+
     # Test endpoint
     response = server.test_client().get("/api/breakpoints")
     assert response.status_code == 200
     data = json.loads(response.data)
     assert "func1" in data["breakpoints"]
     assert "func2" in data["breakpoints"]
+    assert data["breakpoint_behaviors"]["func1"] == "stop"
+    assert data["breakpoint_behaviors"]["func2"] == "stop"
 
 
 def test_add_breakpoint_endpoint(server) -> None:
@@ -75,13 +77,13 @@ def test_add_breakpoint_endpoint(server) -> None:
     thread = threading.Thread(target=server.start, daemon=True)
     thread.start()
     time.sleep(0.2)
-    
+
     response = server.test_client().post(
         "/api/breakpoints",
         data=json.dumps({"function_name": "my_func"}),
         content_type="application/json"
     )
-    
+
     assert response.status_code == 200
     assert "my_func" in server.manager.get_breakpoints()
 
@@ -91,10 +93,10 @@ def test_delete_breakpoint_endpoint(server) -> None:
     thread = threading.Thread(target=server.start, daemon=True)
     thread.start()
     time.sleep(0.2)
-    
+
     # Add a breakpoint first
     server.manager.add_breakpoint("my_func")
-    
+
     # Delete it
     response = server.test_client().delete("/api/breakpoints/my_func")
     assert response.status_code == 200
@@ -106,11 +108,11 @@ def test_get_paused_executions_endpoint(server) -> None:
     thread = threading.Thread(target=server.start, daemon=True)
     thread.start()
     time.sleep(0.2)
-    
+
     # Add a paused execution
     call_data = {"function_name": "add", "args": {"a": 1, "b": 2}}
     pause_id = server.manager.add_paused_execution(call_data)
-    
+
     response = server.test_client().get("/api/paused")
     assert response.status_code == 200
     data = json.loads(response.data)
@@ -123,18 +125,18 @@ def test_continue_execution_endpoint(server) -> None:
     thread = threading.Thread(target=server.start, daemon=True)
     thread.start()
     time.sleep(0.2)
-    
+
     # Add a paused execution
     call_data = {"function_name": "add", "args": {"a": 1, "b": 2}}
     pause_id = server.manager.add_paused_execution(call_data)
-    
+
     # Continue it
     response = server.test_client().post(
         f"/api/paused/{pause_id}/continue",
         data=json.dumps({"action": "continue"}),
         content_type="application/json"
     )
-    
+
     assert response.status_code == 200
     assert len(server.manager.get_paused_executions()) == 0
 
@@ -153,7 +155,7 @@ def test_root_page_serves_html(server) -> None:
     thread = threading.Thread(target=server.start, daemon=True)
     thread.start()
     time.sleep(0.2)
-    
+
     response = server.test_client().get("/")
     assert response.status_code == 200
     assert b"Interactive Breakpoints" in response.data
