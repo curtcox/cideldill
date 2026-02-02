@@ -7,6 +7,7 @@ import asyncio
 import pytest
 
 pytest.importorskip("dill")
+pytest.importorskip("requests")
 
 from cideldill.debug_proxy import AsyncDebugProxy, DebugProxy
 
@@ -38,6 +39,9 @@ class _Target:
 
     def explode(self) -> None:
         raise ValueError("boom")
+
+    def __call__(self, *, value: int) -> int:
+        return value + 10
 
 
 class _AsyncCallable:
@@ -96,6 +100,13 @@ def test_debug_proxy_exception_reports_completion() -> None:
     with pytest.raises(ValueError, match="boom"):
         proxy.explode()
     assert client.completed[0]["status"] == "exception"
+
+
+def test_debug_proxy_dunder_call_supports_kwargs() -> None:
+    client = _StubClient({"call_id": "1", "action": "continue"})
+    proxy = DebugProxy(_Target(), client, lambda: True)
+
+    assert proxy(value=5) == 15
 
 
 def test_async_debug_proxy_call_uses_async_wrapper() -> None:
