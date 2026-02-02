@@ -50,14 +50,12 @@ def check_cideldill_installed() -> tuple[bool, str]:
 def check_cideldill_components() -> list[tuple[bool, str]]:
     """Check if all cideldill components are accessible."""
     components = [
-        ('CASStore', 'cideldill.cas_store'),
-        ('Interceptor', 'cideldill.interceptor'),
+        ('with_debug', 'cideldill.with_debug'),
+        ('DebugClient', 'cideldill.debug_client'),
+        ('DebugProxy', 'cideldill.debug_proxy'),
         ('Logger', 'cideldill.logger'),
-        ('Inspector', 'cideldill.inspector'),
         ('BreakpointManager', 'cideldill.breakpoint_manager'),
         ('BreakpointServer', 'cideldill.breakpoint_server'),
-        ('html_generator', 'cideldill.html_generator'),
-        ('source_viewer', 'cideldill.source_viewer'),
     ]
 
     results = []
@@ -111,6 +109,8 @@ def main():
     required_deps = [
         ('pygments', 'pygments'),
         ('flask', 'flask'),
+        ('dill', 'dill'),
+        ('requests', 'requests'),
     ]
 
     for module_name, import_name in required_deps:

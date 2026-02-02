@@ -5,7 +5,7 @@ This test suite validates the filtering and search features for call history.
 
 import pytest
 
-from cideldill import CASStore
+from cideldill.cas_store import CASStore
 
 
 def test_filter_by_function_returns_matching_calls() -> None:

@@ -107,6 +107,17 @@ def test_can_get_resume_action_for_paused_execution() -> None:
     assert retrieved_action == action
 
 
+def test_pop_resume_action_removes_action() -> None:
+    """Test pop_resume_action removes the stored action."""
+    manager = BreakpointManager()
+    pause_id = manager.add_paused_execution({"function_name": "add"})
+    manager.resume_execution(pause_id, {"action": "continue"})
+
+    action = manager.pop_resume_action(pause_id)
+    assert action == {"action": "continue"}
+    assert manager.get_resume_action(pause_id) is None
+
+
 def test_paused_execution_includes_timestamp() -> None:
     """Test that paused execution includes timestamp."""
     manager = BreakpointManager()

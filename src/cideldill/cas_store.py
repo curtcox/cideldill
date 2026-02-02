@@ -1,13 +1,10 @@
-"""Content-Addressable Storage (CAS) module for CID el Dill.
-
-This module provides persistent storage for function call data using SQLite.
-Data is stored with content-addressable identifiers (CIDs) based on the content hash.
-"""
+"""Content-Addressable Storage (CAS) module for CID el Dill."""
 
 import hashlib
-import json
 import sqlite3
 from typing import Any, Optional
+
+import dill
 
 
 class CASStore:
@@ -76,7 +73,7 @@ class CASStore:
             self._conn = sqlite3.connect(self.db_path)
         return self._conn
 
-    def _compute_cid(self, data: Any) -> str:
+    def _compute_cid(self, data: bytes) -> str:
         """Compute content identifier for data.
 
         Args:
@@ -85,20 +82,19 @@ class CASStore:
         Returns:
             SHA256 hash as hexadecimal string.
         """
-        json_str = json.dumps(data, sort_keys=True)
-        return hashlib.sha256(json_str.encode()).hexdigest()
+        return hashlib.sha256(data).hexdigest()
 
     def store(self, data: Any) -> str:
         """Store data in CAS and return its CID.
 
         Args:
-            data: The data to store (must be JSON-serializable).
+            data: The data to store (dill-serializable).
 
         Returns:
             The CID (content identifier) of the stored data.
         """
-        cid = self._compute_cid(data)
-        content = json.dumps(data, sort_keys=True)
+        pickled = dill.dumps(data)
+        cid = self._compute_cid(pickled)
 
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -106,7 +102,7 @@ class CASStore:
         # Insert or ignore (CID already exists)
         cursor.execute(
             "INSERT OR IGNORE INTO cas_objects (cid, content) VALUES (?, ?)",
-            (cid, content),
+            (cid, pickled),
         )
         conn.commit()
 
@@ -130,7 +126,7 @@ class CASStore:
         if row is None:
             return None
 
-        return json.loads(row[0])
+        return dill.loads(row[0])
 
     def record_call(
         self,

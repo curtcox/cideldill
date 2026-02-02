@@ -131,32 +131,8 @@ class BreakpointManager:
         with self._lock:
             return self._resume_actions.get(pause_id)
 
-    def wait_for_resume_action(
-        self, pause_id: str, timeout: float = 60.0
-    ) -> Optional[dict[str, Any]]:
-        """Wait for a resume action to be provided.
-
-        This blocks until either:
-        - A resume action is provided via resume_execution()
-        - The timeout expires
-
-        Args:
-            pause_id: ID of the paused execution.
-            timeout: Maximum time to wait in seconds.
-
-        Returns:
-            Resume action dict, or None if timeout.
-        """
-        start_time = time.time()
-        poll_interval = 0.05  # 50ms
-
-        while time.time() - start_time < timeout:
-            action = self.get_resume_action(pause_id)
-            if action is not None:
-                # Clean up the action after retrieving it
-                with self._lock:
-                    self._resume_actions.pop(pause_id, None)
-                return action
-            time.sleep(poll_interval)
-
-        return None
+    def pop_resume_action(self, pause_id: str) -> Optional[dict[str, Any]]:
+        """Pop the resume action for a paused execution."""
+        with self._lock:
+            action = self._resume_actions.pop(pause_id, None)
+        return action
