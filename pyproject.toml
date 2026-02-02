@@ -25,6 +25,7 @@ classifiers = [
 dependencies = [
     "pygments>=2.15.0",
     "flask>=3.0.0",
+    "dill>=0.3.6",
 ]
 
 [project.optional-dependencies]

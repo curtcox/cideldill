@@ -1303,8 +1303,16 @@ src/cideldill/
 ## Next Steps
 
 1. ~~Resolve open questions~~ ✓ All resolved
-2. Implement core serialization module
-3. Implement decomposition logic
-4. Implement CID store
-5. Write comprehensive tests
-6. Integrate with debug client and server
+2. ~~Implement core serialization module~~ ✓ Done
+3. ~~Implement decomposition logic~~ ✓ Done
+4. ~~Implement CID store~~ ✓ Done
+5. ~~Write comprehensive tests~~ ✓ Done
+6. Integrate with debug client and server (future work)
+
+## Implementation Progress
+
+- [x] Added dill-backed serialization utilities with CID refs, cache, and request processing.
+- [x] Added object decomposition and reassembly helpers.
+- [x] Added SHA-512 CID store implementation.
+- [x] Added serialization exceptions.
+- [x] Added unit tests covering serialization, decomposition, cache, and CID store behaviors.
