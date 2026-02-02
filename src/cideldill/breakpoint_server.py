@@ -5,7 +5,9 @@ for managing breakpoints and paused executions through a web UI.
 """
 
 import base64
+import html
 import logging
+import os
 import threading
 import time
 
@@ -13,6 +15,7 @@ from flask import Flask, jsonify, render_template_string, request
 
 from cideldill.breakpoint_manager import BreakpointManager
 from cideldill.cid_store import CIDStore
+from cideldill.serialization import deserialize
 
 # Configure Flask's logging to show startup info but not request spam
 log = logging.getLogger('werkzeug')
@@ -366,13 +369,48 @@ HTML_TEMPLATE = """
             const displayName = callData.method_name || callData.function_name || 'unknown';
             const pausedAt = new Date(paused.paused_at * 1000).toLocaleTimeString();
 
+            const prettyArgs = callData.pretty_args || [];
+            const prettyKwargs = callData.pretty_kwargs || {};
+            const stackTrace = (callData.call_site && callData.call_site.stack_trace) ? callData.call_site.stack_trace : [];
+
+            const renderArgs = () => {
+                const argsBlock = JSON.stringify({ args: prettyArgs, kwargs: prettyKwargs }, null, 2);
+                return `<div class="call-data"><strong>Parameters:</strong>
+${argsBlock}</div>`;
+            };
+
+            const renderStack = () => {
+                if (!stackTrace || stackTrace.length === 0) {
+                    return '';
+                }
+
+                const items = stackTrace.map((f, idx) => {
+                    const file = f.filename || '';
+                    const lineno = f.lineno || '';
+                    const func = f.function || '';
+                    const ctx = f.code_context || '';
+                    const url = `/frame/${encodeURIComponent(paused.id)}/${encodeURIComponent(idx)}`;
+                    const label = `${func} (${file}:${lineno})`;
+                    const ctxHtml = ctx ? `<div style="margin-top: 4px; color: #444;"><code>${ctx}</code></div>` : '';
+                    return `<li style="margin: 8px 0;">
+  <a href="${url}" target="_blank" rel="noopener noreferrer" style="color: #1565c0; text-decoration: none;">${label}</a>
+  ${ctxHtml}
+  <div style="margin-top: 2px; font-size: 0.85em; color: #666;">Frame ${idx}</div>
+</li>`;
+                }).join('');
+
+                return `<div class="call-data"><strong>Stack Trace:</strong>
+<ol style="margin: 8px 0 0 18px; padding: 0;">${items}</ol>
+</div>`;
+            };
+
             return `
                 <div class="paused-card">
                     <div class="paused-header">
                         ⏸️ ${displayName}() - Paused at ${pausedAt}
                     </div>
-                    <div class="call-data"><strong>Arguments:</strong>
-${JSON.stringify({ args: callData.args || [], kwargs: callData.kwargs || {} }, null, 2)}</div>
+                    ${renderArgs()}
+                    ${renderStack()}
                     <div class="actions">
                         <button class="btn btn-go" onclick="continueExecution('${paused.id}')">
                             🟢
@@ -497,10 +535,101 @@ class BreakpointServer:
                 data = base64.b64decode(item["data"])
                 self._cid_store.store(item["cid"], data)
 
+        def _safe_repr(obj: object, limit: int = 500) -> str:
+            try:
+                text = repr(obj)
+            except Exception as exc:  # noqa: BLE001
+                text = f"<unreprable: {type(exc).__name__}>"
+            if len(text) > limit:
+                return text[:limit] + "..."
+            return text
+
+        def _format_payload_value(item: dict[str, object]) -> str:
+            cid = item.get("cid")
+            if not isinstance(cid, str):
+                return "<missing cid>"
+            try:
+                stored = self._cid_store.get(cid)
+            except Exception:
+                stored = None
+            if stored is None:
+                return f"<cid:{cid} missing>"
+            try:
+                value = deserialize(stored)
+            except Exception as exc:  # noqa: BLE001
+                return f"<unavailable: {type(exc).__name__}>"
+            return _safe_repr(value)
+
         @self.app.route('/')
         def index():
             """Serve the main web UI."""
             return render_template_string(HTML_TEMPLATE)
+
+        @self.app.route('/frame/<pause_id>/<int:frame_index>', methods=['GET'])
+        def frame_view(pause_id: str, frame_index: int):
+            paused = self.manager.get_paused_execution(pause_id)
+            if not paused:
+                return jsonify({"error": "pause_not_found"}), 404
+
+            call_data = paused.get("call_data", {})
+            call_site = call_data.get("call_site") or {}
+            stack_trace = call_site.get("stack_trace") or []
+            if frame_index < 0 or frame_index >= len(stack_trace):
+                return jsonify({"error": "frame_not_found"}), 404
+
+            frame = stack_trace[frame_index]
+            file_path = frame.get("filename") or ""
+            line_no = frame.get("lineno") or 0
+            try:
+                line_no = int(line_no) if line_no else 0
+            except ValueError:
+                line_no = 0
+
+            if not file_path:
+                return jsonify({"error": "file_not_available"}), 404
+            if not os.path.isfile(file_path):
+                return jsonify({"error": "file_not_found"}), 404
+
+            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                lines = f.read().splitlines()
+
+            title = f"{os.path.basename(file_path)}:{line_no}" if line_no else os.path.basename(file_path)
+            rendered_lines = []
+            for idx, raw in enumerate(lines, start=1):
+                escaped = html.escape(raw)
+                css_class = "hl" if line_no and idx == line_no else ""
+                rendered_lines.append(
+                    f"<div class='ln {css_class}'><span class='num'>{idx}</span><span class='code'>{escaped}</span></div>"
+                )
+
+            page = """<!DOCTYPE html>
+<html lang='en'>
+<head>
+  <meta charset='UTF-8'>
+  <meta name='viewport' content='width=device-width, initial-scale=1.0'>
+  <title>{title}</title>
+  <style>
+    body {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; margin: 0; padding: 16px; background: #f5f5f5; }}
+    .header {{ margin-bottom: 12px; }}
+    .file {{ font-weight: 600; }}
+    .ln {{ display: grid; grid-template-columns: 64px 1fr; gap: 12px; padding: 2px 6px; border-radius: 4px; }}
+    .ln.hl {{ background: #fff3cd; }}
+    .num {{ color: #666; text-align: right; user-select: none; }}
+    .code {{ white-space: pre; overflow-x: auto; }}
+    .container {{ background: white; border: 1px solid #ddd; border-radius: 8px; padding: 12px; }}
+  </style>
+</head>
+<body>
+  <div class='header'>
+    <div class='file'>{file_path}</div>
+  </div>
+  <div class='container'>
+    {body}
+  </div>
+</body>
+</html>""".format(title=html.escape(title), file_path=html.escape(file_path), body="\n".join(rendered_lines))
+
+            return page
 
         @self.app.route('/api/breakpoints', methods=['GET'])
         def get_breakpoints():
@@ -591,10 +720,22 @@ class BreakpointServer:
 
             # Check if we should pause at this breakpoint
             if self.manager.should_pause_at_breakpoint(method_name):
+                pretty_args = [
+                    _format_payload_value(item)
+                    for item in args
+                    if isinstance(item, dict)
+                ]
+                pretty_kwargs = {
+                    key: _format_payload_value(value)
+                    for key, value in kwargs.items()
+                    if isinstance(value, dict)
+                }
                 pause_id = self.manager.add_paused_execution({
                     "method_name": method_name,
                     "args": args,
                     "kwargs": kwargs,
+                    "pretty_args": pretty_args,
+                    "pretty_kwargs": pretty_kwargs,
                     "call_site": data.get("call_site"),
                 })
                 action = {

@@ -165,6 +165,42 @@ def test_root_page_serves_html(server) -> None:
     assert b"breakpointsList" in response.data
 
 
+def test_frame_endpoint_renders_source_for_paused_execution(server) -> None:
+    """Test GET /frame/<pause_id>/<frame_index> endpoint."""
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    pause_id = server.manager.add_paused_execution({
+        "method_name": "noop",
+        "call_site": {
+            "stack_trace": [
+                {
+                    "filename": __file__,
+                    "lineno": 1,
+                    "function": "test_frame_endpoint_renders_source_for_paused_execution",
+                    "code_context": "def test_frame_endpoint_renders_source_for_paused_execution(server) -> None:",
+                }
+            ]
+        },
+    })
+
+    response = server.test_client().get(f"/frame/{pause_id}/0")
+    assert response.status_code == 200
+    assert b"<html" in response.data.lower()
+    assert b"test_breakpoint_server.py" in response.data
+
+
+def test_frame_endpoint_returns_404_when_pause_missing(server) -> None:
+    """Test /frame returns 404 when pause id is unknown."""
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    response = server.test_client().get("/frame/not-a-real-pause/0")
+    assert response.status_code == 404
+
+
 def test_call_start_returns_continue_when_no_breakpoint(server) -> None:
     """Test POST /api/call/start returns continue action."""
     thread = threading.Thread(target=server.start, daemon=True)
