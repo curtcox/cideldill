@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import inspect
 import os
 import threading
+from urllib.parse import urlparse
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -53,16 +55,26 @@ def with_debug(target: Any) -> Any:
 
 
 def _set_debug_mode(enabled: bool) -> DebugInfo:
-    with _state_lock:
-        _state.enabled = enabled
-        if not enabled:
-            return DebugInfo(enabled=False, server=None, status="disabled")
+    if not enabled:
+        with _state_lock:
+            _state.enabled = False
+            _state.client = None
+        return DebugInfo(enabled=False, server=None, status="disabled")
 
-        server_url = _resolve_server_url()
-        client = DebugClient(server_url)
+    server_url = _resolve_server_url()
+    client = DebugClient(server_url)
+    try:
         client.check_connection()
+    except DebugServerError:
+        with _state_lock:
+            _state.enabled = False
+            _state.client = None
+        return DebugInfo(enabled=False, server=None, status="disabled")
+
+    with _state_lock:
         _state.client = client
-        return DebugInfo(enabled=True, server=server_url, status="connected")
+        _state.enabled = True
+    return DebugInfo(enabled=True, server=server_url, status="connected")
 
 
 def _is_debug_enabled() -> bool:
@@ -81,9 +93,14 @@ def _resolve_server_url() -> str:
 
 
 def _validate_localhost(server_url: str) -> None:
-    if "localhost" not in server_url and "127.0.0.1" not in server_url:
+    hostname = urlparse(server_url).hostname
+    if hostname not in {"localhost", "127.0.0.1", "::1"}:
         raise DebugServerError("Debug server URL must be localhost-only")
 
 
 def _is_coroutine_target(target: Any) -> bool:
-    return hasattr(target, "__await__")
+    if inspect.iscoroutine(target) or inspect.iscoroutinefunction(target):
+        return True
+    if hasattr(target, "__call__") and inspect.iscoroutinefunction(target.__call__):
+        return True
+    return False

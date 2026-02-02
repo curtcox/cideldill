@@ -310,3 +310,9 @@ class DebugProxy:
 
 class AsyncDebugProxy(DebugProxy):
     """Alias for a debug proxy with async-compatible methods."""
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        attr = getattr(self._target, "__call__", None)
+        if attr is not None and inspect.iscoroutinefunction(attr):
+            return self._wrap_async_method(attr, "__call__")(*args, **kwargs)
+        return self._intercept_dunder("__call__", *args, **kwargs)

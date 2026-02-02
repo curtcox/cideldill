@@ -6,6 +6,7 @@ for managing breakpoints and paused executions through a web UI.
 
 import base64
 import logging
+import threading
 import time
 
 from flask import Flask, jsonify, request, render_template_string
@@ -333,15 +334,18 @@ class BreakpointServer:
         self._server = None
         self._cid_store = CIDStore()
         self._call_seq = 0
+        self._call_seq_lock = threading.Lock()
         self._setup_routes()
 
     def _setup_routes(self) -> None:
         """Set up Flask routes."""
 
         def next_call_id() -> str:
-            self._call_seq += 1
+            with self._call_seq_lock:
+                self._call_seq += 1
+                seq = self._call_seq
             timestamp = f"{time.time():.6f}"
-            return f"{timestamp}-{self._call_seq:03d}"
+            return f"{timestamp}-{seq:03d}"
 
         def collect_missing_cids(items) -> list[str]:
             missing: list[str] = []
