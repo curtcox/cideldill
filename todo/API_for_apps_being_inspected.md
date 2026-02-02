@@ -103,7 +103,17 @@ def compute_cid(obj):
 
 - First time an object is sent: Send both the **dill pickle** and the **CID**
 - Subsequent times: Send **only the CID** (server already has the pickled data)
-- Client tracks which CIDs have been sent in the current session
+- Client maintains a **finite LRU cache** of recently sent CIDs
+- **Server is the source of truth** for CID→data mappings
+
+**CID Verification Protocol:**
+
+1. Client sends CID-only (no data) for objects it believes server has
+2. Server checks its database:
+   - If CID exists: Verifies data integrity, proceeds normally
+   - If CID missing: Returns error, client must resend with full data
+   - If CID mismatch (data doesn't match): Returns `DebugCIDMismatchError`
+3. Client evicts oldest CIDs from its cache when limit reached
 
 ```python
 # Request format
@@ -111,14 +121,21 @@ def compute_cid(obj):
     "method_name": "calculate",
     "target_cid": "abc123...",           # CID of the proxied object
     "args": [
-        {"cid": "def456...", "data": "<base64 dill pickle>"},  # First time
-        {"cid": "ghi789..."}                                    # Already sent
+        {"cid": "def456...", "data": "<base64 dill pickle>"},  # First time or cache miss
+        {"cid": "ghi789..."}                                    # In client cache
     ],
     "call_site": {
         "stack_trace": [...],
         "timestamp": 1234567890.123,
         "target_cid": "abc123..."
     }
+}
+
+# Server response for missing CID
+{
+    "error": "cid_not_found",
+    "missing_cids": ["ghi789..."],
+    "message": "Resend with full data"
 }
 ```
 
@@ -220,6 +237,40 @@ GET /api/poll/abc123
 # Now client proceeds with the call
 ```
 
+### Call Completion Protocol
+
+After every call completes (whether successful or exception), the client notifies the server:
+
+```python
+# Successful completion
+POST /api/call/complete
+{
+    "call_id": "abc123...",              # ID from call/start response
+    "timestamp": 1234567890.456789,      # Completion timestamp
+    "status": "success",
+    "result_cid": "xyz789...",           # CID of return value
+    "result_data": "..."                 # Base64 dill pickle (if new CID)
+}
+
+# Exception completion
+POST /api/call/complete
+{
+    "call_id": "abc123...",
+    "timestamp": 1234567890.456789,
+    "status": "exception",
+    "exception_type": "ValueError",
+    "exception_message": "invalid input",
+    "exception_cid": "exc123...",        # CID of full exception object
+    "exception_data": "..."              # Base64 dill pickle (if new CID)
+}
+```
+
+The server responds with acknowledgment:
+
+```python
+{"status": "ok"}
+```
+
 ### Async Support
 
 The debug proxy provides **full async support** with async-aware proxies:
@@ -317,6 +368,8 @@ All errors follow a **fail-closed** policy:
 | Unknown action type | Raises `DebugProtocolError` |
 | Proxy internal error | **Propagates the exception** |
 | Object cannot be dill pickled | Raises `DebugSerializationError` |
+| CID not found on server | Raises `DebugCIDNotFoundError` (client should resend with data) |
+| CID data mismatch on server | Raises `DebugCIDMismatchError` |
 
 ### Configuration
 
@@ -357,6 +410,12 @@ info = with_debug('ON')
 | Security | **No auth, localhost only** | Development tool; not designed for production |
 | Latency | **Accept it** | Debugging isn't performance-critical |
 | Old API | **Remove entirely** | Clean break; no maintenance burden |
+| CID session tracking | **Never reset; server is source of truth** | Client uses finite LRU cache; server validates all CIDs |
+| Async server calls | **Always sync** | Simpler implementation; debugging latency acceptable |
+| Built-in arithmetic | **Intercept all dunders** | Consistent with "wrap everything"; simpler implementation |
+| Dill failure | **No fallback** | Raise `DebugSerializationError`; fail-closed policy |
+| Call completion | **Yes, notify server** | POST /api/call/complete with result CID and timestamp |
+| Proxy for None | **Wrap in proxy** | Consistent behavior; no special cases |
 
 ---
 
@@ -516,6 +575,12 @@ def test_with_debug_obj_nested_wrapping():
 
 def test_with_debug_obj_computes_cid():
     """Proxy has a CID computed from the target."""
+
+def test_with_debug_none_returns_proxy():
+    """with_debug(None) returns a proxy wrapping None."""
+
+def test_with_debug_none_proxy_works():
+    """Proxy wrapping None behaves correctly."""
 ```
 
 #### 1.3 Object Wrapping Tests (Debug OFF)
@@ -704,8 +769,23 @@ def test_cid_deduplication_first_send():
 def test_cid_deduplication_subsequent_send():
     """Subsequent send includes only CID."""
 
-def test_cid_tracking_per_session():
-    """CID tracking is per debug session."""
+def test_cid_lru_cache_eviction():
+    """Client evicts oldest CIDs when cache limit reached."""
+
+def test_cid_cache_miss_resend():
+    """Client resends data when server reports CID not found."""
+
+def test_cid_server_verification():
+    """Server verifies CID matches stored data."""
+
+def test_cid_mismatch_raises_error():
+    """CID mismatch on server raises DebugCIDMismatchError."""
+
+def test_cid_not_found_raises_error():
+    """CID not found on server raises DebugCIDNotFoundError."""
+
+def test_cid_recovery_after_not_found():
+    """Client recovers by resending full data after CID not found."""
 ```
 
 ### 5. Network Communication Tests
@@ -918,6 +998,24 @@ def test_endpoint_poll_not_found():
 
 def test_endpoint_breakpoint_triggers_poll():
     """Hitting a breakpoint causes poll action."""
+
+def test_endpoint_call_complete_exists():
+    """POST /api/call/complete endpoint exists."""
+
+def test_endpoint_call_complete_success():
+    """POST /api/call/complete handles successful completion."""
+
+def test_endpoint_call_complete_exception():
+    """POST /api/call/complete handles exception completion."""
+
+def test_endpoint_call_complete_stores_result():
+    """POST /api/call/complete stores result CID."""
+
+def test_endpoint_cid_not_found_response():
+    """Server returns cid_not_found error for missing CIDs."""
+
+def test_endpoint_cid_verification():
+    """Server verifies CID data integrity."""
 ```
 
 ### 10. Configuration Tests
@@ -980,6 +1078,18 @@ def test_web_ui_integration():
 
 def test_cid_deduplication_across_calls():
     """CIDs are deduplicated across multiple calls."""
+
+def test_call_completion_on_success():
+    """Server receives call completion for successful calls."""
+
+def test_call_completion_on_exception():
+    """Server receives call completion for failed calls."""
+
+def test_call_completion_includes_timestamp():
+    """Call completion includes accurate timestamp."""
+
+def test_call_completion_result_cid():
+    """Call completion includes result CID."""
 ```
 
 ### 12. Error Handling Tests
@@ -1017,42 +1127,37 @@ def test_disable_during_active_call():
 
 def test_circular_reference_serialization():
     """Objects with circular references serialize correctly."""
+
+def test_cid_not_found_error():
+    """DebugCIDNotFoundError raised when server missing CID."""
+
+def test_cid_mismatch_error():
+    """DebugCIDMismatchError raised when CID data doesn't match."""
+
+def test_cid_recovery_resend():
+    """Client resends full data after CID not found error."""
 ```
 
 ---
 
 ## Open Questions
 
-1. **CID session tracking**: When is the "sent CIDs" set reset?
-   - a) When `with_debug('ON')` is called (new session)
-   - b) When `with_debug('OFF')` is called
-   - c) Never (persist across sessions)
-   - d) Server tells client to reset via handshake
+1. **Client CID cache size**: What should be the default size of the client's LRU cache for sent CIDs?
+   - a) 1,000 entries
+   - b) 10,000 entries
+   - c) Configurable with a sensible default
+   - d) Unlimited (memory permitting)
 
-2. **Async server communication**: Should HTTP calls to the server also be async when inside async code?
-   - a) Always sync (simpler, debugging latency acceptable)
-   - b) Async when called from async context
-   - c) Configurable
+2. **Call ID format**: What format should be used for call IDs returned by `/api/call/start`?
+   - a) UUID4
+   - b) Incrementing integer
+   - c) Timestamp-based ID
+   - d) Hash of call details
 
-3. **Built-in arithmetic operations**: For wrapped `int`/`float`, should arithmetic operators be intercepted?
-   - a) Yes, intercept `__add__`, `__mul__`, etc.
-   - b) No, only intercept explicit method calls
-   - c) Configurable per-type
-
-4. **Dill failure fallback**: If dill fails to serialize an object, should there be a fallback?
-   - a) No fallback, always raise DebugSerializationError
-   - b) Fallback to repr() string
-   - c) Fallback to type name + id
-
-5. **Call completion notification**: Should the client notify the server when a call completes?
-   - a) Yes, send POST /api/call/complete with result CID
-   - b) No, server only needs call start info
-   - c) Optional, configurable
-
-6. **Proxy for None**: What happens with `with_debug(None)`?
-   - a) Return a proxy that wraps None
-   - b) Return None directly (special case)
-   - c) Raise an exception
+3. **Arithmetic operator return type**: When intercepting `__add__` etc. on wrapped `int`, should the result be:
+   - a) Wrapped in a new proxy
+   - b) Returned as raw value (unwrapped)
+   - c) Depends on debug ON/OFF state
 
 ---
 
