@@ -170,17 +170,6 @@ HTML_TEMPLATE = """
 
         <div id="statusMessage" class="status-message"></div>
 
-        <div class="info-box">
-            <strong>Welcome to the CID el Dill Breakpoint Manager!</strong>
-            <p>This is the live breakpoint management interface. Use this to:</p>
-            <ul>
-                <li>View currently active breakpoints</li>
-                <li>See paused executions in real-time</li>
-                <li>Control execution flow (🟢 go)</li>
-            </ul>
-            <p><strong>Note:</strong> Use <code>with_debug()</code> in your Python app to enable debugging and wrap objects.</p>
-        </div>
-
         <h2>⏸️ Paused Executions</h2>
         <div id="pausedExecutions">
             <div class="empty-state">No executions currently paused.</div>
