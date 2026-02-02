@@ -24,12 +24,22 @@ def test_with_debug_off_returns_info() -> None:
     assert info.connection_status() == "disabled"
 
 
-def test_with_debug_invalid_raises() -> None:
-    """Invalid command strings should raise ValueError when debug is ON."""
-    # First, enable debug (with mock to avoid network)
-    # When debug is ON, invalid strings should raise
-    # When debug is OFF, they're treated as regular objects
-    with_debug("OFF")  # Start with debug OFF
+def test_with_debug_returns_original_when_off() -> None:
+    """When debug is OFF, with_debug(obj) returns the original object unchanged (NOP)."""
+    with_debug("OFF")
+    
+    target = Sample()
+    result = with_debug(target)
+    
+    # Should return the exact same object (true NOP)
+    assert result is target
+    assert type(result) is Sample
+    assert not isinstance(result, DebugProxy)
+
+
+def test_with_debug_off_allows_any_object_including_strings() -> None:
+    """When debug is OFF, any object (including non-command strings) is returned as-is."""
+    with_debug("OFF")
     
     # With debug OFF, non-command strings are just returned as-is
     result = with_debug("maybe")
