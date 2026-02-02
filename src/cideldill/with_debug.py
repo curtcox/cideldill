@@ -5,9 +5,9 @@ from __future__ import annotations
 import inspect
 import os
 import threading
-from urllib.parse import urlparse
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
+from urllib.parse import urlparse
 
 from .debug_client import DebugClient
 from .debug_info import DebugInfo
@@ -18,15 +18,15 @@ from .exceptions import DebugServerError
 @dataclass
 class _DebugState:
     enabled: bool = False
-    server_url: Optional[str] = None
-    client: Optional[DebugClient] = None
+    server_url: str | None = None
+    client: DebugClient | None = None
 
 
 _state = _DebugState()
 _state_lock = threading.Lock()
 
 
-def configure_debug(server_url: Optional[str] = None) -> None:
+def configure_debug(server_url: str | None = None) -> None:
     """Configure debug settings before enabling."""
     if server_url is not None:
         _validate_localhost(server_url)
@@ -36,11 +36,22 @@ def configure_debug(server_url: Optional[str] = None) -> None:
 
 def with_debug(target: Any) -> Any:
     """Enable/disable debugging or wrap objects for debugging."""
+    # Check if it's a control command (ON/OFF)
     if isinstance(target, str):
         mode = target.strip().upper()
-        if mode not in {"ON", "OFF"}:
-            raise ValueError("with_debug expects 'ON', 'OFF', or an object")
-        return _set_debug_mode(mode == "ON")
+        if mode in {"ON", "OFF"}:
+            return _set_debug_mode(mode == "ON")
+        # If it's a string but not ON/OFF, it might be a typo - raise an error
+        # unless we're in a debug-disabled state where we should just return it
+        if not _is_debug_enabled():
+            # When debug is OFF, any object (including non-command strings) is returned as-is
+            return target
+        # When debug is ON, reject invalid command strings as likely typos
+        raise ValueError("with_debug expects 'ON', 'OFF', or an object to wrap")
+
+    # When debug is OFF, return the original object unchanged (true NOP)
+    if not _is_debug_enabled():
+        return target
 
     if isinstance(target, (DebugProxy, AsyncDebugProxy)):
         return target
@@ -101,6 +112,6 @@ def _validate_localhost(server_url: str) -> None:
 def _is_coroutine_target(target: Any) -> bool:
     if inspect.iscoroutine(target) or inspect.iscoroutinefunction(target):
         return True
-    if hasattr(target, "__call__") and inspect.iscoroutinefunction(target.__call__):
+    if callable(target) and inspect.iscoroutinefunction(target.__call__):
         return True
     return False
