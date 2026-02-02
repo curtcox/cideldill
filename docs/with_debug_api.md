@@ -34,8 +34,8 @@ calculator = with_debug(Calculator())
 calculator.add(1, 2)
 ```
 
-- Always returns a proxy object.
-- The proxy delegates directly when debugging is OFF.
+- **When debug is ON**: Returns a proxy object that intercepts calls for debugging.
+- **When debug is OFF**: Returns the original object unchanged (true NOP with zero overhead).
 
 ## Configure Server URL
 

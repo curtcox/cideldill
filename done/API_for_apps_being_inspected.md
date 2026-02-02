@@ -58,11 +58,11 @@ info.connection_status()  # Returns 'connected', 'disconnected', 'error'
 
 - Disables debugging **globally for all threads** in the current process
 - Returns a `DebugInfo` object that can be interrogated
-- All subsequent `with_debug(obj)` calls return a no-op proxy
+- All subsequent `with_debug(obj)` calls return the **original object unchanged** (true NOP)
 - **No breakpoints trigger**
 - **No network requests are made**
 - **No calls are logged**
-- Minimal performance overhead
+- **Zero performance overhead** - the object is returned as-is
 
 ```python
 info = with_debug('OFF')
@@ -73,25 +73,35 @@ info.connection_status()  # Returns 'disabled'
 
 #### `with_debug(obj)`
 
-- **Always returns a proxy object** (never the original)
-- When debug is ON: Proxy intercepts all method calls and communicates with server
-- When debug is OFF: Proxy is a no-op that delegates directly to target without interception
-- The proxy object is transparent - client code uses it exactly like the original
-- **`proxy == original` is always False**
-- **`proxy is original` is always False**
+- **When debug is ON**: Returns a proxy object that intercepts all method calls and communicates with server
+- **When debug is OFF**: Returns the **original object unchanged** - a true NOP with zero overhead
+- When returned proxy is used, client code uses it exactly like the original
 - Can wrap **any object** including built-in types (`list`, `dict`, etc.)
 
+**When debug is ON:**
 ```python
 # Example usage
 calculator = Calculator()
-calculator = with_debug(calculator)  # Wrap for debugging
+calculator = with_debug(calculator)  # Returns DebugProxy
 
 # Use exactly like the original
-result = calculator.add(1, 2)  # Intercepted if debug is ON
+result = calculator.add(1, 2)  # Intercepted for debugging
 
-# Identity is never preserved
-assert calculator is not Calculator()  # Always true
-assert (calculator == Calculator()) == False  # Proxy != original
+# Identity is not preserved when debug is ON
+assert calculator is not Calculator()  # True - it's a proxy
+```
+
+**When debug is OFF:**
+```python
+# Example usage
+calculator = Calculator()
+calculator = with_debug(calculator)  # Returns calculator unchanged (NOP)
+
+# Use exactly like the original
+result = calculator.add(1, 2)  # Direct call, no overhead
+
+# Identity IS preserved when debug is OFF
+assert calculator is calculator  # True - same object returned
 ```
 
 ### Serialization with Dill and CID
