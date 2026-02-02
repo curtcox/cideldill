@@ -9,8 +9,11 @@ import time
 
 import pytest
 
-from cideldill import BreakpointManager
+pytest.importorskip("dill")
+
+from cideldill.breakpoint_manager import BreakpointManager
 from cideldill.breakpoint_server import BreakpointServer
+from cideldill.serialization import Serializer
 
 
 @pytest.fixture
@@ -158,3 +161,47 @@ def test_root_page_serves_html(server) -> None:
     # Check for key UI elements
     assert b"pausedExecutions" in response.data
     assert b"breakpointsList" in response.data
+
+
+def test_call_start_returns_continue_when_no_breakpoint(server) -> None:
+    """Test POST /api/call/start returns continue action."""
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    serializer = Serializer()
+    target = {"x": 1}
+    target_payload = serializer.force_serialize_with_data(target)
+
+    response = server.test_client().post(
+        "/api/call/start",
+        data=json.dumps({
+            "method_name": "noop",
+            "target": {"cid": target_payload.cid, "data": target_payload.data_base64},
+            "args": [],
+            "kwargs": {},
+            "call_site": {"timestamp": 123.0},
+        }),
+        content_type="application/json",
+    )
+    assert response.status_code == 200
+    data = json.loads(response.data)
+    assert data["action"] == "continue"
+
+
+def test_poll_waits_until_resume_action(server) -> None:
+    """Test /api/poll waits for resume action."""
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    pause_id = server.manager.add_paused_execution({"method_name": "noop"})
+    response = server.test_client().get(f"/api/poll/{pause_id}")
+    assert response.status_code == 200
+    data = json.loads(response.data)
+    assert data["status"] == "waiting"
+
+    server.manager.resume_execution(pause_id, {"action": "continue"})
+    response = server.test_client().get(f"/api/poll/{pause_id}")
+    data = json.loads(response.data)
+    assert data["status"] == "ready"

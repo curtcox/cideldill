@@ -5,21 +5,8 @@ A Python library for logging execution to a remote inspector/debugger/configurat
 
 __version__ = "0.1.0"
 __all__ = [
-    "BreakpointManager",
-    "CASStore",
-    "CIDCache",
-    "CIDStore",
-    "CIDRef",
-    "Inspector",
-    "Interceptor",
-    "Logger",
-    "Serializer",
+    "configure_debug",
+    "with_debug",
 ]
 
-from .breakpoint_manager import BreakpointManager
-from .cas_store import CASStore
-from .cid_store import CIDStore
-from .inspector import Inspector
-from .interceptor import Interceptor
-from .logger import Logger
-from .serialization import CIDCache, CIDRef, Serializer
+from .with_debug import configure_debug, with_debug

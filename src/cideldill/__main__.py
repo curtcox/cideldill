@@ -7,7 +7,7 @@ This script starts the Flask web server for interactive breakpoint management.
 import argparse
 import sys
 
-from cideldill import BreakpointManager
+from cideldill.breakpoint_manager import BreakpointManager
 from cideldill.breakpoint_server import BreakpointServer
 
 
@@ -37,11 +37,14 @@ def main():
     print("\nWeb UI available at:")
     print(f"  http://localhost:{args.port}/")
     print("\nAPI Endpoints:")
-    print("  GET    /api/breakpoints        - List breakpoints")
-    print("  POST   /api/breakpoints        - Add breakpoint")
-    print("  DELETE /api/breakpoints/<name> - Remove breakpoint")
-    print("  GET    /api/paused             - List paused executions")
-    print("  POST   /api/paused/<id>/continue - Continue execution")
+    print("  GET    /api/breakpoints           - List breakpoints")
+    print("  POST   /api/breakpoints           - Add breakpoint")
+    print("  DELETE /api/breakpoints/<name>    - Remove breakpoint")
+    print("  POST   /api/call/start            - Start a debug call")
+    print("  GET    /api/poll/<id>             - Poll for resume action")
+    print("  POST   /api/call/complete         - Complete a debug call")
+    print("  GET    /api/paused                - List paused executions")
+    print("  POST   /api/paused/<id>/continue  - Continue execution")
     print("\nPress Ctrl+C to stop the server")
     print("=" * 60)
 

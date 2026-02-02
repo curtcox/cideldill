@@ -4,11 +4,14 @@ This module provides a Flask-based web server with REST API endpoints
 for managing breakpoints and paused executions through a web UI.
 """
 
+import base64
 import logging
+import time
 
 from flask import Flask, jsonify, request, render_template_string
 
 from cideldill.breakpoint_manager import BreakpointManager
+from cideldill.cid_store import CIDStore
 
 # Configure Flask's logging to show startup info but not request spam
 log = logging.getLogger('werkzeug')
@@ -164,7 +167,7 @@ HTML_TEMPLATE = """
                 <li>See paused executions in real-time</li>
                 <li>Control execution flow (continue, skip)</li>
             </ul>
-            <p><strong>Note:</strong> To set breakpoints on functions, use the Interceptor API in your Python code or generate a full HTML report with the breakpoints page.</p>
+            <p><strong>Note:</strong> Use <code>with_debug()</code> in your Python app to enable debugging and wrap objects.</p>
         </div>
 
         <h2>⏸️ Paused Executions</h2>
@@ -224,15 +227,16 @@ HTML_TEMPLATE = """
         // Create HTML for a paused execution
         function createPausedCard(paused) {
             const callData = paused.call_data;
+            const displayName = callData.method_name || callData.function_name || 'unknown';
             const pausedAt = new Date(paused.paused_at * 1000).toLocaleTimeString();
             
             return `
                 <div class="paused-card">
                     <div class="paused-header">
-                        ⏸️ ${callData.function_name}() - Paused at ${pausedAt}
+                        ⏸️ ${displayName}() - Paused at ${pausedAt}
                     </div>
                     <div class="call-data"><strong>Arguments:</strong>
-${JSON.stringify(callData.args, null, 2)}</div>
+${JSON.stringify(callData.args || callData.kwargs || {}, null, 2)}</div>
                     <div class="actions">
                         <button class="btn btn-continue" onclick="continueExecution('${paused.id}', 'continue')">
                             ▶️ Continue
@@ -327,10 +331,35 @@ class BreakpointServer:
         self.app = Flask(__name__)
         self._running = False
         self._server = None
+        self._cid_store = CIDStore()
+        self._call_seq = 0
         self._setup_routes()
 
     def _setup_routes(self) -> None:
         """Set up Flask routes."""
+
+        def next_call_id() -> str:
+            self._call_seq += 1
+            timestamp = f"{time.time():.6f}"
+            return f"{timestamp}-{self._call_seq:03d}"
+
+        def collect_missing_cids(items) -> list[str]:
+            missing: list[str] = []
+            iterable = items.values() if isinstance(items, dict) else items
+            for item in iterable:
+                if "cid" not in item:
+                    continue
+                if "data" not in item and not self._cid_store.exists(item["cid"]):
+                    missing.append(item["cid"])
+            return missing
+
+        def store_payload(items) -> None:
+            iterable = items.values() if isinstance(items, dict) else items
+            for item in iterable:
+                if "cid" not in item or "data" not in item:
+                    continue
+                data = base64.b64decode(item["data"])
+                self._cid_store.store(item["cid"], data)
 
         @self.app.route('/')
         def index():
@@ -361,6 +390,74 @@ class BreakpointServer:
             self.manager.remove_breakpoint(function_name)
             return jsonify({"status": "ok", "function_name": function_name})
 
+        @self.app.route('/api/call/start', methods=['POST'])
+        def call_start():
+            """Handle call start from debug client."""
+            data = request.get_json() or {}
+            method_name = data.get("method_name")
+            target = data.get("target", {})
+            args = data.get("args", [])
+            kwargs = data.get("kwargs", {})
+
+            missing = []
+            missing.extend(collect_missing_cids([target] if target else []))
+            missing.extend(collect_missing_cids(args))
+            missing.extend(collect_missing_cids(kwargs))
+            if missing:
+                return jsonify({
+                    "error": "cid_not_found",
+                    "missing_cids": missing,
+                    "message": "Resend with full data",
+                }), 400
+
+            store_payload([target] if target else [])
+            store_payload(args)
+            store_payload(kwargs)
+
+            call_id = next_call_id()
+            action = {"call_id": call_id, "action": "continue"}
+
+            if method_name in self.manager.get_breakpoints():
+                pause_id = self.manager.add_paused_execution({
+                    "method_name": method_name,
+                    "args": args,
+                    "kwargs": kwargs,
+                    "call_site": data.get("call_site"),
+                })
+                action = {
+                    "call_id": call_id,
+                    "action": "poll",
+                    "poll_interval_ms": 100,
+                    "poll_url": f"/api/poll/{pause_id}",
+                    "timeout_ms": 60_000,
+                }
+
+            return jsonify(action)
+
+        @self.app.route('/api/poll/<pause_id>', methods=['GET'])
+        def poll(pause_id):
+            """Poll for resume actions."""
+            action = self.manager.pop_resume_action(pause_id)
+            if action is None:
+                return jsonify({"status": "waiting"})
+            return jsonify({"status": "ready", "action": action})
+
+        @self.app.route('/api/call/complete', methods=['POST'])
+        def call_complete():
+            """Handle call completion from debug client."""
+            data = request.get_json() or {}
+            result_data = data.get("result_data")
+            result_cid = data.get("result_cid")
+            exception_data = data.get("exception_data")
+            exception_cid = data.get("exception_cid")
+
+            if result_data and result_cid:
+                self._cid_store.store(result_cid, base64.b64decode(result_data))
+            if exception_data and exception_cid:
+                self._cid_store.store(exception_cid, base64.b64decode(exception_data))
+
+            return jsonify({"status": "ok"})
+
         @self.app.route('/api/paused', methods=['GET'])
         def get_paused():
             """Get all paused executions."""
@@ -379,10 +476,18 @@ class BreakpointServer:
             # Include additional fields if present
             if 'modified_args' in data:
                 action_dict['modified_args'] = data['modified_args']
+            if 'modified_kwargs' in data:
+                action_dict['modified_kwargs'] = data['modified_kwargs']
             if 'fake_result' in data:
                 action_dict['fake_result'] = data['fake_result']
+            if 'fake_result_data' in data:
+                action_dict['fake_result_data'] = data['fake_result_data']
             if 'exception' in data:
                 action_dict['exception'] = data['exception']
+            if 'exception_type' in data:
+                action_dict['exception_type'] = data['exception_type']
+            if 'exception_message' in data:
+                action_dict['exception_message'] = data['exception_message']
 
             self.manager.resume_execution(pause_id, action_dict)
             return jsonify({"status": "ok", "pause_id": pause_id})

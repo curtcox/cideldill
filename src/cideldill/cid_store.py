@@ -6,7 +6,7 @@ import sqlite3
 import threading
 from typing import Dict, List, Optional
 
-from .exceptions import CIDMismatchError
+from .exceptions import DebugCIDMismatchError
 
 
 class CIDStore:
@@ -39,9 +39,9 @@ class CIDStore:
         import hashlib
         import time
 
-        actual_cid = hashlib.sha512(data).hexdigest()
+        actual_cid = hashlib.sha256(data).hexdigest()
         if actual_cid != cid:
-            raise CIDMismatchError(f"CID mismatch: expected {cid}, got {actual_cid}")
+            raise DebugCIDMismatchError(f"CID mismatch: expected {cid}, got {actual_cid}")
 
         with self._lock:
             self._conn.execute(
@@ -61,9 +61,9 @@ class CIDStore:
         now = time.time()
         with self._lock:
             for cid, data in items.items():
-                actual_cid = hashlib.sha512(data).hexdigest()
+                actual_cid = hashlib.sha256(data).hexdigest()
                 if actual_cid != cid:
-                    raise CIDMismatchError(
+                    raise DebugCIDMismatchError(
                         f"CID mismatch: expected {cid}, got {actual_cid}"
                     )
                 self._conn.execute(

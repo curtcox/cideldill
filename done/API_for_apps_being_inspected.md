@@ -1,5 +1,16 @@
 # API for Apps Being Inspected
 
+## Implementation Status
+
+**Status: Complete ✅**
+
+Completed:
+- Implemented `with_debug` entry point and global config.
+- Added debug proxy, client, info, serialization, and exception modules.
+- Updated breakpoint server/manager for request-response flow.
+- Removed old Interceptor/Inspector API and legacy examples/tests.
+- Updated documentation and examples for the new API.
+
 ## Overview
 
 This document specifies how applications being inspected should use the debugging API. The goal is to provide a simple, clean API that eliminates the current sync mechanism in favor of a request-response model where the server controls client behavior.

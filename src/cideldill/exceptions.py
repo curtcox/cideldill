@@ -1,13 +1,15 @@
-"""Custom exceptions for serialization and CID storage."""
+"""Custom exceptions for CID el Dill debugging."""
+
+from __future__ import annotations
 
 from typing import Any
 
 
-class SerializationError(Exception):
-    """Base class for serialization errors."""
+class DebugError(Exception):
+    """Base class for debugging errors."""
 
 
-class DebugSerializationError(SerializationError):
+class DebugSerializationError(DebugError):
     """Raised when an object cannot be serialized with dill."""
 
     def __init__(self, obj: Any, original_error: Exception) -> None:
@@ -17,16 +19,33 @@ class DebugSerializationError(SerializationError):
         super().__init__(message)
 
 
-class CIDNotFoundError(SerializationError):
-    """Raised when a CID is not found on the server."""
+class DebugServerError(DebugError):
+    """Raised when the debug server is unreachable or returns an error."""
+
+
+class DebugTimeoutError(DebugError):
+    """Raised when polling the debug server times out."""
+
+
+class DebugProtocolError(DebugError):
+    """Raised when the debug protocol response is malformed."""
+
+
+class DebugCIDNotFoundError(DebugError):
+    """Raised when a CID is missing on the server."""
 
     def __init__(self, cid: str) -> None:
         self.cid = cid
         super().__init__(f"CID not found: {cid[:32]}...")
 
 
-class CIDMismatchError(SerializationError):
-    """Raised when data doesn't match its claimed CID."""
+class DebugCIDMismatchError(DebugError):
+    """Raised when CID data does not match its claimed hash."""
 
-    def __init__(self, message: str) -> None:
-        super().__init__(message)
+
+class CIDMismatchError(DebugCIDMismatchError):
+    """Backward-compatible alias for CID mismatch errors."""
+
+
+class CIDNotFoundError(DebugCIDNotFoundError):
+    """Backward-compatible alias for CID not found errors."""
