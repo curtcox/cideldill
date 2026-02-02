@@ -26,8 +26,6 @@ Examples:
 """
 
 import argparse
-import os
-import signal
 import subprocess
 import sys
 import time
@@ -96,7 +94,7 @@ def wait_for_server(port, max_attempts=30, delay=0.5):
         True if server is ready, False otherwise
     """
     url = f"http://localhost:{port}/api/breakpoints"
-    for attempt in range(max_attempts):
+    for _ in range(max_attempts):
         try:
             response = requests.get(url, timeout=1)
             if response.status_code == 200:
@@ -117,7 +115,7 @@ def set_breakpoints(port):
         True if breakpoints were set successfully, False otherwise
     """
     url = f"http://localhost:{port}/api/breakpoints"
-    
+
     # Key functions to set breakpoints on
     breakpoint_functions = [
         "whole_numbers",

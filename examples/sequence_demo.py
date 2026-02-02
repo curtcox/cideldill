@@ -19,7 +19,6 @@ import argparse
 import logging
 import platform
 import subprocess
-import sys
 import time
 from typing import Callable, Optional
 
