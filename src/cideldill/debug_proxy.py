@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import builtins
 import inspect
+import logging
 import time
 from typing import Any, Callable
 
 from .debug_client import DebugClient
-from .exceptions import DebugProtocolError
+from .exceptions import DebugProtocolError, DebugServerError
 from .serialization import compute_cid
+
+logger = logging.getLogger(__name__)
 
 
 def _build_stack_trace(skip: int = 2) -> list[dict[str, Any]]:
@@ -82,18 +85,32 @@ class DebugProxy:
             try:
                 result = self._execute_action(action, method, args, kwargs)
             except Exception as exc:  # noqa: BLE001 - re-raise after reporting
-                self._client.record_call_complete(
-                    call_id=call_id,
-                    status="exception",
-                    exception=exc,
-                )
+                try:
+                    self._client.record_call_complete(
+                        call_id=call_id,
+                        status="exception",
+                        exception=exc,
+                    )
+                except DebugServerError:
+                    logger.exception(
+                        "Failed to report call completion to debug server "
+                        "(call_id=%s status=exception)",
+                        call_id,
+                    )
                 raise
 
-            self._client.record_call_complete(
-                call_id=call_id,
-                status="success",
-                result=result,
-            )
+            try:
+                self._client.record_call_complete(
+                    call_id=call_id,
+                    status="success",
+                    result=result,
+                )
+            except DebugServerError:
+                logger.exception(
+                    "Failed to report call completion to debug server "
+                    "(call_id=%s status=success)",
+                    call_id,
+                )
             return result
 
         return wrapper
@@ -125,18 +142,30 @@ class DebugProxy:
             try:
                 result = await self._execute_action_async(action, method, args, kwargs)
             except Exception as exc:  # noqa: BLE001 - re-raise after reporting
-                self._client.record_call_complete(
-                    call_id=call_id,
-                    status="exception",
-                    exception=exc,
-                )
+                try:
+                    self._client.record_call_complete(
+                        call_id=call_id,
+                        status="exception",
+                        exception=exc,
+                    )
+                except DebugServerError:
+                    logger.exception(
+                        "Failed to report call completion to debug server (call_id=%s status=exception)",
+                        call_id,
+                    )
                 raise
 
-            self._client.record_call_complete(
-                call_id=call_id,
-                status="success",
-                result=result,
-            )
+            try:
+                self._client.record_call_complete(
+                    call_id=call_id,
+                    status="success",
+                    result=result,
+                )
+            except DebugServerError:
+                logger.exception(
+                    "Failed to report call completion to debug server (call_id=%s status=success)",
+                    call_id,
+                )
             return result
 
         return wrapper

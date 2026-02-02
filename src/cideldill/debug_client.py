@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections import OrderedDict
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from collections.abc import Iterable
+from typing import Any
 
 import requests
 
@@ -17,13 +19,23 @@ from .exceptions import (
 )
 from .serialization import Serializer
 
+logger = logging.getLogger(__name__)
+
 
 class DebugClient:
     """HTTP client used by debug proxies."""
 
-    def __init__(self, server_url: str, timeout_s: float = 5.0) -> None:
+    def __init__(
+        self,
+        server_url: str,
+        timeout_s: float = 30.0,
+        retry_timeout_s: float = 60.0,
+        retry_sleep_s: float = 0.25,
+    ) -> None:
         self._server_url = server_url.rstrip("/")
         self._timeout_s = timeout_s
+        self._retry_timeout_s = retry_timeout_s
+        self._retry_sleep_s = retry_sleep_s
         self._serializer = Serializer()
         self._object_cache: OrderedDict[str, Any] = OrderedDict()
         self._object_cache_limit = 10_000
@@ -50,10 +62,10 @@ class DebugClient:
         method_name: str,
         target: Any,
         target_cid: str,
-        args: Tuple[Any, ...],
-        kwargs: Dict[str, Any],
-        call_site: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        call_site: dict[str, Any],
+    ) -> dict[str, Any]:
         payload, cid_to_obj = self._build_call_payload(
             method_name, target, target_cid, args, kwargs, call_site
         )
@@ -72,10 +84,10 @@ class DebugClient:
         self,
         call_id: str,
         status: str,
-        result: Optional[Any] = None,
-        exception: Optional[BaseException] = None,
+        result: Any | None = None,
+        exception: BaseException | None = None,
     ) -> None:
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "call_id": call_id,
             "timestamp": time.time(),
             "status": status,
@@ -99,7 +111,7 @@ class DebugClient:
         if response.get("status") != "ok":
             raise DebugServerError("Debug server failed to acknowledge completion")
 
-    def poll(self, action: Dict[str, Any]) -> Dict[str, Any]:
+    def poll(self, action: dict[str, Any]) -> dict[str, Any]:
         poll_url = action.get("poll_url")
         interval_ms = action.get("poll_interval_ms", 100)
         timeout_ms = action.get("timeout_ms", 60_000)
@@ -108,7 +120,19 @@ class DebugClient:
 
         deadline = time.time() + (timeout_ms / 1000.0)
         while time.time() < deadline:
-            response = self._get_json(poll_url)
+            try:
+                response = self._get_json(poll_url)
+            except DebugServerError as exc:
+                if isinstance(exc.__cause__, requests.exceptions.Timeout):
+                    logger.warning(
+                        "Debug server poll timed out (poll_url=%s timeout_s=%.1f). "
+                        "Continuing to wait...",
+                        poll_url,
+                        self._timeout_s,
+                    )
+                    time.sleep(interval_ms / 1000.0)
+                    continue
+                raise
             status = response.get("status")
             if status == "waiting":
                 time.sleep(interval_ms / 1000.0)
@@ -118,7 +142,7 @@ class DebugClient:
             raise DebugProtocolError("Malformed poll response")
         raise DebugTimeoutError("Polling timed out")
 
-    async def async_poll(self, action: Dict[str, Any]) -> Dict[str, Any]:
+    async def async_poll(self, action: dict[str, Any]) -> dict[str, Any]:
         poll_url = action.get("poll_url")
         interval_ms = action.get("poll_interval_ms", 100)
         timeout_ms = action.get("timeout_ms", 60_000)
@@ -127,7 +151,19 @@ class DebugClient:
 
         deadline = time.time() + (timeout_ms / 1000.0)
         while time.time() < deadline:
-            response = self._get_json(poll_url)
+            try:
+                response = self._get_json(poll_url)
+            except DebugServerError as exc:
+                if isinstance(exc.__cause__, requests.exceptions.Timeout):
+                    logger.warning(
+                        "Debug server poll timed out (poll_url=%s timeout_s=%.1f). "
+                        "Continuing to wait...",
+                        poll_url,
+                        self._timeout_s,
+                    )
+                    await asyncio.sleep(interval_ms / 1000.0)
+                    continue
+                raise
             status = response.get("status")
             if status == "waiting":
                 await asyncio.sleep(interval_ms / 1000.0)
@@ -137,7 +173,7 @@ class DebugClient:
             raise DebugProtocolError("Malformed poll response")
         raise DebugTimeoutError("Polling timed out")
 
-    def deserialize_payload_item(self, item: Dict[str, Any]) -> Any:
+    def deserialize_payload_item(self, item: dict[str, Any]) -> Any:
         if "data" in item:
             return self._serializer.deserialize_base64(item["data"])
         if "cid" in item:
@@ -147,10 +183,10 @@ class DebugClient:
             return cached
         raise DebugProtocolError("Malformed serialized item")
 
-    def deserialize_payload_list(self, items: Iterable[Dict[str, Any]]) -> List[Any]:
+    def deserialize_payload_list(self, items: Iterable[dict[str, Any]]) -> list[Any]:
         return [self.deserialize_payload_item(item) for item in items]
 
-    def deserialize_payload_dict(self, items: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    def deserialize_payload_dict(self, items: dict[str, dict[str, Any]]) -> dict[str, Any]:
         return {key: self.deserialize_payload_item(value) for key, value in items.items()}
 
     def _build_call_payload(
@@ -158,11 +194,11 @@ class DebugClient:
         method_name: str,
         target: Any,
         target_cid: str,
-        args: Tuple[Any, ...],
-        kwargs: Dict[str, Any],
-        call_site: Dict[str, Any],
-    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        cid_to_obj: Dict[str, Any] = {}
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        call_site: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        cid_to_obj: dict[str, Any] = {}
 
         target_serialized = self._serializer.serialize(target)
         target_payload = {"cid": target_serialized.cid}
@@ -181,7 +217,7 @@ class DebugClient:
             cid_to_obj[serialized.cid] = arg
             self._remember_object(serialized.cid, arg)
 
-        kwargs_payload: Dict[str, Any] = {}
+        kwargs_payload: dict[str, Any] = {}
         for key, value in kwargs.items():
             serialized = self._serializer.serialize(value)
             payload = {"cid": serialized.cid}
@@ -202,11 +238,11 @@ class DebugClient:
         return payload, cid_to_obj
 
     def _attach_missing_data(
-        self, payload: Dict[str, Any], cid_to_obj: Dict[str, Any], missing: Iterable[str]
-    ) -> Dict[str, Any]:
+        self, payload: dict[str, Any], cid_to_obj: dict[str, Any], missing: Iterable[str]
+    ) -> dict[str, Any]:
         missing_set = set(missing)
 
-        def ensure_data(item: Dict[str, Any]) -> None:
+        def ensure_data(item: dict[str, Any]) -> None:
             cid = item.get("cid")
             if cid in missing_set and "data" not in item:
                 obj = cid_to_obj.get(cid)
@@ -227,15 +263,33 @@ class DebugClient:
 
         return payload
 
-    def _post_json(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        try:
-            response = requests.post(
-                f"{self._server_url}{path}",
-                json=payload,
-                timeout=self._timeout_s,
-            )
-        except requests.RequestException as exc:
-            raise DebugServerError("Debug server request failed") from exc
+    def _post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        deadline = time.time() + self._retry_timeout_s
+        last_exc: BaseException | None = None
+        attempt = 0
+        while time.time() < deadline:
+            attempt += 1
+            try:
+                response = requests.post(
+                    f"{self._server_url}{path}",
+                    json=payload,
+                    timeout=self._timeout_s,
+                )
+                break
+            except requests.exceptions.Timeout as exc:
+                last_exc = exc
+                logger.warning(
+                    "Debug server request timed out (attempt %s path=%s timeout_s=%.1f).",
+                    attempt,
+                    path,
+                    self._timeout_s,
+                )
+                time.sleep(self._retry_sleep_s)
+            except requests.RequestException as exc:
+                raise DebugServerError("Debug server request failed") from exc
+        else:
+            raise DebugServerError("Debug server request failed") from last_exc
+
         if response.status_code >= 400:
             raise DebugServerError(
                 f"Debug server error: {response.status_code} {response.text}"
@@ -245,15 +299,32 @@ class DebugClient:
         except ValueError as exc:
             raise DebugProtocolError("Malformed JSON response") from exc
 
-    def _post_json_allowing_cid_errors(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        try:
-            response = requests.post(
-                f"{self._server_url}{path}",
-                json=payload,
-                timeout=self._timeout_s,
-            )
-        except requests.RequestException as exc:
-            raise DebugServerError("Debug server request failed") from exc
+    def _post_json_allowing_cid_errors(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        deadline = time.time() + self._retry_timeout_s
+        last_exc: BaseException | None = None
+        attempt = 0
+        while time.time() < deadline:
+            attempt += 1
+            try:
+                response = requests.post(
+                    f"{self._server_url}{path}",
+                    json=payload,
+                    timeout=self._timeout_s,
+                )
+                break
+            except requests.exceptions.Timeout as exc:
+                last_exc = exc
+                logger.warning(
+                    "Debug server request timed out (attempt %s path=%s timeout_s=%.1f).",
+                    attempt,
+                    path,
+                    self._timeout_s,
+                )
+                time.sleep(self._retry_sleep_s)
+            except requests.RequestException as exc:
+                raise DebugServerError("Debug server request failed") from exc
+        else:
+            raise DebugServerError("Debug server request failed") from last_exc
 
         try:
             data = response.json()
@@ -266,14 +337,31 @@ class DebugClient:
             )
         return data
 
-    def _get_json(self, path: str) -> Dict[str, Any]:
-        try:
-            response = requests.get(
-                f"{self._server_url}{path}",
-                timeout=self._timeout_s,
-            )
-        except requests.RequestException as exc:
-            raise DebugServerError("Debug server request failed") from exc
+    def _get_json(self, path: str) -> dict[str, Any]:
+        deadline = time.time() + self._retry_timeout_s
+        last_exc: BaseException | None = None
+        attempt = 0
+        while time.time() < deadline:
+            attempt += 1
+            try:
+                response = requests.get(
+                    f"{self._server_url}{path}",
+                    timeout=self._timeout_s,
+                )
+                break
+            except requests.exceptions.Timeout as exc:
+                last_exc = exc
+                logger.warning(
+                    "Debug server request timed out (attempt %s path=%s timeout_s=%.1f).",
+                    attempt,
+                    path,
+                    self._timeout_s,
+                )
+                time.sleep(self._retry_sleep_s)
+            except requests.RequestException as exc:
+                raise DebugServerError("Debug server request failed") from exc
+        else:
+            raise DebugServerError("Debug server request failed") from last_exc
         if response.status_code >= 400:
             raise DebugServerError(
                 f"Debug server error: {response.status_code} {response.text}"
@@ -283,7 +371,7 @@ class DebugClient:
         except ValueError as exc:
             raise DebugProtocolError("Malformed JSON response") from exc
 
-    def _require_action(self, response: Dict[str, Any]) -> Dict[str, Any]:
+    def _require_action(self, response: dict[str, Any]) -> dict[str, Any]:
         if "action" not in response:
             raise DebugProtocolError("Missing action in response")
         return response

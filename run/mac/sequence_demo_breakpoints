@@ -26,6 +26,7 @@ Examples:
 """
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -161,8 +162,6 @@ def main():
     print(f"Starting breakpoint server on port {args.port}...")
     server_process = subprocess.Popen(
         [sys.executable, str(server_script), "--port", str(args.port)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE
     )
 
     # Give the server time to start
@@ -208,13 +207,16 @@ def main():
 
     try:
         # Run the demo with debugging enabled
+        demo_env = os.environ.copy()
+        demo_env["CIDELDILL_SERVER_URL"] = f"http://localhost:{args.port}"
         demo_process = subprocess.Popen(
             [
                 sys.executable,
                 str(demo_script),
                 "--debug", "ON",
                 "--iterations", str(args.iterations)
-            ]
+            ],
+            env=demo_env,
         )
 
         # Wait for the demo to complete

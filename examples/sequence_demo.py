@@ -271,8 +271,8 @@ Examples:
     parser.add_argument(
         "--iterations", "-i",
         type=int,
-        default=10,
-        help="Number of iterations to run (default: 10)"
+        default=500,
+        help="Number of iterations to run (default: 500)"
     )
 
     return parser.parse_args(argv)
