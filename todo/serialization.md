@@ -4,6 +4,19 @@
 
 This document specifies the exact serialization mechanism for the cideldill debugging API. All objects (arguments, return values, exceptions, proxied targets) are serialized using **dill** and identified by their **CID (Content Identifier)**.
 
+## Design Decisions (Resolved)
+
+| Question | Decision | Rationale |
+|----------|----------|-----------|
+| Dill protocol | **Fixed version (4)** | Cross-version compatibility |
+| Hash algorithm | **SHA-512 only** | Stronger collision resistance, 128-char hex CID |
+| Large object handling | **No limit; decompose into components** | Better deduplication via embedded CIDs |
+| Partial failure | **Fail entire request** | Consistent with fail-closed policy |
+| CID store eviction | **No limit (store forever)** | Debugging data is valuable; storage is cheap |
+| Dill settings | **`recurse=True`** | Better closure/nested function handling |
+
+---
+
 ## Core Components
 
 ### 1. Dill Serialization
@@ -13,12 +26,19 @@ This document specifies the exact serialization mechanism for the cideldill debu
 - Can serialize by reference or by value
 - Actively maintained, widely used
 
+**Configuration:**
 ```python
 import dill
 
+# Use fixed protocol version for compatibility
+DILL_PROTOCOL = 4
+
+# Enable recursive descent for better closure handling
+dill.settings['recurse'] = True
+
 def serialize(obj) -> bytes:
     """Serialize any Python object to bytes."""
-    return dill.dumps(obj, protocol=dill.HIGHEST_PROTOCOL)
+    return dill.dumps(obj, protocol=DILL_PROTOCOL)
 
 def deserialize(data: bytes) -> Any:
     """Deserialize bytes back to Python object."""
@@ -27,33 +47,167 @@ def deserialize(data: bytes) -> Any:
 
 ### 2. CID Computation
 
-A **CID (Content Identifier)** is a SHA-256 hash of the dill-pickled representation of an object.
+A **CID (Content Identifier)** is a **SHA-512** hash of the dill-pickled representation of an object.
 
 ```python
 import hashlib
 import dill
 
+DILL_PROTOCOL = 4
+
 def compute_cid(obj) -> str:
     """
     Compute the CID for any Python object.
 
-    Returns a 64-character hex string (SHA-256).
+    Returns a 128-character hex string (SHA-512).
     """
-    pickled = dill.dumps(obj, protocol=dill.HIGHEST_PROTOCOL)
-    return hashlib.sha256(pickled).hexdigest()
+    pickled = dill.dumps(obj, protocol=DILL_PROTOCOL)
+    return hashlib.sha512(pickled).hexdigest()
 ```
 
 **Properties:**
 - **Deterministic**: Same object always produces same CID
-- **Collision-resistant**: Different objects produce different CIDs (with overwhelming probability)
+- **Collision-resistant**: SHA-512 provides 256-bit collision resistance
 - **Content-addressed**: CID depends only on content, not on when/where computed
+- **Fixed length**: Always 128 hex characters
 
-### 3. Client-Side CID Cache
+### 3. Object Decomposition
+
+Large or composite objects are **decomposed into smaller components**, each with their own CID. This enables better deduplication - if two objects share a component, that component is only stored once.
+
+#### Decomposition Strategy
+
+```python
+@dataclass
+class DecomposedObject:
+    """An object decomposed into a shell with CID references."""
+    cid: str                           # CID of this decomposed form
+    shell_data: str                    # Base64 dill pickle of shell (with CID refs)
+    components: Dict[str, 'DecomposedObject']  # CID -> decomposed component
+
+class ObjectDecomposer:
+    """
+    Decomposes objects into components with embedded CID references.
+    """
+
+    # Types that should be decomposed into components
+    DECOMPOSE_TYPES = (list, tuple, dict, set, frozenset)
+
+    # Minimum size (bytes) before decomposition is attempted
+    MIN_DECOMPOSE_SIZE = 1024  # 1KB
+
+    def decompose(self, obj: Any) -> DecomposedObject:
+        """
+        Decompose an object into a shell with CID references.
+
+        For small objects or atomic types, returns the object as-is.
+        For large composite objects, replaces components with CID references.
+        """
+        # First, serialize to check size
+        pickled = dill.dumps(obj, protocol=DILL_PROTOCOL)
+
+        if len(pickled) < self.MIN_DECOMPOSE_SIZE:
+            # Small object - don't decompose
+            return self._make_leaf(obj, pickled)
+
+        if isinstance(obj, dict):
+            return self._decompose_dict(obj)
+        elif isinstance(obj, (list, tuple)):
+            return self._decompose_sequence(obj)
+        elif isinstance(obj, (set, frozenset)):
+            return self._decompose_set(obj)
+        elif hasattr(obj, '__dict__'):
+            return self._decompose_instance(obj)
+        else:
+            # Can't decompose - treat as leaf
+            return self._make_leaf(obj, pickled)
+```
+
+#### CID Reference Marker
+
+When an object is decomposed, components are replaced with a special **CID reference marker**:
+
+```python
+@dataclass
+class CIDRef:
+    """Marker indicating a reference to another object by CID."""
+    cid: str
+
+    def __repr__(self):
+        return f"CIDRef({self.cid[:16]}...)"
+```
+
+#### Decomposition Examples
+
+**List decomposition:**
+```python
+# Original object
+data = [large_object_a, large_object_b, small_value]
+
+# After decomposition (conceptually):
+# - large_object_a -> CID "abc123..."
+# - large_object_b -> CID "def456..."
+# - small_value stays inline (too small to decompose)
+
+shell = [CIDRef("abc123..."), CIDRef("def456..."), small_value]
+# Shell is serialized with its own CID
+```
+
+**Dict decomposition:**
+```python
+# Original object
+data = {"key1": large_value, "key2": small_value}
+
+# After decomposition:
+shell = {"key1": CIDRef("abc123..."), "key2": small_value}
+```
+
+**Class instance decomposition:**
+```python
+# Original object
+obj = MyClass()
+obj.big_data = large_list
+obj.name = "small"
+
+# After decomposition:
+# obj.__dict__ = {"big_data": CIDRef("abc123..."), "name": "small"}
+```
+
+#### Reassembly
+
+When deserializing, CID references are resolved recursively:
+
+```python
+def reassemble(decomposed: DecomposedObject, store: CIDStore) -> Any:
+    """
+    Reassemble a decomposed object by resolving CID references.
+    """
+    shell = dill.loads(base64.b64decode(decomposed.shell_data))
+    return _resolve_refs(shell, decomposed.components, store)
+
+def _resolve_refs(obj: Any, components: Dict, store: CIDStore) -> Any:
+    """Recursively resolve CIDRef markers."""
+    if isinstance(obj, CIDRef):
+        component_data = store.get(obj.cid)
+        if component_data is None:
+            raise CIDNotFoundError(obj.cid)
+        component = dill.loads(component_data)
+        return _resolve_refs(component, components, store)
+    elif isinstance(obj, dict):
+        return {k: _resolve_refs(v, components, store) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_resolve_refs(item, components, store) for item in obj]
+    elif isinstance(obj, tuple):
+        return tuple(_resolve_refs(item, components, store) for item in obj)
+    # ... handle other types
+    return obj
+```
+
+### 4. Client-Side CID Cache
 
 The client maintains an **LRU cache of 10,000 entries** tracking which CIDs have been sent to the server.
 
 ```python
-from functools import lru_cache
 from collections import OrderedDict
 import threading
 
@@ -94,18 +248,19 @@ class CIDCache:
             self._cache.clear()
 ```
 
-### 4. Serialization Result Types
+### 5. Serialization Result Types
 
 ```python
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Dict, List
 
 @dataclass
 class SerializedObject:
-    """Result of serializing an object."""
-    cid: str                      # SHA-256 hash (64 hex chars)
-    data: Optional[bytes]         # Dill pickle (None if CID already sent)
-    data_base64: Optional[str]    # Base64-encoded data for JSON transmission
+    """Result of serializing an object (possibly decomposed)."""
+    cid: str                           # SHA-512 hash (128 hex chars)
+    data: Optional[bytes]              # Dill pickle (None if CID already sent)
+    data_base64: Optional[str]         # Base64-encoded data for JSON
+    components: Dict[str, 'SerializedObject']  # Nested components (if decomposed)
 
 @dataclass
 class CIDReference:
@@ -117,76 +272,152 @@ class CIDWithData:
     """CID with full serialized data."""
     cid: str
     data: str  # Base64-encoded dill pickle
+    components: Optional[Dict[str, 'CIDWithData']] = None
 ```
 
-### 5. Main Serializer Class
+### 6. Main Serializer Class
 
 ```python
 import base64
 import dill
 import hashlib
-from typing import Any, Union
+from typing import Any, Union, Dict
+
+DILL_PROTOCOL = 4
+dill.settings['recurse'] = True
 
 class Serializer:
     """
     Handles serialization of objects with CID-based deduplication.
 
-    Thread-safe. Uses an LRU cache to track sent CIDs.
+    Features:
+    - Object decomposition for better deduplication
+    - LRU cache tracking sent CIDs
+    - Thread-safe operation
     """
+
+    MIN_DECOMPOSE_SIZE = 1024  # 1KB threshold
 
     def __init__(self, cache: Optional[CIDCache] = None):
         self._cache = cache or CIDCache()
 
-    def serialize(self, obj: Any) -> SerializedObject:
+    def serialize(self, obj: Any, decompose: bool = True) -> SerializedObject:
         """
         Serialize an object and compute its CID.
 
-        If the CID has been previously sent (in cache), returns CID only.
-        Otherwise, returns CID + data and marks CID as sent.
+        Args:
+            obj: Object to serialize
+            decompose: Whether to decompose large objects (default True)
+
+        Returns:
+            SerializedObject with CID, data (if new), and components
         """
-        pickled = dill.dumps(obj, protocol=dill.HIGHEST_PROTOCOL)
-        cid = hashlib.sha256(pickled).hexdigest()
+        pickled = dill.dumps(obj, protocol=DILL_PROTOCOL)
+        cid = hashlib.sha512(pickled).hexdigest()
+
+        # Check if we should decompose
+        components = {}
+        if decompose and len(pickled) >= self.MIN_DECOMPOSE_SIZE:
+            obj, components = self._decompose(obj)
+            # Re-serialize after decomposition
+            pickled = dill.dumps(obj, protocol=DILL_PROTOCOL)
+            cid = hashlib.sha512(pickled).hexdigest()
 
         if self._cache.is_sent(cid):
-            return SerializedObject(cid=cid, data=None, data_base64=None)
+            return SerializedObject(
+                cid=cid, data=None, data_base64=None, components={}
+            )
 
         self._cache.mark_sent(cid)
         data_base64 = base64.b64encode(pickled).decode('ascii')
-        return SerializedObject(cid=cid, data=pickled, data_base64=data_base64)
 
-    def serialize_for_transmission(self, obj: Any) -> Union[CIDReference, CIDWithData]:
-        """
-        Serialize an object for network transmission.
+        return SerializedObject(
+            cid=cid,
+            data=pickled,
+            data_base64=data_base64,
+            components=components
+        )
 
-        Returns either CIDReference (if already sent) or CIDWithData (if new).
+    def _decompose(self, obj: Any) -> Tuple[Any, Dict[str, SerializedObject]]:
         """
-        result = self.serialize(obj)
-        if result.data_base64 is None:
-            return CIDReference(cid=result.cid)
-        return CIDWithData(cid=result.cid, data=result.data_base64)
+        Decompose an object, replacing large components with CIDRef.
+
+        Returns (modified_obj, components_dict)
+        """
+        components = {}
+
+        if isinstance(obj, dict):
+            new_dict = {}
+            for k, v in obj.items():
+                new_k, k_comps = self._maybe_replace_with_ref(k, components)
+                new_v, v_comps = self._maybe_replace_with_ref(v, components)
+                components.update(k_comps)
+                components.update(v_comps)
+                new_dict[new_k] = new_v
+            return new_dict, components
+
+        elif isinstance(obj, (list, tuple)):
+            new_items = []
+            for item in obj:
+                new_item, item_comps = self._maybe_replace_with_ref(item, components)
+                components.update(item_comps)
+                new_items.append(new_item)
+            if isinstance(obj, tuple):
+                return tuple(new_items), components
+            return new_items, components
+
+        elif hasattr(obj, '__dict__'):
+            new_dict, comps = self._decompose(obj.__dict__)
+            obj.__dict__.update(new_dict)
+            return obj, comps
+
+        return obj, components
+
+    def _maybe_replace_with_ref(
+        self, obj: Any, components: Dict
+    ) -> Tuple[Any, Dict[str, SerializedObject]]:
+        """
+        Replace object with CIDRef if large enough, otherwise return as-is.
+        """
+        pickled = dill.dumps(obj, protocol=DILL_PROTOCOL)
+
+        if len(pickled) < self.MIN_DECOMPOSE_SIZE:
+            return obj, {}
+
+        # Recursively serialize the component
+        serialized = self.serialize(obj, decompose=True)
+        components[serialized.cid] = serialized
+        return CIDRef(serialized.cid), {serialized.cid: serialized}
 
     def to_json_dict(self, obj: Any) -> dict:
         """
         Serialize an object to a JSON-compatible dict.
 
-        Format: {"cid": "...", "data": "..."} or {"cid": "..."}
+        Format:
+        {
+            "cid": "...",
+            "data": "..." (if new),
+            "components": {"cid": {...}, ...} (if decomposed)
+        }
         """
-        result = self.serialize_for_transmission(obj)
-        if isinstance(result, CIDReference):
-            return {"cid": result.cid}
-        return {"cid": result.cid, "data": result.data}
+        result = self.serialize(obj)
 
-    def force_serialize_with_data(self, obj: Any) -> CIDWithData:
-        """
-        Serialize an object, always including data (ignores cache).
+        output = {"cid": result.cid}
+        if result.data_base64:
+            output["data"] = result.data_base64
+        if result.components:
+            output["components"] = {
+                cid: self._serialized_to_dict(comp)
+                for cid, comp in result.components.items()
+                if comp.data_base64  # Only include components with data
+            }
+        return output
 
-        Used when server reports CID not found.
-        """
-        pickled = dill.dumps(obj, protocol=dill.HIGHEST_PROTOCOL)
-        cid = hashlib.sha256(pickled).hexdigest()
-        data_base64 = base64.b64encode(pickled).decode('ascii')
-        self._cache.mark_sent(cid)
-        return CIDWithData(cid=cid, data=data_base64)
+    def _serialized_to_dict(self, s: SerializedObject) -> dict:
+        d = {"cid": s.cid}
+        if s.data_base64:
+            d["data"] = s.data_base64
+        return d
 
     @staticmethod
     def deserialize(data_base64: str) -> Any:
@@ -195,10 +426,16 @@ class Serializer:
         return dill.loads(pickled)
 
     @staticmethod
+    def compute_cid(obj: Any) -> str:
+        """Compute CID without full serialization tracking."""
+        pickled = dill.dumps(obj, protocol=DILL_PROTOCOL)
+        return hashlib.sha512(pickled).hexdigest()
+
+    @staticmethod
     def verify_cid(data_base64: str, expected_cid: str) -> bool:
         """Verify that data matches the expected CID."""
         pickled = base64.b64decode(data_base64)
-        actual_cid = hashlib.sha256(pickled).hexdigest()
+        actual_cid = hashlib.sha512(pickled).hexdigest()
         return actual_cid == expected_cid
 ```
 
@@ -208,18 +445,19 @@ class Serializer:
 
 ### CID Store
 
-The server maintains a persistent store mapping CIDs to their pickled data.
+The server maintains a **persistent store** mapping CIDs to their pickled data. **No eviction** - data is stored forever.
 
 ```python
 from typing import Optional
 import sqlite3
 import threading
+import hashlib
 
 class CIDStore:
     """
     Server-side storage for CID -> pickled data mappings.
 
-    Uses SQLite for persistence. Thread-safe.
+    Uses SQLite for persistence. Thread-safe. No eviction.
     """
 
     def __init__(self, db_path: str = ":memory:"):
@@ -233,25 +471,47 @@ class CIDStore:
                 CREATE TABLE IF NOT EXISTS cid_data (
                     cid TEXT PRIMARY KEY,
                     data BLOB NOT NULL,
-                    created_at REAL NOT NULL
+                    created_at REAL NOT NULL,
+                    size_bytes INTEGER NOT NULL
                 )
             """)
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_created ON cid_data(created_at)"
+            )
             self._conn.commit()
 
     def store(self, cid: str, data: bytes) -> None:
         """Store CID -> data mapping. Verifies CID matches data."""
-        import hashlib
         import time
 
-        actual_cid = hashlib.sha256(data).hexdigest()
+        actual_cid = hashlib.sha512(data).hexdigest()
         if actual_cid != cid:
             raise CIDMismatchError(f"CID mismatch: expected {cid}, got {actual_cid}")
 
         with self._lock:
             self._conn.execute(
-                "INSERT OR IGNORE INTO cid_data (cid, data, created_at) VALUES (?, ?, ?)",
-                (cid, data, time.time())
+                """INSERT OR IGNORE INTO cid_data
+                   (cid, data, created_at, size_bytes) VALUES (?, ?, ?, ?)""",
+                (cid, data, time.time(), len(data))
             )
+            self._conn.commit()
+
+    def store_many(self, items: Dict[str, bytes]) -> None:
+        """Store multiple CID -> data mappings atomically."""
+        import time
+        now = time.time()
+
+        with self._lock:
+            for cid, data in items.items():
+                actual_cid = hashlib.sha512(data).hexdigest()
+                if actual_cid != cid:
+                    raise CIDMismatchError(f"CID mismatch: expected {cid}, got {actual_cid}")
+
+                self._conn.execute(
+                    """INSERT OR IGNORE INTO cid_data
+                       (cid, data, created_at, size_bytes) VALUES (?, ?, ?, ?)""",
+                    (cid, data, now, len(data))
+                )
             self._conn.commit()
 
     def get(self, cid: str) -> Optional[bytes]:
@@ -263,6 +523,16 @@ class CIDStore:
             row = cursor.fetchone()
             return row[0] if row else None
 
+    def get_many(self, cids: List[str]) -> Dict[str, bytes]:
+        """Retrieve multiple CIDs. Returns dict of found CIDs."""
+        with self._lock:
+            placeholders = ','.join('?' * len(cids))
+            cursor = self._conn.execute(
+                f"SELECT cid, data FROM cid_data WHERE cid IN ({placeholders})",
+                cids
+            )
+            return {row[0]: row[1] for row in cursor.fetchall()}
+
     def exists(self, cid: str) -> bool:
         """Check if CID exists in store."""
         with self._lock:
@@ -271,32 +541,46 @@ class CIDStore:
             )
             return cursor.fetchone() is not None
 
-    def verify(self, cid: str) -> bool:
-        """Verify that stored data matches CID."""
-        data = self.get(cid)
-        if data is None:
-            return False
-        import hashlib
-        actual_cid = hashlib.sha256(data).hexdigest()
-        return actual_cid == cid
+    def missing(self, cids: List[str]) -> List[str]:
+        """Return list of CIDs that are NOT in the store."""
+        found = set(self.get_many(cids).keys())
+        return [cid for cid in cids if cid not in found]
+
+    def stats(self) -> dict:
+        """Return storage statistics."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT COUNT(*), SUM(size_bytes) FROM cid_data"
+            )
+            count, total_size = cursor.fetchone()
+            return {
+                "count": count or 0,
+                "total_size_bytes": total_size or 0
+            }
 ```
 
 ---
 
 ## Transmission Protocol
 
-### Request Format
+### Request Format (with Decomposition)
 
-When the client sends a request, each object is represented as either:
+When the client sends a request, objects may include nested components:
 
-**CID only** (object previously sent):
 ```json
-{"cid": "abc123..."}
+{
+    "cid": "abc123...",
+    "data": "<base64>",
+    "components": {
+        "def456...": {"cid": "def456...", "data": "<base64>"},
+        "ghi789...": {"cid": "ghi789...", "data": "<base64>"}
+    }
+}
 ```
 
-**CID with data** (new object):
+Or for cached objects (CID only):
 ```json
-{"cid": "abc123...", "data": "<base64 dill pickle>"}
+{"cid": "abc123..."}
 ```
 
 ### Request Processing
@@ -304,33 +588,64 @@ When the client sends a request, each object is represented as either:
 ```python
 def process_request_object(obj_dict: dict, store: CIDStore) -> Any:
     """
-    Process an object from a request.
+    Process an object from a request, handling decomposition.
 
-    If data is provided, stores it and returns deserialized object.
-    If only CID, retrieves from store and returns deserialized object.
+    Stores all components, then deserializes and reassembles.
 
     Raises:
-        CIDNotFoundError: If CID-only and CID not in store
-        CIDMismatchError: If data doesn't match CID
+        CIDNotFoundError: If any required CID is missing
+        CIDMismatchError: If any data doesn't match its CID
     """
     cid = obj_dict["cid"]
 
+    # First, store any provided components
+    if "components" in obj_dict:
+        for comp_cid, comp_data in obj_dict["components"].items():
+            if "data" in comp_data:
+                data = base64.b64decode(comp_data["data"])
+                store.store(comp_cid, data)
+
+    # Store the main object data if provided
     if "data" in obj_dict:
-        # New data provided - store and deserialize
         data = base64.b64decode(obj_dict["data"])
-        store.store(cid, data)  # Raises CIDMismatchError if mismatch
-        return dill.loads(data)
+        store.store(cid, data)
+        shell = dill.loads(data)
     else:
         # CID only - retrieve from store
         data = store.get(cid)
         if data is None:
             raise CIDNotFoundError(cid)
-        return dill.loads(data)
+        shell = dill.loads(data)
+
+    # Reassemble by resolving CIDRef markers
+    return _resolve_refs(shell, store)
+
+def _resolve_refs(obj: Any, store: CIDStore) -> Any:
+    """Recursively resolve CIDRef markers."""
+    if isinstance(obj, CIDRef):
+        data = store.get(obj.cid)
+        if data is None:
+            raise CIDNotFoundError(obj.cid)
+        resolved = dill.loads(data)
+        return _resolve_refs(resolved, store)
+    elif isinstance(obj, dict):
+        return {_resolve_refs(k, store): _resolve_refs(v, store)
+                for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_resolve_refs(item, store) for item in obj]
+    elif isinstance(obj, tuple):
+        return tuple(_resolve_refs(item, store) for item in obj)
+    elif isinstance(obj, (set, frozenset)):
+        resolved = {_resolve_refs(item, store) for item in obj}
+        return frozenset(resolved) if isinstance(obj, frozenset) else resolved
+    elif hasattr(obj, '__dict__'):
+        for k, v in list(obj.__dict__.items()):
+            obj.__dict__[k] = _resolve_refs(v, store)
+        return obj
+    return obj
 ```
 
-### Response for Missing CID
-
-When the server receives a CID-only reference for an unknown CID:
+### Response for Missing CIDs
 
 ```json
 {
@@ -339,8 +654,6 @@ When the server receives a CID-only reference for an unknown CID:
     "message": "Resend with full data"
 }
 ```
-
-The client must then resend using `force_serialize_with_data()`.
 
 ---
 
@@ -362,7 +675,7 @@ class CIDNotFoundError(SerializationError):
     """Raised when a CID is not found on the server."""
     def __init__(self, cid: str):
         self.cid = cid
-        super().__init__(f"CID not found: {cid}")
+        super().__init__(f"CID not found: {cid[:32]}...")
 
 class CIDMismatchError(SerializationError):
     """Raised when data doesn't match its claimed CID."""
@@ -376,58 +689,37 @@ class CIDMismatchError(SerializationError):
 
 ### 1. None
 
-`None` is serialized like any other object:
+`None` is serialized like any other object (never decomposed):
 ```python
 cid = compute_cid(None)  # Always produces the same CID
 ```
 
 ### 2. Circular References
 
-Dill handles circular references natively:
+Dill handles circular references natively. Decomposition does NOT break circular references - if a component references its parent, the CIDRef system handles it:
 ```python
 a = []
 a.append(a)  # Circular reference
+# Serialized as-is (not decomposed) since circularity would break
 cid = compute_cid(a)  # Works correctly
 ```
 
-### 3. Large Objects
+### 3. CIDRef Marker
 
-Large objects are serialized in full. No chunking or streaming (debugging is not performance-critical).
-
-### 4. Unpicklable Objects
-
-Some objects cannot be pickled even with dill:
-- Open file handles
-- Database connections
-- Some C extension objects
-
-These raise `DebugSerializationError`.
-
-### 5. Functions and Lambdas
-
-Dill can serialize most functions and lambdas:
+The `CIDRef` class is registered with dill for proper serialization:
 ```python
-f = lambda x: x + 1
-cid = compute_cid(f)  # Works
-
-def make_adder(n):
-    return lambda x: x + n
-add5 = make_adder(5)
-cid = compute_cid(add5)  # Works (closure captured)
+@dill.register(CIDRef)
+def _pickle_cidref(pickler, obj):
+    pickler.save_reduce(CIDRef, (obj.cid,), obj=obj)
 ```
 
-### 6. Classes and Instances
+### 4. Small Objects
 
-```python
-class MyClass:
-    def __init__(self, value):
-        self.value = value
+Objects smaller than `MIN_DECOMPOSE_SIZE` (1KB) are never decomposed, even if composite.
 
-obj = MyClass(42)
-cid = compute_cid(obj)  # Works
+### 5. Deeply Nested Decomposition
 
-cid_class = compute_cid(MyClass)  # Works (class itself)
-```
+Decomposition is recursive - a large dict containing large lists will have both the dict shell and each large list as separate CIDs.
 
 ---
 
@@ -436,8 +728,8 @@ cid_class = compute_cid(MyClass)  # Works (class itself)
 ### 1. CID Computation Tests
 
 ```python
-def test_compute_cid_returns_64_char_hex():
-    """CID is a 64-character hexadecimal string."""
+def test_compute_cid_returns_128_char_hex():
+    """CID is a 128-character hexadecimal string (SHA-512)."""
 
 def test_compute_cid_deterministic():
     """Same object always produces same CID."""
@@ -468,6 +760,9 @@ def test_compute_cid_nested_structure():
 
 def test_compute_cid_deep_nesting():
     """Can compute CID for deeply nested structures (100+ levels)."""
+
+def test_compute_cid_uses_sha512():
+    """CID is computed using SHA-512."""
 ```
 
 ### 2. Dill Serialization Tests
@@ -529,6 +824,12 @@ def test_serialize_large_object():
 
 def test_serialize_deeply_nested():
     """Can serialize deeply nested structures (1000+ levels)."""
+
+def test_dill_protocol_version():
+    """Serialization uses fixed protocol version 4."""
+
+def test_dill_recurse_setting():
+    """Dill recurse setting is enabled."""
 ```
 
 ### 3. Serialization Failure Tests
@@ -554,9 +855,83 @@ def test_serialization_error_includes_type():
 
 def test_serialization_error_includes_original():
     """DebugSerializationError includes the original exception."""
+
+def test_partial_failure_fails_entire_request():
+    """If any object fails to serialize, entire request fails."""
 ```
 
-### 4. Deserialization Tests
+### 4. Object Decomposition Tests
+
+```python
+def test_decompose_small_object_unchanged():
+    """Objects below MIN_DECOMPOSE_SIZE are not decomposed."""
+
+def test_decompose_large_list():
+    """Large list is decomposed into shell with CIDRefs."""
+
+def test_decompose_large_dict():
+    """Large dict is decomposed into shell with CIDRefs."""
+
+def test_decompose_large_tuple():
+    """Large tuple is decomposed into shell with CIDRefs."""
+
+def test_decompose_large_set():
+    """Large set is decomposed into shell with CIDRefs."""
+
+def test_decompose_class_instance():
+    """Class instance with large __dict__ is decomposed."""
+
+def test_decompose_nested_structure():
+    """Nested structures are recursively decomposed."""
+
+def test_decompose_preserves_small_values():
+    """Small values within large structures stay inline."""
+
+def test_decompose_generates_components():
+    """Decomposition produces correct components dict."""
+
+def test_decompose_cidref_serializable():
+    """CIDRef markers are themselves serializable."""
+
+def test_decompose_does_not_break_circular():
+    """Circular references are not decomposed (would break)."""
+
+def test_decompose_shared_component_deduped():
+    """Same component appearing twice shares one CID."""
+
+def test_decompose_threshold_configurable():
+    """MIN_DECOMPOSE_SIZE threshold is respected."""
+```
+
+### 5. Reassembly Tests
+
+```python
+def test_reassemble_simple_object():
+    """Can reassemble object with no CIDRefs."""
+
+def test_reassemble_with_cidref():
+    """Can reassemble object containing CIDRefs."""
+
+def test_reassemble_nested_cidrefs():
+    """Can reassemble deeply nested CIDRefs."""
+
+def test_reassemble_dict_with_cidref_keys():
+    """Can reassemble dict where keys are CIDRefs."""
+
+def test_reassemble_class_instance():
+    """Can reassemble class instance with CIDRef in __dict__."""
+
+def test_reassemble_missing_component_raises():
+    """Missing component CID raises CIDNotFoundError."""
+
+def test_reassemble_preserves_types():
+    """Reassembly preserves original types (list, tuple, etc.)."""
+
+def test_reassemble_preserves_identity():
+    """Shared components maintain identity after reassembly."""
+```
+
+### 6. Deserialization Tests
 
 ```python
 def test_deserialize_basic_types():
@@ -588,9 +963,12 @@ def test_roundtrip_equality():
 
 def test_roundtrip_function_behavior():
     """Deserialized function behaves same as original."""
+
+def test_roundtrip_with_decomposition():
+    """Decomposed object reassembles to equal original."""
 ```
 
-### 5. CID Cache Tests
+### 7. CID Cache Tests
 
 ```python
 def test_cache_initially_empty():
@@ -622,9 +1000,12 @@ def test_cache_thread_safety():
 
 def test_cache_thread_safety_mark_and_check():
     """Concurrent mark_sent and is_sent are safe."""
+
+def test_cache_128_char_cids():
+    """Cache handles 128-character SHA-512 CIDs."""
 ```
 
-### 6. Serializer Class Tests
+### 8. Serializer Class Tests
 
 ```python
 def test_serializer_new_object_includes_data():
@@ -639,6 +1020,9 @@ def test_serializer_to_json_dict_new():
 def test_serializer_to_json_dict_cached():
     """to_json_dict returns {cid} for cached objects."""
 
+def test_serializer_to_json_dict_with_components():
+    """to_json_dict includes components for decomposed objects."""
+
 def test_serializer_force_serialize_always_includes_data():
     """force_serialize_with_data always includes data."""
 
@@ -650,9 +1034,12 @@ def test_serializer_verify_cid_incorrect():
 
 def test_serializer_thread_safety():
     """Serializer is thread-safe under concurrent use."""
+
+def test_serializer_decompose_flag():
+    """decompose=False prevents decomposition."""
 ```
 
-### 7. CID Store Tests
+### 9. CID Store Tests
 
 ```python
 def test_store_and_retrieve():
@@ -676,17 +1063,32 @@ def test_exists_true():
 def test_exists_false():
     """exists() returns False for unknown CID."""
 
-def test_verify_stored_data():
-    """verify() returns True for valid stored data."""
-
 def test_store_thread_safety():
     """Store is thread-safe under concurrent access."""
 
 def test_store_persistence():
     """Data persists across store instances (file-backed)."""
+
+def test_store_many_atomic():
+    """store_many is atomic - all or nothing."""
+
+def test_get_many():
+    """Can retrieve multiple CIDs at once."""
+
+def test_missing():
+    """missing() returns list of unknown CIDs."""
+
+def test_stats():
+    """stats() returns count and total size."""
+
+def test_store_no_eviction():
+    """Store keeps all data forever (no eviction)."""
+
+def test_store_128_char_cids():
+    """Store handles 128-character SHA-512 CIDs."""
 ```
 
-### 8. Protocol Tests
+### 10. Protocol Tests
 
 ```python
 def test_process_request_with_data():
@@ -706,9 +1108,18 @@ def test_process_multiple_objects():
 
 def test_process_mixed_new_and_cached():
     """Can process request with mix of new and cached objects."""
+
+def test_process_with_components():
+    """Can process request with decomposed components."""
+
+def test_process_nested_components():
+    """Can process request with nested component references."""
+
+def test_process_missing_component():
+    """Missing component raises CIDNotFoundError."""
 ```
 
-### 9. Base64 Encoding Tests
+### 11. Base64 Encoding Tests
 
 ```python
 def test_base64_encode_decode_roundtrip():
@@ -724,7 +1135,7 @@ def test_base64_handles_unicode():
     """Serialization handles unicode strings correctly."""
 ```
 
-### 10. Edge Case Tests
+### 12. Edge Case Tests
 
 ```python
 def test_very_long_string():
@@ -768,9 +1179,12 @@ def test_counter():
 
 def test_partial_function():
     """Can serialize functools.partial objects."""
+
+def test_cidref_in_various_contexts():
+    """CIDRef works in dict keys, set elements, etc."""
 ```
 
-### 11. Performance Tests
+### 13. Performance Tests
 
 ```python
 def test_serialize_performance_small():
@@ -787,9 +1201,12 @@ def test_cache_lookup_performance():
 
 def test_cache_full_performance():
     """Cache operations remain fast when full."""
+
+def test_decomposition_performance():
+    """Decomposition doesn't significantly slow serialization."""
 ```
 
-### 12. Integration Tests
+### 14. Integration Tests
 
 ```python
 def test_full_workflow_new_object():
@@ -804,44 +1221,43 @@ def test_full_workflow_cid_not_found_recovery():
 def test_full_workflow_multiple_objects():
     """Complete workflow with multiple objects in one request."""
 
+def test_full_workflow_decomposed_object():
+    """Complete workflow with decomposed object and components."""
+
 def test_client_server_roundtrip():
     """Object survives complete client->server->client roundtrip."""
+
+def test_roundtrip_with_decomposition():
+    """Decomposed object survives roundtrip and equals original."""
 ```
 
 ---
 
 ## Open Questions
 
-1. **Dill protocol version**: Should we use `dill.HIGHEST_PROTOCOL` or a fixed version for compatibility?
-   - a) HIGHEST_PROTOCOL (best performance)
-   - b) Fixed version (e.g., 4) for cross-version compatibility
+1. **Decomposition depth limit**: Should there be a maximum depth for recursive decomposition?
+   - a) No limit (decompose fully)
+   - b) Fixed limit (e.g., 10 levels)
    - c) Configurable
 
-2. **Hash algorithm**: SHA-256 is specified, but should we support alternatives?
-   - a) SHA-256 only (simplicity)
-   - b) Configurable (SHA-256, SHA-512, BLAKE2)
-   - c) Include algorithm in CID prefix (e.g., "sha256:abc...")
+2. **Decomposition of keys**: Should dict keys be decomposed (replaced with CIDRef)?
+   - a) Yes, decompose keys too
+   - b) No, only decompose values (keys must be hashable)
+   - c) Only decompose non-hashable keys
 
-3. **Large object handling**: Should there be a size limit for serialized objects?
-   - a) No limit (debugging is not performance-critical)
-   - b) Warn above threshold (e.g., 10MB)
-   - c) Error above threshold
+3. **CIDRef hashability**: Should CIDRef be hashable (for use as dict key/set element)?
+   - a) Yes, hash based on cid string
+   - b) No, CIDRef should not be used as key
 
-4. **Partial failure**: When serializing multiple objects, if one fails, should we:
-   - a) Fail the entire request
-   - b) Return partial results with error markers
-   - c) Skip failed objects with warnings
+4. **Circular reference detection**: How to handle circular references during decomposition?
+   - a) Detect and skip decomposition for circular structures
+   - b) Track seen objects to avoid infinite recursion
+   - c) Let dill handle it naturally (don't decompose circular refs)
 
-5. **CID store eviction**: Should the server-side CID store have a size limit or TTL?
-   - a) No limit (store everything forever)
-   - b) TTL-based eviction (e.g., 24 hours)
-   - c) Size-based eviction (e.g., 1GB max)
-   - d) Configurable
-
-6. **Dill settings**: Should we use any special dill settings?
-   - a) Default settings
-   - b) `dill.settings['recurse'] = True` for better closure handling
-   - c) Configurable
+5. **Component transmission order**: When sending decomposed objects, should components be sent:
+   - a) All in one request (current design)
+   - b) Depth-first (leaf components first)
+   - c) Breadth-first
 
 ---
 
@@ -852,7 +1268,7 @@ dill>=0.3.6
 ```
 
 No other external dependencies required. Uses standard library:
-- `hashlib` for SHA-256
+- `hashlib` for SHA-512
 - `base64` for encoding
 - `sqlite3` for server-side storage
 - `threading` for thread safety
@@ -864,7 +1280,8 @@ No other external dependencies required. Uses standard library:
 
 ```
 src/cideldill/
-├── serialization.py      # Serializer, compute_cid, CIDCache
+├── serialization.py      # Serializer, compute_cid, CIDCache, CIDRef
+├── decomposition.py      # ObjectDecomposer, reassembly logic
 ├── cid_store.py          # Server-side CIDStore
 ├── exceptions.py         # DebugSerializationError, CIDNotFoundError, CIDMismatchError
 ```
@@ -875,6 +1292,7 @@ src/cideldill/
 
 1. Resolve open questions
 2. Implement core serialization module
-3. Implement CID store
-4. Write comprehensive tests
-5. Integrate with debug client and server
+3. Implement decomposition logic
+4. Implement CID store
+5. Write comprehensive tests
+6. Integrate with debug client and server
