@@ -31,6 +31,8 @@ class BreakpointManager:
         self._paused_executions: dict[str, dict[str, Any]] = {}
         self._resume_actions: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
+        # Default behavior when a breakpoint is hit: "stop" or "continue"
+        self._default_behavior: str = "stop"
 
     def add_breakpoint(self, function_name: str) -> None:
         """Add a breakpoint on a function.
@@ -136,3 +138,39 @@ class BreakpointManager:
         with self._lock:
             action = self._resume_actions.pop(pause_id, None)
         return action
+
+    def set_default_behavior(self, behavior: str) -> None:
+        """Set the default behavior when a breakpoint is hit.
+
+        Args:
+            behavior: Either "stop" (pause execution) or "continue" (log only).
+        """
+        if behavior not in {"stop", "continue"}:
+            raise ValueError("Behavior must be 'stop' or 'continue'")
+        with self._lock:
+            self._default_behavior = behavior
+
+    def get_default_behavior(self) -> str:
+        """Get the current default breakpoint behavior.
+
+        Returns:
+            "stop" or "continue"
+        """
+        with self._lock:
+            return self._default_behavior
+
+    def should_pause_at_breakpoint(self, function_name: str) -> bool:
+        """Check if execution should pause at a breakpoint.
+
+        Args:
+            function_name: Name of the function being called.
+
+        Returns:
+            True if execution should pause, False if it should continue.
+        """
+        with self._lock:
+            # Check if there's a breakpoint set for this function
+            has_breakpoint = function_name in self._breakpoints
+            # Only pause if breakpoint exists AND default behavior is "stop"
+            return has_breakpoint and self._default_behavior == "stop"
+

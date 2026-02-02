@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+"""Sequence Demo with Breakpoints.
+
+This script demonstrates the use of breakpoints with the sequence_demo example.
+It starts the breakpoint server, sets breakpoints on key sequence_demo functions,
+launches the demo with debugging enabled, and opens a browser to the breakpoint UI.
+
+Usage:
+    sequence_demo_breakpoints [OPTIONS]
+
+Options:
+    --port PORT         Port for breakpoint server (default: 5000)
+    --iterations N      Number of iterations to run (default: 10)
+    --no-browser        Don't open browser automatically
+    -h, --help          Show this help message
+
+Examples:
+    # Run with defaults (port 5000, 10 iterations, open browser)
+    sequence_demo_breakpoints
+
+    # Run on custom port with more iterations
+    sequence_demo_breakpoints --port 8080 --iterations 20
+
+    # Run without opening browser
+    sequence_demo_breakpoints --no-browser
+"""
+
+import argparse
+import subprocess
+import sys
+import time
+import webbrowser
+from pathlib import Path
+
+# Add src to path if running from repo
+script_dir = Path(__file__).parent
+repo_root = script_dir.parent.parent
+sys.path.insert(0, str(repo_root / "src"))
+
+try:
+    import requests
+except ImportError:
+    print("Error: requests module not found. Please install it:")
+    print("  pip install requests")
+    sys.exit(1)
+
+
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Run sequence demo with breakpoints and web UI",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  sequence_demo_breakpoints                  # Run with defaults
+  sequence_demo_breakpoints --port 8080      # Use custom port
+  sequence_demo_breakpoints --iterations 20  # Run more iterations
+  sequence_demo_breakpoints --no-browser     # Don't open browser
+        """
+    )
+
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=5000,
+        help="Port for breakpoint server (default: 5000)"
+    )
+
+    parser.add_argument(
+        "--iterations",
+        type=int,
+        default=10,
+        help="Number of iterations to run (default: 10)"
+    )
+
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Don't open browser automatically"
+    )
+
+    return parser.parse_args()
+
+
+def wait_for_server(port, max_attempts=30, delay=0.5):
+    """Wait for the server to be ready.
+
+    Args:
+        port: Port number to check
+        max_attempts: Maximum number of attempts
+        delay: Delay between attempts in seconds
+
+    Returns:
+        True if server is ready, False otherwise
+    """
+    url = f"http://localhost:{port}/api/breakpoints"
+    for _ in range(max_attempts):
+        try:
+            response = requests.get(url, timeout=1)
+            if response.status_code == 200:
+                return True
+        except requests.exceptions.RequestException:
+            pass
+        time.sleep(delay)
+    return False
+
+
+def set_breakpoints(port):
+    """Set breakpoints on key sequence_demo functions.
+
+    Args:
+        port: Port number of the breakpoint server
+
+    Returns:
+        True if breakpoints were set successfully, False otherwise
+    """
+    url = f"http://localhost:{port}/api/breakpoints"
+
+    # Key functions to set breakpoints on
+    breakpoint_functions = [
+        "whole_numbers",
+        "announce_say_default",
+        "delay_1s",
+    ]
+
+    success = True
+    for func_name in breakpoint_functions:
+        try:
+            response = requests.post(
+                url,
+                json={"function_name": func_name},
+                timeout=5
+            )
+            if response.status_code == 200:
+                print(f"✓ Set breakpoint on: {func_name}")
+            else:
+                print(f"✗ Failed to set breakpoint on: {func_name}")
+                success = False
+        except requests.exceptions.RequestException as e:
+            print(f"✗ Error setting breakpoint on {func_name}: {e}")
+            success = False
+
+    return success
+
+
+def main():
+    """Main entry point."""
+    args = parse_args()
+
+    print("=" * 60)
+    print("CID el Dill - Sequence Demo with Breakpoints")
+    print("=" * 60)
+    print()
+
+    # Start the breakpoint server
+    server_script = script_dir / "breakpoint_server"
+    if not server_script.exists():
+        print(f"✗ Error: Breakpoint server script not found at {server_script}")
+        return 1
+
+    print(f"Starting breakpoint server on port {args.port}...")
+    server_process = subprocess.Popen(
+        [sys.executable, str(server_script), "--port", str(args.port)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+
+    # Give the server time to start
+    print("Waiting for server to be ready...")
+    if not wait_for_server(args.port):
+        print("✗ Error: Server failed to start")
+        server_process.terminate()
+        return 1
+
+    print("✓ Server is ready")
+    print()
+
+    # Set breakpoints
+    print("Setting breakpoints on sequence_demo functions...")
+    if not set_breakpoints(args.port):
+        print("⚠ Warning: Some breakpoints failed to set")
+    print()
+
+    # Open browser to the UI
+    ui_url = f"http://localhost:{args.port}/"
+    if not args.no_browser:
+        print(f"Opening browser to: {ui_url}")
+        try:
+            webbrowser.open(ui_url)
+            print("✓ Browser opened")
+        except Exception as e:
+            print(f"⚠ Warning: Could not open browser: {e}")
+            print(f"   Please open manually: {ui_url}")
+    else:
+        print(f"Web UI available at: {ui_url}")
+    print()
+
+    # Run the sequence demo
+    demo_script = repo_root / "examples" / "sequence_demo.py"
+    if not demo_script.exists():
+        print(f"✗ Error: Demo script not found at {demo_script}")
+        server_process.terminate()
+        return 1
+
+    print(f"Starting sequence_demo with {args.iterations} iterations...")
+    print("=" * 60)
+    print()
+
+    try:
+        # Run the demo with debugging enabled
+        demo_process = subprocess.Popen(
+            [
+                sys.executable,
+                str(demo_script),
+                "--debug", "ON",
+                "--iterations", str(args.iterations)
+            ]
+        )
+
+        # Wait for the demo to complete
+        demo_process.wait()
+
+    except KeyboardInterrupt:
+        print("\n\n✓ Interrupted by user")
+        demo_process.terminate()
+    finally:
+        # Clean up: stop the server
+        print("\n" + "=" * 60)
+        print("Stopping breakpoint server...")
+        server_process.terminate()
+        server_process.wait(timeout=5)
+        print("✓ Server stopped")
+
+    print("=" * 60)
+    print("✓ Sequence demo with breakpoints completed")
+    print("=" * 60)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

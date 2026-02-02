@@ -110,6 +110,27 @@ python -m cideldill --port 5000
 
 Then open `http://localhost:5000/` to manage breakpoints and paused calls.
 
+### Try the Interactive Demo
+
+The `sequence_demo` example demonstrates breakpoint functionality with a simple repeating sequence:
+
+```bash
+# Quick start with breakpoints (macOS)
+run/mac/sequence_demo_breakpoints
+
+# Customize options
+run/mac/sequence_demo_breakpoints --port 8080 --iterations 20 --no-browser
+
+# Or run manually with CLI options
+python examples/sequence_demo.py --debug ON --iterations 10
+```
+
+The `sequence_demo_breakpoints` script automatically:
+- Starts the breakpoint server
+- Sets breakpoints on key functions
+- Opens the web UI in your browser
+- Runs the demo with debugging enabled
+
 ## Documentation
 
 - `docs/with_debug_api.md` for the full API reference

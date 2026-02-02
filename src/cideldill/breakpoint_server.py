@@ -9,7 +9,7 @@ import logging
 import threading
 import time
 
-from flask import Flask, jsonify, request, render_template_string
+from flask import Flask, jsonify, render_template_string, request
 
 from cideldill.breakpoint_manager import BreakpointManager
 from cideldill.cid_store import CIDStore
@@ -177,6 +177,45 @@ HTML_TEMPLATE = """
         </div>
 
         <h2>🔴 Active Breakpoints</h2>
+        <div class="breakpoint-list">
+            <div style="margin-bottom: 20px; padding: 15px; background-color: #fff3cd;
+                        border: 1px solid #ffc107; border-radius: 8px;">
+                <div style="margin-bottom: 10px;">
+                    <strong>Default Breakpoint Behavior:</strong>
+                </div>
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <label style="display: flex; align-items: center; cursor: pointer;">
+                        <input type="radio" name="behavior" value="stop"
+                               id="behavior-stop" checked
+                               onchange="setBehavior('stop')"
+                               style="margin-right: 5px; cursor: pointer;">
+                        <span>⏸️ Stop at breakpoints</span>
+                    </label>
+                    <label style="display: flex; align-items: center; cursor: pointer;">
+                        <input type="radio" name="behavior" value="continue"
+                               id="behavior-continue"
+                               onchange="setBehavior('continue')"
+                               style="margin-right: 5px; cursor: pointer;">
+                        <span>▶️ Continue (log only)</span>
+                    </label>
+                </div>
+                <div style="margin-top: 10px; font-size: 0.9em; color: #856404;">
+                    When "Stop" is selected, execution pauses at breakpoints.
+                    When "Continue" is selected, breakpoints are logged but don't pause.
+                </div>
+            </div>
+            <div style="margin-bottom: 15px;">
+                <input type="text" id="newBreakpointInput"
+                       placeholder="Enter function name..."
+                       style="padding: 8px; width: 300px; border: 1px solid #ddd;
+                              border-radius: 4px;">
+                <button class="btn" onclick="addBreakpoint()"
+                        style="background-color: #4CAF50; color: white;
+                               margin-left: 10px;">
+                    ➕ Add Breakpoint
+                </button>
+            </div>
+        </div>
         <div id="breakpointsList">
             <div class="empty-state">No breakpoints set.</div>
         </div>
@@ -186,34 +225,167 @@ HTML_TEMPLATE = """
         const API_BASE = '/api';
         let updateInterval = null;
 
+        // Set breakpoint behavior
+        async function setBehavior(behavior) {
+            try {
+                const response = await fetch(`${API_BASE}/behavior`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ behavior: behavior })
+                });
+
+                if (response.ok) {
+                    const icon = behavior === 'stop' ? '⏸️' : '▶️';
+                    const action = behavior === 'stop' ? 'stop at' : 'continue through';
+                    showMessage(`${icon} Will ${action} breakpoints`, 'success');
+                } else {
+                    showMessage('Failed to set behavior', 'error');
+                }
+            } catch (e) {
+                console.error('Failed to set behavior:', e);
+                showMessage('Error setting behavior', 'error');
+            }
+        }
+
+        // Load current behavior setting
+        async function loadBehavior() {
+            try {
+                const response = await fetch(`${API_BASE}/behavior`);
+                const data = await response.json();
+
+                const behavior = data.behavior || 'stop';
+                document.getElementById(`behavior-${behavior}`).checked = true;
+            } catch (e) {
+                console.error('Failed to load behavior:', e);
+            }
+        }
+
+        // Add a new breakpoint
+        async function addBreakpoint() {
+            const input = document.getElementById('newBreakpointInput');
+            const functionName = input.value.trim();
+
+            if (!functionName) {
+                showMessage('Please enter a function name', 'error');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE}/breakpoints`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ function_name: functionName })
+                });
+
+                if (response.ok) {
+                    showMessage(`Breakpoint added: ${functionName}`, 'success');
+                    input.value = '';  // Clear input
+                    loadBreakpoints();  // Refresh list
+                } else {
+                    showMessage('Failed to add breakpoint', 'error');
+                }
+            } catch (e) {
+                console.error('Failed to add breakpoint:', e);
+                showMessage('Error adding breakpoint', 'error');
+            }
+        }
+
+        // Remove a breakpoint
+        async function removeBreakpoint(functionName) {
+            try {
+                const encoded = encodeURIComponent(functionName);
+                const response = await fetch(
+                    `${API_BASE}/breakpoints/${encoded}`,
+                    { method: 'DELETE' }
+                );
+
+                if (response.ok) {
+                    showMessage(`Breakpoint removed: ${functionName}`, 'success');
+                    loadBreakpoints();  // Refresh list
+                } else {
+                    showMessage('Failed to remove breakpoint', 'error');
+                }
+            } catch (e) {
+                console.error('Failed to remove breakpoint:', e);
+                showMessage('Error removing breakpoint', 'error');
+            }
+        }
+
+        // Show a status message
+        function showMessage(message, type) {
+            const msgDiv = document.getElementById('statusMessage');
+            msgDiv.textContent = message;
+            msgDiv.style.display = 'block';
+            const successColor = type === 'success';
+            msgDiv.style.backgroundColor = successColor ? '#d4edda' : '#f8d7da';
+            msgDiv.style.color = successColor ? '#155724' : '#721c24';
+            msgDiv.style.border = `1px solid ${successColor ? '#c3e6cb' : '#f5c6cb'}`;
+            msgDiv.style.padding = '10px';
+            msgDiv.style.borderRadius = '4px';
+            msgDiv.style.marginBottom = '20px';
+
+            setTimeout(() => {
+                msgDiv.style.display = 'none';
+            }, 3000);
+        }
+
         // Load active breakpoints
         async function loadBreakpoints() {
             try {
                 const response = await fetch(`${API_BASE}/breakpoints`);
                 const data = await response.json();
-                
+
                 const container = document.getElementById('breakpointsList');
                 if (data.breakpoints && data.breakpoints.length > 0) {
-                    container.innerHTML = '<div class="breakpoint-list">' + 
+                    container.innerHTML = '<div class="breakpoint-list">' +
                         data.breakpoints.map(bp => `
                             <div class="breakpoint-item">
                                 <span><strong>${bp}</strong>()</span>
+                                <button class="btn btn-remove"
+                                        onclick="removeBreakpoint('${bp}')">
+                                    🗑️ Remove
+                                </button>
                             </div>
                         `).join('') + '</div>';
                 } else {
-                    container.innerHTML = '<div class="empty-state">No breakpoints set.</div>';
+                    container.innerHTML = '<div class="empty-state">' +
+                        'No breakpoints set.</div>';
                 }
             } catch (e) {
                 console.error('Failed to load breakpoints:', e);
             }
         }
 
+        // Handle Enter key in input field
+        document.addEventListener('DOMContentLoaded', function() {
+            // Load initial state
+            loadBehavior();
+            loadBreakpoints();
+            loadPausedExecutions();
+
+            // Set up Enter key handler
+            const input = document.getElementById('newBreakpointInput');
+            if (input) {
+                input.addEventListener('keypress', function(e) {
+                    if (e.key === 'Enter') {
+                        addBreakpoint();
+                    }
+                });
+            }
+
+            // Poll for updates every 2 seconds
+            updateInterval = setInterval(() => {
+                loadPausedExecutions();
+                loadBreakpoints();
+            }, 2000);
+        });
+
         // Load paused executions
         async function loadPausedExecutions() {
             try {
                 const response = await fetch(`${API_BASE}/paused`);
                 const data = await response.json();
-                
+
                 const container = document.getElementById('pausedExecutions');
                 if (data.paused && data.paused.length > 0) {
                     container.innerHTML = data.paused.map(p => createPausedCard(p)).join('');
@@ -230,7 +402,7 @@ HTML_TEMPLATE = """
             const callData = paused.call_data;
             const displayName = callData.method_name || callData.function_name || 'unknown';
             const pausedAt = new Date(paused.paused_at * 1000).toLocaleTimeString();
-            
+
             return `
                 <div class="paused-card">
                     <div class="paused-header">
@@ -258,7 +430,7 @@ ${JSON.stringify({ args: callData.args || [], kwargs: callData.kwargs || {} }, n
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ action: action })
                 });
-                
+
                 if (response.ok) {
                     showMessage('Execution resumed', 'success');
                     loadPausedExecutions();
@@ -394,6 +566,24 @@ class BreakpointServer:
             self.manager.remove_breakpoint(function_name)
             return jsonify({"status": "ok", "function_name": function_name})
 
+        @self.app.route('/api/behavior', methods=['GET'])
+        def get_behavior():
+            """Get the default breakpoint behavior."""
+            return jsonify({
+                "behavior": self.manager.get_default_behavior()
+            })
+
+        @self.app.route('/api/behavior', methods=['POST'])
+        def set_behavior():
+            """Set the default breakpoint behavior."""
+            data = request.get_json()
+            behavior = data.get('behavior')
+            if behavior not in {'stop', 'continue'}:
+                return jsonify({"error": "behavior must be 'stop' or 'continue'"}), 400
+
+            self.manager.set_default_behavior(behavior)
+            return jsonify({"status": "ok", "behavior": behavior})
+
         @self.app.route('/api/call/start', methods=['POST'])
         def call_start():
             """Handle call start from debug client."""
@@ -421,7 +611,8 @@ class BreakpointServer:
             call_id = next_call_id()
             action = {"call_id": call_id, "action": "continue"}
 
-            if method_name in self.manager.get_breakpoints():
+            # Check if we should pause at this breakpoint
+            if self.manager.should_pause_at_breakpoint(method_name):
                 pause_id = self.manager.add_paused_execution({
                     "method_name": method_name,
                     "args": args,

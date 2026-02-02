@@ -5,6 +5,7 @@ as well as the overall sequence execution logic.
 """
 
 import logging
+import sys
 import time
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -254,3 +255,76 @@ def test_sequence_consistency() -> None:
     assert multiples_of_2(10) == multiples_of_2(10)
     assert primes(7) == primes(7)
     assert composites(9) == composites(9)
+
+
+# Command-line Interface Tests
+def test_parse_args_default() -> None:
+    """Test parse_args with default values."""
+    from examples.sequence_demo import parse_args
+    
+    args = parse_args([])
+    assert args.debug == "OFF"
+    assert args.iterations == 10
+
+
+def test_parse_args_debug_on() -> None:
+    """Test parse_args with debug flag ON."""
+    from examples.sequence_demo import parse_args
+    
+    args = parse_args(["--debug", "ON"])
+    assert args.debug == "ON"
+    assert args.iterations == 10
+
+
+def test_parse_args_debug_off() -> None:
+    """Test parse_args with debug flag OFF."""
+    from examples.sequence_demo import parse_args
+    
+    args = parse_args(["--debug", "OFF"])
+    assert args.debug == "OFF"
+    assert args.iterations == 10
+
+
+def test_parse_args_iterations() -> None:
+    """Test parse_args with custom iterations."""
+    from examples.sequence_demo import parse_args
+    
+    args = parse_args(["--iterations", "20"])
+    assert args.debug == "OFF"
+    assert args.iterations == 20
+
+
+def test_parse_args_debug_and_iterations() -> None:
+    """Test parse_args with both debug and iterations."""
+    from examples.sequence_demo import parse_args
+    
+    args = parse_args(["--debug", "ON", "--iterations", "5"])
+    assert args.debug == "ON"
+    assert args.iterations == 5
+
+
+def test_parse_args_short_flags() -> None:
+    """Test parse_args with short flags."""
+    from examples.sequence_demo import parse_args
+    
+    args = parse_args(["-d", "ON", "-i", "15"])
+    assert args.debug == "ON"
+    assert args.iterations == 15
+
+
+def test_main_with_args(capsys: Any) -> None:
+    """Test main function accepts CLI arguments."""
+    from examples.sequence_demo import main
+    
+    # Mock with_debug to avoid server connection
+    with patch("examples.sequence_demo.with_debug") as mock_with_debug:
+        with patch("examples.sequence_demo.run_sequence") as mock_run_sequence:
+            # Simulate CLI args
+            with patch("sys.argv", ["sequence_demo.py", "--debug", "ON", "--iterations", "3"]):
+                main()
+            
+            # Verify with_debug was called with "ON"
+            mock_with_debug.assert_called()
+            
+            # Verify run_sequence was called with iterations=3
+            assert mock_run_sequence.call_args[1]["iterations"] == 3

@@ -15,11 +15,12 @@ Functions:
     - Delay functions: 0.1s, 1s, 10s, 100s
 """
 
+import argparse
 import logging
 import platform
 import subprocess
 import time
-from typing import Callable
+from typing import Callable, Optional
 
 from cideldill import with_debug
 
@@ -239,24 +240,66 @@ def run_sequence(
         delay_fn()
 
 
+def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+    """Parse command-line arguments.
+
+    Args:
+        argv: Command-line arguments (default: sys.argv[1:])
+
+    Returns:
+        Parsed arguments namespace
+    """
+    parser = argparse.ArgumentParser(
+        description="Run the sequence demo with configurable debugging and iterations",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  sequence_demo.py                           # Run with defaults (debug=OFF, iterations=10)
+  sequence_demo.py --debug ON                # Enable debugging
+  sequence_demo.py --iterations 20           # Run 20 iterations
+  sequence_demo.py -d ON -i 5                # Enable debugging with 5 iterations
+        """
+    )
+
+    parser.add_argument(
+        "--debug", "-d",
+        default="OFF",
+        choices=["ON", "OFF"],
+        help="Enable or disable debugging (default: OFF)"
+    )
+
+    parser.add_argument(
+        "--iterations", "-i",
+        type=int,
+        default=10,
+        help="Number of iterations to run (default: 10)"
+    )
+
+    return parser.parse_args(argv)
+
+
 def main() -> None:
-    """Run the sequence demo with default configuration."""
-    # Default configuration: with_debug('OFF'), whole numbers, say, 1 second
-    with_debug("OFF")
+    """Run the sequence demo with command-line configurable options."""
+    # Parse command-line arguments
+    args = parse_args()
+
+    # Configure debugging based on command-line argument
+    with_debug(args.debug)
 
     # Wrap functions with with_debug
     sequence_fn = with_debug(whole_numbers)
     announce_fn = with_debug(announce_say_default)
     delay_fn = with_debug(delay_1s)
 
-    print("Starting sequence demo with default configuration:")
+    print("Starting sequence demo with configuration:")
     print("- Sequence: whole numbers")
     print("- Announce: say (default voice)")
     print("- Delay: 1 second")
-    print("- Iterations: 10")
+    print(f"- Iterations: {args.iterations}")
+    print(f"- Debug: {args.debug}")
     print()
 
-    run_sequence(sequence_fn, announce_fn, delay_fn, iterations=10, initial_value=0)
+    run_sequence(sequence_fn, announce_fn, delay_fn, iterations=args.iterations, initial_value=0)
 
 
 if __name__ == "__main__":
