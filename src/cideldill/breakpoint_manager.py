@@ -73,24 +73,24 @@ class BreakpointManager:
         with self._lock:
             if function_name not in self._breakpoints:
                 raise KeyError(function_name)
-            return self._breakpoint_behaviors.get(function_name, self._default_behavior)
+            return self._breakpoint_behaviors.get(function_name, "yield")
 
     def get_breakpoint_behaviors(self) -> dict[str, str]:
         with self._lock:
             return {
-                name: self._breakpoint_behaviors.get(name, self._default_behavior)
+                name: self._breakpoint_behaviors.get(name, "yield")
                 for name in self._breakpoints
             }
 
     def set_breakpoint_behavior(self, function_name: str, behavior: str) -> None:
         if behavior == "continue":
             behavior = "go"
-        if behavior not in {"stop", "go"}:
-            raise ValueError("Behavior must be 'stop' or 'go'")
+        if behavior not in {"stop", "go", "yield"}:
+            raise ValueError("Behavior must be 'stop', 'go', or 'yield'")
         with self._lock:
             if function_name not in self._breakpoints:
                 raise KeyError(function_name)
-            if behavior == self._default_behavior:
+            if behavior == "yield":
                 self._breakpoint_behaviors.pop(function_name, None)
             else:
                 self._breakpoint_behaviors[function_name] = behavior
@@ -218,6 +218,11 @@ class BreakpointManager:
             has_breakpoint = function_name in self._breakpoints
             if not has_breakpoint:
                 return False
-            behavior = self._breakpoint_behaviors.get(function_name, self._default_behavior)
+            selected_behavior = self._breakpoint_behaviors.get(function_name, "yield")
+            behavior = (
+                self._default_behavior
+                if selected_behavior == "yield"
+                else selected_behavior
+            )
             return behavior == "stop"
 

@@ -68,8 +68,8 @@ def test_get_breakpoints_endpoint(server) -> None:
     data = json.loads(response.data)
     assert "func1" in data["breakpoints"]
     assert "func2" in data["breakpoints"]
-    assert data["breakpoint_behaviors"]["func1"] == "stop"
-    assert data["breakpoint_behaviors"]["func2"] == "stop"
+    assert data["breakpoint_behaviors"]["func1"] == "yield"
+    assert data["breakpoint_behaviors"]["func2"] == "yield"
 
 
 def test_add_breakpoint_endpoint(server) -> None:

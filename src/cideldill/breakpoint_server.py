@@ -136,6 +136,9 @@ HTML_TEMPLATE = """
         .breakpoint-item.go {
             border-left-color: #2E7D32;
         }
+        .breakpoint-item.yield {
+            border-left-color: #fbc02d;
+        }
         .state-toggle {
             display: flex;
             gap: 8px;
@@ -307,7 +310,7 @@ HTML_TEMPLATE = """
                 });
 
                 if (response.ok) {
-                    const icon = behavior === 'stop' ? '🛑' : '🟢';
+                    const icon = behavior === 'stop' ? '🛑' : (behavior === 'yield' ? '⚠️' : '🟢');
                     showMessage(`${icon} Set breakpoint behavior: ${functionName}`, 'success');
                     loadBreakpoints();
                 } else {
@@ -348,13 +351,18 @@ HTML_TEMPLATE = """
                     const states = data.breakpoint_behaviors || {};
                     container.innerHTML = '<div class="breakpoint-list">' +
                         data.breakpoints.map(bp => `
-                            <div class="breakpoint-item ${states[bp] === 'go' ? 'go' : 'stop'}">
+                            <div class="breakpoint-item ${states[bp] === 'go' ? 'go' : (states[bp] === 'yield' ? 'yield' : 'stop')}">
                                 <span><strong>${bp}</strong>()</span>
                                 <div class="state-toggle">
                                     <button class="state-btn ${states[bp] === 'stop' ? 'selected' : ''}"
                                             onclick="setBreakpointBehavior('${bp}', 'stop')"
                                             title="Stop (pause)">
                                         🛑
+                                    </button>
+                                    <button class="state-btn ${states[bp] === 'yield' ? 'selected' : ''}"
+                                            onclick="setBreakpointBehavior('${bp}', 'yield')"
+                                            title="Yield (inherit global default)">
+                                        ⚠️
                                     </button>
                                     <button class="state-btn ${states[bp] === 'go' ? 'selected' : ''}"
                                             onclick="setBreakpointBehavior('${bp}', 'go')"
@@ -588,8 +596,8 @@ class BreakpointServer:
             behavior = data.get('behavior')
             if behavior == 'continue':
                 behavior = 'go'
-            if behavior not in {'stop', 'go'}:
-                return jsonify({"error": "behavior must be 'stop' or 'go'"}), 400
+            if behavior not in {'stop', 'go', 'yield'}:
+                return jsonify({"error": "behavior must be 'stop', 'go', or 'yield'"}), 400
             try:
                 self.manager.set_breakpoint_behavior(function_name, behavior)
             except KeyError:

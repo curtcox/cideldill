@@ -105,8 +105,8 @@ def test_web_ui_has_toggle_breakpoint_functionality():
     # Check for per-breakpoint stop/go toggle
     assert "setbreakpointbehavior" in HTML_TEMPLATE.lower(), \
         "Web UI should include per-breakpoint behavior toggle functionality"
-    assert "🛑" in HTML_TEMPLATE and "🟢" in HTML_TEMPLATE, \
-        "Web UI should use stop/go icons"
+    assert "🛑" in HTML_TEMPLATE and "⚠️" in HTML_TEMPLATE and "🟢" in HTML_TEMPLATE, \
+        "Web UI should use stop/yield/go icons"
 
     # There should be no remove-breakpoint UI
     assert "removebreakpoint" not in HTML_TEMPLATE.lower(), \
