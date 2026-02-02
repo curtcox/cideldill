@@ -12,6 +12,9 @@ import threading
 import time
 
 from flask import Flask, jsonify, render_template_string, request
+from pygments import highlight
+from pygments.formatters import HtmlFormatter
+from pygments.lexers import get_lexer_by_name
 
 from cideldill.breakpoint_manager import BreakpointManager
 from cideldill.cid_store import CIDStore
@@ -591,16 +594,24 @@ class BreakpointServer:
                 return jsonify({"error": "file_not_found"}), 404
 
             with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
-                lines = f.read().splitlines()
+                source = f.read()
 
-            title = f"{os.path.basename(file_path)}:{line_no}" if line_no else os.path.basename(file_path)
-            rendered_lines = []
-            for idx, raw in enumerate(lines, start=1):
-                escaped = html.escape(raw)
-                css_class = "hl" if line_no and idx == line_no else ""
-                rendered_lines.append(
-                    f"<div class='ln {css_class}'><span class='num'>{idx}</span><span class='code'>{escaped}</span></div>"
-                )
+            title = (
+                f"{os.path.basename(file_path)}:{line_no}"
+                if line_no
+                else os.path.basename(file_path)
+            )
+
+            lexer = get_lexer_by_name("python", stripall=True)
+            formatter = HtmlFormatter(
+                linenos=True,
+                cssclass="source",
+                style="default",
+                hl_lines=[line_no] if line_no else [],
+                linenostart=1,
+            )
+            highlighted = highlight(source, lexer, formatter)
+            css_styles = formatter.get_style_defs(".source")
 
             page = """<!DOCTYPE html>
 <html lang='en'>
@@ -609,14 +620,17 @@ class BreakpointServer:
   <meta name='viewport' content='width=device-width, initial-scale=1.0'>
   <title>{title}</title>
   <style>
-    body {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; margin: 0; padding: 16px; background: #f5f5f5; }}
+    body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 16px; background: #f5f5f5; }}
     .header {{ margin-bottom: 12px; }}
-    .file {{ font-weight: 600; }}
-    .ln {{ display: grid; grid-template-columns: 64px 1fr; gap: 12px; padding: 2px 6px; border-radius: 4px; }}
-    .ln.hl {{ background: #fff3cd; }}
-    .num {{ color: #666; text-align: right; user-select: none; }}
-    .code {{ white-space: pre; overflow-x: auto; }}
-    .container {{ background: white; border: 1px solid #ddd; border-radius: 8px; padding: 12px; }}
+    .file {{ font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; }}
+    .container {{ background: white; border: 1px solid #ddd; border-radius: 8px; padding: 12px; overflow-x: auto; }}
+    .source {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size: 0.95em; }}
+    .source .hll {{ background-color: #fff3cd; display: block; }}
+    .source pre {{ margin: 0; }}
+    .source table {{ width: 100%; border-spacing: 0; }}
+    .source td.linenos {{ user-select: none; color: #666; padding-right: 12px; }}
+    .source td.code {{ width: 100%; }}
+    {css_styles}
   </style>
 </head>
 <body>
@@ -627,7 +641,12 @@ class BreakpointServer:
     {body}
   </div>
 </body>
-</html>""".format(title=html.escape(title), file_path=html.escape(file_path), body="\n".join(rendered_lines))
+</html>""".format(
+                title=html.escape(title),
+                file_path=html.escape(file_path),
+                css_styles=css_styles,
+                body=highlighted,
+            )
 
             return page
 
