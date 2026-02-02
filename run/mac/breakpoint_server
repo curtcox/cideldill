@@ -29,7 +29,7 @@ from pathlib import Path
 
 # Try to import from installed package first, fall back to local source
 try:
-    from cideldill import BreakpointManager
+    from cideldill.breakpoint_manager import BreakpointManager
     from cideldill.breakpoint_server import BreakpointServer
     # If cideldill is installed, we're good
 except ImportError:
@@ -37,7 +37,7 @@ except ImportError:
     script_dir = Path(__file__).parent
     repo_root = script_dir.parent.parent
     sys.path.insert(0, str(repo_root / "src"))
-    from cideldill import BreakpointManager
+    from cideldill.breakpoint_manager import BreakpointManager
     from cideldill.breakpoint_server import BreakpointServer
 
 
