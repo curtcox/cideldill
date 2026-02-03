@@ -168,6 +168,11 @@ HTML_TEMPLATE = """
         }
         .breakpoint-name {
             font-weight: 600;
+            color: #1976D2;
+            text-decoration: none;
+        }
+        .breakpoint-name:hover {
+            text-decoration: underline;
         }
         .breakpoint-options {
             margin-left: auto;
@@ -532,7 +537,7 @@ HTML_TEMPLATE = """
                                             🟢
                                         </button>
                                     </div>
-                                    <span class="breakpoint-name">${escapeHtml(bp)}()</span>
+                                    <a href="/breakpoint/${encodeURIComponent(bp)}/history" class="breakpoint-name">${escapeHtml(bp)}()</a>
                                     <div class="state-toggle">
                                         <button class="state-btn ${afterStates[bp] === 'stop' ? 'selected' : ''}"
                                                 onclick="setAfterBreakpointBehavior('${bp}', 'stop')"
@@ -963,6 +968,173 @@ class BreakpointServer:
 
             return page
 
+        @self.app.route('/breakpoint/<function_name>/history', methods=['GET'])
+        def breakpoint_history_page(function_name: str):
+            """Serve the breakpoint execution history page."""
+            history = self.manager.get_execution_history(function_name)
+
+            # Format history entries for display
+            history_html = ""
+            if history:
+                for record in history:
+                    call_data = record.get("call_data", {})
+                    completed_at = record.get("completed_at", 0)
+                    status = call_data.get("status", "unknown")
+                    pretty_args = call_data.get("pretty_args", [])
+                    pretty_kwargs = call_data.get("pretty_kwargs", {})
+                    pretty_result = call_data.get("pretty_result")
+                    exception = call_data.get("exception")
+
+                    # Format timestamp
+                    from datetime import datetime
+                    timestamp = datetime.fromtimestamp(completed_at).strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    ) if completed_at else "Unknown"
+
+                    # Format arguments
+                    args_display = ", ".join(str(a) for a in pretty_args)
+                    if pretty_kwargs:
+                        kwargs_display = ", ".join(
+                            f"{k}={v}" for k, v in pretty_kwargs.items()
+                        )
+                        if args_display:
+                            args_display += ", " + kwargs_display
+                        else:
+                            args_display = kwargs_display
+
+                    status_class = "success" if status == "success" else "error"
+                    status_icon = "✓" if status == "success" else "✗"
+
+                    history_html += f"""
+                    <div class="execution-record">
+                        <div class="execution-header">
+                            <span class="execution-time">{html.escape(timestamp)}</span>
+                            <span class="execution-status {status_class}">{status_icon} {html.escape(status)}</span>
+                        </div>
+                        <div class="execution-details">
+                            <div class="execution-call">
+                                <strong>Call:</strong>
+                                <code>{html.escape(function_name)}({html.escape(args_display)})</code>
+                            </div>
+                    """
+                    if pretty_result is not None:
+                        history_html += f"""
+                            <div class="execution-result">
+                                <strong>Result:</strong>
+                                <code>{html.escape(str(pretty_result))}</code>
+                            </div>
+                        """
+                    if exception:
+                        history_html += f"""
+                            <div class="execution-exception">
+                                <strong>Exception:</strong>
+                                <code>{html.escape(str(exception))}</code>
+                            </div>
+                        """
+                    history_html += """
+                        </div>
+                    </div>
+                    """
+            else:
+                history_html = '<div class="empty-state">No executions recorded yet.</div>'
+
+            page = """<!DOCTYPE html>
+<html lang='en'>
+<head>
+  <meta charset='UTF-8'>
+  <meta name='viewport' content='width=device-width, initial-scale=1.0'>
+  <title>Execution History - {function_name}()</title>
+  <style>
+    body {{
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        margin: 0;
+        padding: 20px;
+        background-color: #f5f5f5;
+    }}
+    .container {{ max-width: 1200px; margin: 0 auto; }}
+    h1 {{
+        color: #333;
+        border-bottom: 3px solid #4CAF50;
+        padding-bottom: 10px;
+    }}
+    .back-link {{
+        display: inline-block;
+        margin-bottom: 20px;
+        color: #1976D2;
+        text-decoration: none;
+    }}
+    .back-link:hover {{ text-decoration: underline; }}
+    .execution-record {{
+        background-color: white;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 15px;
+        margin-bottom: 10px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }}
+    .execution-header {{
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 10px;
+        padding-bottom: 10px;
+        border-bottom: 1px solid #eee;
+    }}
+    .execution-time {{
+        color: #666;
+        font-size: 0.9em;
+    }}
+    .execution-status {{
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-size: 0.85em;
+        font-weight: 600;
+    }}
+    .execution-status.success {{
+        background-color: #d4edda;
+        color: #155724;
+    }}
+    .execution-status.error {{
+        background-color: #f8d7da;
+        color: #721c24;
+    }}
+    .execution-details code {{
+        background-color: #f8f8f8;
+        padding: 2px 6px;
+        border-radius: 3px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.9em;
+    }}
+    .execution-call, .execution-result, .execution-exception {{
+        margin: 8px 0;
+    }}
+    .execution-exception code {{
+        background-color: #f8d7da;
+        color: #721c24;
+    }}
+    .empty-state {{
+        text-align: center;
+        padding: 40px;
+        color: #666;
+        font-style: italic;
+    }}
+  </style>
+</head>
+<body>
+  <div class='container'>
+    <a href="/" class="back-link">← Back to Breakpoints</a>
+    <h1>Execution History: {function_name}()</h1>
+    <p>Past executions ordered by time (most recent first):</p>
+    {history_html}
+  </div>
+</body>
+</html>""".format(
+                function_name=html.escape(function_name),
+                history_html=history_html,
+            )
+
+            return page
+
         @self.app.route('/api/breakpoints', methods=['GET'])
         def get_breakpoints():
             """Get list of all breakpoints."""
@@ -1066,6 +1238,16 @@ class BreakpointServer:
                 "status": "ok",
                 "function_name": function_name,
                 "replacement_function": replacement,
+            })
+
+        @self.app.route('/api/breakpoints/<function_name>/history', methods=['GET'])
+        def get_breakpoint_history(function_name):
+            """Get execution history for a specific breakpoint."""
+            limit = request.args.get('limit', type=int)
+            history = self.manager.get_execution_history(function_name, limit=limit)
+            return jsonify({
+                "function_name": function_name,
+                "history": history,
             })
 
         @self.app.route('/api/behavior', methods=['GET'])
@@ -1181,6 +1363,23 @@ class BreakpointServer:
                 self._cid_store.store(exception_cid, base64.b64decode(exception_data))
 
             call_data = self.manager.pop_call(call_id) if call_id else None
+
+            # Record execution history for breakpoints
+            if call_data:
+                method_name = call_data.get("method_name", "")
+                if self.manager.has_breakpoint(method_name):
+                    pretty_result = None
+                    if result_cid:
+                        pretty_result = _format_payload_value({"cid": result_cid})
+                    history_data = dict(call_data)
+                    history_data["status"] = status
+                    history_data["pretty_result"] = pretty_result
+                    if exception_cid:
+                        history_data["exception"] = _format_payload_value(
+                            {"cid": exception_cid}
+                        )
+                    self.manager.record_execution(method_name, history_data)
+
             if (
                 status == "success"
                 and call_data

@@ -59,10 +59,10 @@ def test_paused_execution_has_unique_id() -> None:
     manager = BreakpointManager()
     call_data1 = {"function_name": "add", "args": {"a": 1, "b": 2}}
     call_data2 = {"function_name": "mul", "args": {"a": 3, "b": 4}}
-    
+
     id1 = manager.add_paused_execution(call_data1)
     id2 = manager.add_paused_execution(call_data2)
-    
+
     assert id1 != id2
 
 
@@ -71,7 +71,7 @@ def test_can_get_paused_execution_by_id() -> None:
     manager = BreakpointManager()
     call_data = {"function_name": "add", "args": {"a": 1, "b": 2}}
     pause_id = manager.add_paused_execution(call_data)
-    
+
     retrieved = manager.get_paused_execution(pause_id)
     assert retrieved is not None
     assert retrieved["call_data"]["function_name"] == "add"
@@ -83,11 +83,11 @@ def test_can_resume_paused_execution() -> None:
     manager = BreakpointManager()
     call_data = {"function_name": "add", "args": {"a": 1, "b": 2}}
     pause_id = manager.add_paused_execution(call_data)
-    
+
     # Resume with continue action
     action = {"action": "continue"}
     manager.resume_execution(pause_id, action)
-    
+
     # Should no longer be in paused list
     assert len(manager.get_paused_executions()) == 0
 
@@ -97,11 +97,11 @@ def test_can_get_resume_action_for_paused_execution() -> None:
     manager = BreakpointManager()
     call_data = {"function_name": "add", "args": {"a": 1, "b": 2}}
     pause_id = manager.add_paused_execution(call_data)
-    
+
     # Set resume action
     action = {"action": "continue", "modified_args": {"a": 10, "b": 20}}
     manager.resume_execution(pause_id, action)
-    
+
     # Get the action (before it's removed)
     retrieved_action = manager.get_resume_action(pause_id)
     assert retrieved_action == action
@@ -123,7 +123,7 @@ def test_paused_execution_includes_timestamp() -> None:
     manager = BreakpointManager()
     call_data = {"function_name": "add", "args": {"a": 1, "b": 2}}
     pause_id = manager.add_paused_execution(call_data)
-    
+
     retrieved = manager.get_paused_execution(pause_id)
     assert "paused_at" in retrieved
     assert isinstance(retrieved["paused_at"], float)
@@ -134,7 +134,7 @@ def test_can_wait_for_resume_action() -> None:
     manager = BreakpointManager()
     call_data = {"function_name": "add", "args": {"a": 1, "b": 2}}
     pause_id = manager.add_paused_execution(call_data)
-    
+
     # Should timeout if no action provided
     action = manager.wait_for_resume_action(pause_id, timeout=0.1)
     assert action is None
@@ -143,17 +143,17 @@ def test_can_wait_for_resume_action() -> None:
 def test_multiple_paused_executions() -> None:
     """Test managing multiple paused executions simultaneously."""
     manager = BreakpointManager()
-    
+
     id1 = manager.add_paused_execution({"function_name": "add"})
     id2 = manager.add_paused_execution({"function_name": "mul"})
     id3 = manager.add_paused_execution({"function_name": "div"})
-    
+
     paused = manager.get_paused_executions()
     assert len(paused) == 3
-    
+
     # Resume one
     manager.resume_execution(id2, {"action": "continue"})
-    
+
     paused = manager.get_paused_executions()
     assert len(paused) == 2
     assert id2 not in [p["id"] for p in paused]
@@ -188,3 +188,55 @@ def test_after_breakpoints_can_pause_execution() -> None:
 
     manager.set_after_breakpoint_behavior("add", "go")
     assert manager.should_pause_after_breakpoint("add") is False
+
+
+def test_can_record_execution_history() -> None:
+    """Test that execution history can be recorded."""
+    manager = BreakpointManager()
+    manager.record_execution("add", {"method_name": "add", "args": [1, 2]})
+
+    history = manager.get_execution_history("add")
+    assert len(history) == 1
+    assert history[0]["function_name"] == "add"
+    assert history[0]["call_data"]["args"] == [1, 2]
+    assert "completed_at" in history[0]
+
+
+def test_execution_history_ordered_by_time() -> None:
+    """Test that execution history is returned most recent first."""
+    import time
+
+    manager = BreakpointManager()
+    manager.record_execution("add", {"call_id": 1}, completed_at=100.0)
+    time.sleep(0.01)
+    manager.record_execution("add", {"call_id": 2}, completed_at=200.0)
+    time.sleep(0.01)
+    manager.record_execution("add", {"call_id": 3}, completed_at=150.0)
+
+    history = manager.get_execution_history("add")
+    assert len(history) == 3
+    # Should be ordered by completed_at descending
+    assert history[0]["call_data"]["call_id"] == 2  # 200.0
+    assert history[1]["call_data"]["call_id"] == 3  # 150.0
+    assert history[2]["call_data"]["call_id"] == 1  # 100.0
+
+
+def test_execution_history_with_limit() -> None:
+    """Test that execution history can be limited."""
+    manager = BreakpointManager()
+    for i in range(10):
+        manager.record_execution("add", {"call_id": i}, completed_at=float(i))
+
+    history = manager.get_execution_history("add", limit=3)
+    assert len(history) == 3
+    # Most recent first
+    assert history[0]["call_data"]["call_id"] == 9
+    assert history[1]["call_data"]["call_id"] == 8
+    assert history[2]["call_data"]["call_id"] == 7
+
+
+def test_execution_history_empty_for_unknown_function() -> None:
+    """Test that execution history is empty for functions without history."""
+    manager = BreakpointManager()
+    history = manager.get_execution_history("unknown_func")
+    assert history == []

@@ -36,6 +36,7 @@ class BreakpointManager:
         self._paused_executions: dict[str, dict[str, Any]] = {}
         self._resume_actions: dict[str, dict[str, Any]] = {}
         self._call_data: dict[str, dict[str, Any]] = {}
+        self._execution_history: dict[str, list[dict[str, Any]]] = {}
         self._lock = threading.Lock()
         # Default behavior when a breakpoint is hit: "stop" or "go"
         self._default_behavior: str = "stop"
@@ -320,3 +321,47 @@ class BreakpointManager:
         """Pop call data for the given call_id."""
         with self._lock:
             return self._call_data.pop(call_id, None)
+
+    def record_execution(
+        self, function_name: str, call_data: dict[str, Any], completed_at: float | None = None
+    ) -> None:
+        """Record a completed execution for a breakpoint.
+
+        Args:
+            function_name: Name of the function that was executed.
+            call_data: Data about the function call.
+            completed_at: Timestamp when the call completed (defaults to now).
+        """
+        if completed_at is None:
+            completed_at = time.time()
+        record = {
+            "function_name": function_name,
+            "call_data": call_data,
+            "completed_at": completed_at,
+        }
+        with self._lock:
+            if function_name not in self._execution_history:
+                self._execution_history[function_name] = []
+            self._execution_history[function_name].append(record)
+
+    def get_execution_history(
+        self, function_name: str, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Get execution history for a specific breakpoint.
+
+        Args:
+            function_name: Name of the function.
+            limit: Optional limit on number of records to return.
+
+        Returns:
+            List of execution records, most recent first.
+        """
+        with self._lock:
+            history = self._execution_history.get(function_name, [])
+            # Sort by completed_at descending (most recent first)
+            sorted_history = sorted(
+                history, key=lambda r: r.get("completed_at", 0), reverse=True
+            )
+            if limit is not None:
+                return sorted_history[:limit]
+            return sorted_history
