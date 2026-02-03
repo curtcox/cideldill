@@ -29,11 +29,13 @@ class BreakpointManager:
         """Initialize the BreakpointManager."""
         self._breakpoints: set[str] = set()
         self._breakpoint_behaviors: dict[str, str] = {}
+        self._after_breakpoint_behaviors: dict[str, str] = {}
         self._breakpoint_replacements: dict[str, str] = {}
         self._registered_functions: set[str] = set()
         self._function_signatures: dict[str, str] = {}
         self._paused_executions: dict[str, dict[str, Any]] = {}
         self._resume_actions: dict[str, dict[str, Any]] = {}
+        self._call_data: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
         # Default behavior when a breakpoint is hit: "stop" or "go"
         self._default_behavior: str = "stop"
@@ -72,6 +74,7 @@ class BreakpointManager:
         with self._lock:
             self._breakpoints.discard(function_name)
             self._breakpoint_behaviors.pop(function_name, None)
+            self._after_breakpoint_behaviors.pop(function_name, None)
             self._breakpoint_replacements.pop(function_name, None)
 
     def clear_breakpoints(self) -> None:
@@ -79,6 +82,7 @@ class BreakpointManager:
         with self._lock:
             self._breakpoints.clear()
             self._breakpoint_behaviors.clear()
+            self._after_breakpoint_behaviors.clear()
             self._breakpoint_replacements.clear()
 
     def get_breakpoints(self) -> list[str]:
@@ -107,6 +111,19 @@ class BreakpointManager:
                 for name in self._breakpoints
             }
 
+    def get_after_breakpoint_behavior(self, function_name: str) -> str:
+        with self._lock:
+            if function_name not in self._breakpoints:
+                raise KeyError(function_name)
+            return self._after_breakpoint_behaviors.get(function_name, "yield")
+
+    def get_after_breakpoint_behaviors(self) -> dict[str, str]:
+        with self._lock:
+            return {
+                name: self._after_breakpoint_behaviors.get(name, "yield")
+                for name in self._breakpoints
+            }
+
     def get_breakpoint_replacements(self) -> dict[str, str]:
         with self._lock:
             return dict(self._breakpoint_replacements)
@@ -127,6 +144,19 @@ class BreakpointManager:
                 self._breakpoint_behaviors.pop(function_name, None)
             else:
                 self._breakpoint_behaviors[function_name] = behavior
+
+    def set_after_breakpoint_behavior(self, function_name: str, behavior: str) -> None:
+        if behavior == "continue":
+            behavior = "go"
+        if behavior not in {"stop", "go", "yield"}:
+            raise ValueError("Behavior must be 'stop', 'go', or 'yield'")
+        with self._lock:
+            if function_name not in self._breakpoints:
+                raise KeyError(function_name)
+            if behavior == "yield":
+                self._after_breakpoint_behaviors.pop(function_name, None)
+            else:
+                self._after_breakpoint_behaviors[function_name] = behavior
 
     def set_breakpoint_replacement(self, function_name: str, replacement: str | None) -> None:
         with self._lock:
@@ -267,3 +297,26 @@ class BreakpointManager:
                 else selected_behavior
             )
             return behavior == "stop"
+
+    def should_pause_after_breakpoint(self, function_name: str) -> bool:
+        """Check if execution should pause after a breakpoint."""
+        with self._lock:
+            if function_name not in self._breakpoints:
+                return False
+            selected_behavior = self._after_breakpoint_behaviors.get(function_name, "yield")
+            behavior = (
+                self._default_behavior
+                if selected_behavior == "yield"
+                else selected_behavior
+            )
+            return behavior == "stop"
+
+    def register_call(self, call_id: str, call_data: dict[str, Any]) -> None:
+        """Register call data for later lookup during call completion."""
+        with self._lock:
+            self._call_data[call_id] = dict(call_data)
+
+    def pop_call(self, call_id: str) -> Optional[dict[str, Any]]:
+        """Pop call data for the given call_id."""
+        with self._lock:
+            return self._call_data.pop(call_id, None)

@@ -194,6 +194,55 @@ def test_call_start_replaces_when_breakpoint_go_and_replacement_set(server) -> N
     assert data["function_name"] == "multiply"
 
 
+def test_call_complete_pauses_when_after_breakpoint_set(server) -> None:
+    """If after-breakpoint pauses, call completion should return poll action."""
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    serializer = Serializer()
+    target_payload = serializer.force_serialize_with_data({"x": 1})
+    result_payload = serializer.force_serialize_with_data(3)
+
+    server.manager.add_breakpoint("add")
+    server.manager.set_default_behavior("go")
+    server.manager.set_after_breakpoint_behavior("add", "stop")
+
+    response = server.test_client().post(
+        "/api/call/start",
+        data=json.dumps({
+            "method_name": "add",
+            "target": {"cid": target_payload.cid, "data": target_payload.data_base64},
+            "args": [],
+            "kwargs": {},
+            "call_site": {"timestamp": 123.0},
+        }),
+        content_type="application/json",
+    )
+    assert response.status_code == 200
+    data = json.loads(response.data)
+    call_id = data["call_id"]
+
+    response = server.test_client().post(
+        "/api/call/complete",
+        data=json.dumps({
+            "call_id": call_id,
+            "status": "success",
+            "result_cid": result_payload.cid,
+            "result_data": result_payload.data_base64,
+        }),
+        content_type="application/json",
+    )
+    assert response.status_code == 200
+    data = json.loads(response.data)
+    assert data["action"] == "poll"
+
+    paused = server.manager.get_paused_executions()
+    assert len(paused) == 1
+    assert paused[0]["call_data"]["method_name"] == "add"
+    assert paused[0]["call_data"]["pretty_result"] == "3"
+
+
 def test_get_port_number(server) -> None:
     """Test that we can get the port number."""
     # When using port=0, Flask will assign a random port

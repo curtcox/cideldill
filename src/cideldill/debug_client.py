@@ -108,7 +108,7 @@ class DebugClient:
         status: str,
         result: Any | None = None,
         exception: BaseException | None = None,
-    ) -> None:
+    ) -> dict[str, Any] | None:
         payload: dict[str, Any] = {
             "call_id": call_id,
             "timestamp": time.time(),
@@ -130,8 +130,11 @@ class DebugClient:
             raise DebugProtocolError("Invalid call completion payload")
 
         response = self._post_json("/api/call/complete", payload)
+        if response.get("action"):
+            return self._require_action(response)
         if response.get("status") != "ok":
             raise DebugServerError("Debug server failed to acknowledge completion")
+        return None
 
     def poll(self, action: dict[str, Any]) -> dict[str, Any]:
         poll_url = action.get("poll_url")

@@ -175,3 +175,16 @@ def test_breakpoint_replacement_tracks_selection() -> None:
     manager.set_breakpoint_replacement("add", "multiply")
 
     assert manager.get_breakpoint_replacement("add") == "multiply"
+
+
+def test_after_breakpoints_can_pause_execution() -> None:
+    """After-breakpoint behaviors should control post-call pauses."""
+    manager = BreakpointManager()
+    manager.add_breakpoint("add")
+    manager.set_default_behavior("go")
+    manager.set_after_breakpoint_behavior("add", "stop")
+
+    assert manager.should_pause_after_breakpoint("add") is True
+
+    manager.set_after_breakpoint_behavior("add", "go")
+    assert manager.should_pause_after_breakpoint("add") is False
