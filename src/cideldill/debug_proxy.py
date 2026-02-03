@@ -102,11 +102,13 @@ class DebugProxy:
                 raise
 
             try:
-                self._client.record_call_complete(
+                post_action = self._client.record_call_complete(
                     call_id=call_id,
                     status="success",
                     result=result,
                 )
+                if post_action:
+                    self._wait_for_post_completion(post_action)
             except DebugServerError:
                 logger.exception(
                     "Failed to report call completion to debug server "
@@ -159,11 +161,13 @@ class DebugProxy:
                 raise
 
             try:
-                self._client.record_call_complete(
+                post_action = self._client.record_call_complete(
                     call_id=call_id,
                     status="success",
                     result=result,
                 )
+                if post_action:
+                    await self._wait_for_post_completion_async(post_action)
             except DebugServerError:
                 logger.exception(
                     "Failed to report call completion to debug server (call_id=%s status=success)",
@@ -366,6 +370,20 @@ class DebugProxy:
 
     def __hash__(self) -> int:
         return hash(self._target)
+
+    def _wait_for_post_completion(self, action: dict[str, Any]) -> None:
+        while action.get("action") == "poll":
+            action = self._client.poll(action)
+        action_type = action.get("action")
+        if action_type not in (None, "continue"):
+            raise DebugProtocolError(f"Unsupported post-completion action: {action_type}")
+
+    async def _wait_for_post_completion_async(self, action: dict[str, Any]) -> None:
+        while action.get("action") == "poll":
+            action = await self._client.async_poll(action)
+        action_type = action.get("action")
+        if action_type not in (None, "continue"):
+            raise DebugProtocolError(f"Unsupported post-completion action: {action_type}")
 
 
 class AsyncDebugProxy(DebugProxy):

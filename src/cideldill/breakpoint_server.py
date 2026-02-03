@@ -149,8 +149,8 @@ HTML_TEMPLATE = """
             border-left: 4px solid transparent;
             border-radius: 4px;
             display: flex;
-            justify-content: space-between;
             align-items: center;
+            gap: 12px;
         }
         .breakpoint-item.stop {
             border-left-color: #f44336;
@@ -165,6 +165,12 @@ HTML_TEMPLATE = """
             display: flex;
             gap: 8px;
             align-items: center;
+        }
+        .breakpoint-name {
+            font-weight: 600;
+        }
+        .breakpoint-options {
+            margin-left: auto;
         }
         .state-btn {
             border: 2px solid transparent;
@@ -310,6 +316,28 @@ HTML_TEMPLATE = """
             }
         }
 
+        async function setAfterBreakpointBehavior(functionName, behavior) {
+            try {
+                const encoded = encodeURIComponent(functionName);
+                const response = await fetch(`${API_BASE}/breakpoints/${encoded}/after_behavior`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ behavior: behavior })
+                });
+
+                if (response.ok) {
+                    const icon = behavior === 'stop' ? '🛑' : (behavior === 'yield' ? '⚠️' : '🟢');
+                    showMessage(`${icon} Set after-breakpoint behavior: ${functionName}`, 'success');
+                    loadBreakpoints();
+                } else {
+                    showMessage('Failed to set after-breakpoint behavior', 'error');
+                }
+            } catch (e) {
+                console.error('Failed to set after-breakpoint behavior:', e);
+                showMessage('Error setting after-breakpoint behavior', 'error');
+            }
+        }
+
         async function setBreakpointReplacement(functionName, replacement) {
             try {
                 const previous = selectedReplacements[functionName];
@@ -366,6 +394,7 @@ HTML_TEMPLATE = """
                 const container = document.getElementById('breakpointsList');
                 if (data.breakpoints && data.breakpoints.length > 0) {
                     const states = data.breakpoint_behaviors || {};
+                    const afterStates = data.breakpoint_after_behaviors || {};
                     const replacements = data.breakpoint_replacements || {};
                     const sortBreakpoints = (items) => {
                         return [...items].sort((a, b) => {
@@ -409,25 +438,42 @@ HTML_TEMPLATE = """
                                 : '';
                             return `
                                 <div class="breakpoint-item ${states[bp] === 'go' ? 'go' : (states[bp] === 'yield' ? 'yield' : 'stop')}">
-                                    <span><strong>${escapeHtml(bp)}</strong>()</span>
                                     <div class="state-toggle">
                                         <button class="state-btn ${states[bp] === 'stop' ? 'selected' : ''}"
                                                 onclick="setBreakpointBehavior('${bp}', 'stop')"
-                                                title="Stop (pause)">
+                                                title="Before: Stop (pause)">
                                             🛑
                                         </button>
                                         <button class="state-btn ${states[bp] === 'yield' ? 'selected' : ''}"
                                                 onclick="setBreakpointBehavior('${bp}', 'yield')"
-                                                title="Yield (inherit global default)">
+                                                title="Before: Yield (inherit global default)">
                                             ⚠️
                                         </button>
                                         <button class="state-btn ${states[bp] === 'go' ? 'selected' : ''}"
                                                 onclick="setBreakpointBehavior('${bp}', 'go')"
-                                                title="Go (don't pause)">
+                                                title="Before: Go (don't pause)">
                                             🟢
                                         </button>
-                                        ${replacementSelect}
                                     </div>
+                                    <span class="breakpoint-name">${escapeHtml(bp)}()</span>
+                                    <div class="state-toggle">
+                                        <button class="state-btn ${afterStates[bp] === 'stop' ? 'selected' : ''}"
+                                                onclick="setAfterBreakpointBehavior('${bp}', 'stop')"
+                                                title="After: Stop (pause)">
+                                            🛑
+                                        </button>
+                                        <button class="state-btn ${afterStates[bp] === 'yield' ? 'selected' : ''}"
+                                                onclick="setAfterBreakpointBehavior('${bp}', 'yield')"
+                                                title="After: Yield (inherit global default)">
+                                            ⚠️
+                                        </button>
+                                        <button class="state-btn ${afterStates[bp] === 'go' ? 'selected' : ''}"
+                                                onclick="setAfterBreakpointBehavior('${bp}', 'go')"
+                                                title="After: Go (don't pause)">
+                                            🟢
+                                        </button>
+                                    </div>
+                                    <div class="breakpoint-options">${replacementSelect}</div>
                                 </div>
                             `;
                         }).join('') + '</div>';
@@ -512,6 +558,7 @@ HTML_TEMPLATE = """
             const prettyKwargs = callData.pretty_kwargs || {};
             const stackTrace = (callData.call_site && callData.call_site.stack_trace) ? callData.call_site.stack_trace : [];
             const signature = callData.signature || null;
+            const prettyResult = callData.pretty_result;
 
             const renderArgs = () => {
                 const argsBlock = JSON.stringify({ args: prettyArgs, kwargs: prettyKwargs }, null, 2);
@@ -542,6 +589,14 @@ ${argsBlock}</div>`;
                 return `<div class="call-data"><strong>Stack Trace:</strong>
 <ol style="margin: 8px 0 0 18px; padding: 0;">${items}</ol>
 </div>`;
+            };
+
+            const renderResult = () => {
+                if (prettyResult === null || prettyResult === undefined) {
+                    return '';
+                }
+                return `<div class="call-data"><strong>Return Value:</strong>
+${prettyResult}</div>`;
             };
 
             const renderFunctionChoices = () => {
@@ -589,6 +644,7 @@ ${argsBlock}</div>`;
                     </div>
                     ${renderArgs()}
                     ${renderStack()}
+                    ${renderResult()}
                     ${renderFunctionChoices()}
                     <div class="actions">
                         <button class="btn btn-go" data-default-function="${escapeHtml(displayName)}"
@@ -821,6 +877,7 @@ class BreakpointServer:
             return jsonify({
                 "breakpoints": self.manager.get_breakpoints(),
                 "breakpoint_behaviors": self.manager.get_breakpoint_behaviors(),
+                "breakpoint_after_behaviors": self.manager.get_after_breakpoint_behaviors(),
                 "breakpoint_replacements": self.manager.get_breakpoint_replacements(),
             })
 
@@ -878,6 +935,25 @@ class BreakpointServer:
             except KeyError:
                 return jsonify({"error": "breakpoint_not_found"}), 404
             return jsonify({"status": "ok", "function_name": function_name, "behavior": behavior})
+
+        @self.app.route('/api/breakpoints/<function_name>/after_behavior', methods=['POST'])
+        def set_after_breakpoint_behavior(function_name):
+            """Set after-breakpoint behavior for a single breakpoint."""
+            data = request.get_json() or {}
+            behavior = data.get('behavior')
+            if behavior == 'continue':
+                behavior = 'go'
+            if behavior not in {'stop', 'go', 'yield'}:
+                return jsonify({"error": "behavior must be 'stop', 'go', or 'yield'"}), 400
+            try:
+                self.manager.set_after_breakpoint_behavior(function_name, behavior)
+            except KeyError:
+                return jsonify({"error": "breakpoint_not_found"}), 404
+            return jsonify({
+                "status": "ok",
+                "function_name": function_name,
+                "behavior": behavior,
+            })
 
         @self.app.route('/api/breakpoints/<function_name>/replacement', methods=['POST'])
         def set_breakpoint_replacement(function_name):
@@ -948,26 +1024,28 @@ class BreakpointServer:
             action = {"call_id": call_id, "action": "continue"}
 
             # Check if we should pause at this breakpoint
+            pretty_args = [
+                _format_payload_value(item)
+                for item in args
+                if isinstance(item, dict)
+            ]
+            pretty_kwargs = {
+                key: _format_payload_value(value)
+                for key, value in kwargs.items()
+                if isinstance(value, dict)
+            }
+            call_data = {
+                "method_name": method_name,
+                "args": args,
+                "kwargs": kwargs,
+                "pretty_args": pretty_args,
+                "pretty_kwargs": pretty_kwargs,
+                "signature": data.get("signature"),
+                "call_site": data.get("call_site"),
+            }
+            self.manager.register_call(call_id, call_data)
             if self.manager.should_pause_at_breakpoint(method_name):
-                pretty_args = [
-                    _format_payload_value(item)
-                    for item in args
-                    if isinstance(item, dict)
-                ]
-                pretty_kwargs = {
-                    key: _format_payload_value(value)
-                    for key, value in kwargs.items()
-                    if isinstance(value, dict)
-                }
-                pause_id = self.manager.add_paused_execution({
-                    "method_name": method_name,
-                    "args": args,
-                    "kwargs": kwargs,
-                    "pretty_args": pretty_args,
-                    "pretty_kwargs": pretty_kwargs,
-                    "signature": data.get("signature"),
-                    "call_site": data.get("call_site"),
-                })
+                pause_id = self.manager.add_paused_execution(call_data)
                 action = {
                     "call_id": call_id,
                     "action": "poll",
@@ -998,6 +1076,8 @@ class BreakpointServer:
         def call_complete():
             """Handle call completion from debug client."""
             data = request.get_json() or {}
+            call_id = data.get("call_id")
+            status = data.get("status")
             result_data = data.get("result_data")
             result_cid = data.get("result_cid")
             exception_data = data.get("exception_data")
@@ -1007,6 +1087,25 @@ class BreakpointServer:
                 self._cid_store.store(result_cid, base64.b64decode(result_data))
             if exception_data and exception_cid:
                 self._cid_store.store(exception_cid, base64.b64decode(exception_data))
+
+            call_data = self.manager.pop_call(call_id) if call_id else None
+            if (
+                status == "success"
+                and call_data
+                and self.manager.should_pause_after_breakpoint(call_data.get("method_name", ""))
+            ):
+                pretty_result = None
+                if result_cid:
+                    pretty_result = _format_payload_value({"cid": result_cid})
+                call_data = dict(call_data)
+                call_data["pretty_result"] = pretty_result
+                pause_id = self.manager.add_paused_execution(call_data)
+                return jsonify({
+                    "action": "poll",
+                    "poll_interval_ms": 100,
+                    "poll_url": f"/api/poll/{pause_id}",
+                    "timeout_ms": 60_000,
+                })
 
             return jsonify({"status": "ok"})
 
