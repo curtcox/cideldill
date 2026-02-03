@@ -166,3 +166,12 @@ def test_register_function_tracks_signature() -> None:
 
     assert "add" in manager.get_registered_functions()
     assert manager.get_function_signatures()["add"] == "(x: int, y: int) -> int"
+
+
+def test_breakpoint_replacement_tracks_selection() -> None:
+    """Selecting a replacement should be tracked per breakpoint."""
+    manager = BreakpointManager()
+    manager.add_breakpoint("add")
+    manager.set_breakpoint_replacement("add", "multiply")
+
+    assert manager.get_breakpoint_replacement("add") == "multiply"

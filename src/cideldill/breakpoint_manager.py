@@ -29,6 +29,7 @@ class BreakpointManager:
         """Initialize the BreakpointManager."""
         self._breakpoints: set[str] = set()
         self._breakpoint_behaviors: dict[str, str] = {}
+        self._breakpoint_replacements: dict[str, str] = {}
         self._registered_functions: set[str] = set()
         self._function_signatures: dict[str, str] = {}
         self._paused_executions: dict[str, dict[str, Any]] = {}
@@ -71,12 +72,14 @@ class BreakpointManager:
         with self._lock:
             self._breakpoints.discard(function_name)
             self._breakpoint_behaviors.pop(function_name, None)
+            self._breakpoint_replacements.pop(function_name, None)
 
     def clear_breakpoints(self) -> None:
         """Clear all breakpoints."""
         with self._lock:
             self._breakpoints.clear()
             self._breakpoint_behaviors.clear()
+            self._breakpoint_replacements.clear()
 
     def get_breakpoints(self) -> list[str]:
         """Get list of all active breakpoints.
@@ -86,6 +89,10 @@ class BreakpointManager:
         """
         with self._lock:
             return list(self._breakpoints)
+
+    def has_breakpoint(self, function_name: str) -> bool:
+        with self._lock:
+            return function_name in self._breakpoints
 
     def get_breakpoint_behavior(self, function_name: str) -> str:
         with self._lock:
@@ -100,6 +107,14 @@ class BreakpointManager:
                 for name in self._breakpoints
             }
 
+    def get_breakpoint_replacements(self) -> dict[str, str]:
+        with self._lock:
+            return dict(self._breakpoint_replacements)
+
+    def get_breakpoint_replacement(self, function_name: str) -> str | None:
+        with self._lock:
+            return self._breakpoint_replacements.get(function_name)
+
     def set_breakpoint_behavior(self, function_name: str, behavior: str) -> None:
         if behavior == "continue":
             behavior = "go"
@@ -112,6 +127,15 @@ class BreakpointManager:
                 self._breakpoint_behaviors.pop(function_name, None)
             else:
                 self._breakpoint_behaviors[function_name] = behavior
+
+    def set_breakpoint_replacement(self, function_name: str, replacement: str | None) -> None:
+        with self._lock:
+            if function_name not in self._breakpoints:
+                raise KeyError(function_name)
+            if not replacement or replacement == function_name:
+                self._breakpoint_replacements.pop(function_name, None)
+            else:
+                self._breakpoint_replacements[function_name] = replacement
 
     def add_paused_execution(self, call_data: dict[str, Any]) -> str:
         """Add a new paused execution.

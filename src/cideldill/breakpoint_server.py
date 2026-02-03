@@ -237,6 +237,7 @@ HTML_TEMPLATE = """
         let registeredFunctions = [];
         let functionSignatures = {};
         const selectedReplacements = {};
+        let isBreakpointSelectActive = false;
 
         function escapeHtml(text) {
             return String(text)
@@ -304,6 +305,35 @@ HTML_TEMPLATE = """
             }
         }
 
+        async function setBreakpointReplacement(functionName, replacement) {
+            try {
+                const previous = selectedReplacements[functionName];
+                selectedReplacements[functionName] = replacement;
+                const encoded = encodeURIComponent(functionName);
+                const response = await fetch(`${API_BASE}/breakpoints/${encoded}/replacement`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ replacement_function: replacement })
+                });
+
+                if (response.ok) {
+                    showMessage(`✅ Set replacement: ${functionName} → ${replacement}`, 'success');
+                    loadBreakpoints();
+                } else {
+                    if (previous) {
+                        selectedReplacements[functionName] = previous;
+                    } else {
+                        delete selectedReplacements[functionName];
+                    }
+                    showMessage('Failed to set replacement', 'error');
+                }
+            } catch (e) {
+                console.error('Failed to set replacement:', e);
+                delete selectedReplacements[functionName];
+                showMessage('Error setting replacement', 'error');
+            }
+        }
+
         // Show a status message
         function showMessage(message, type) {
             const msgDiv = document.getElementById('statusMessage');
@@ -331,29 +361,62 @@ HTML_TEMPLATE = """
                 const container = document.getElementById('breakpointsList');
                 if (data.breakpoints && data.breakpoints.length > 0) {
                     const states = data.breakpoint_behaviors || {};
+                    const replacements = data.breakpoint_replacements || {};
                     container.innerHTML = '<div class="breakpoint-list">' +
-                        data.breakpoints.map(bp => `
-                            <div class="breakpoint-item ${states[bp] === 'go' ? 'go' : (states[bp] === 'yield' ? 'yield' : 'stop')}">
-                                <span><strong>${bp}</strong>()</span>
-                                <div class="state-toggle">
-                                    <button class="state-btn ${states[bp] === 'stop' ? 'selected' : ''}"
-                                            onclick="setBreakpointBehavior('${bp}', 'stop')"
-                                            title="Stop (pause)">
-                                        🛑
-                                    </button>
-                                    <button class="state-btn ${states[bp] === 'yield' ? 'selected' : ''}"
-                                            onclick="setBreakpointBehavior('${bp}', 'yield')"
-                                            title="Yield (inherit global default)">
-                                        ⚠️
-                                    </button>
-                                    <button class="state-btn ${states[bp] === 'go' ? 'selected' : ''}"
-                                            onclick="setBreakpointBehavior('${bp}', 'go')"
-                                            title="Go (don't pause)">
-                                        🟢
-                                    </button>
+                        data.breakpoints.map(bp => {
+                            const signature = functionSignatures[bp];
+                            const alternates = [];
+                            if (signature) {
+                                registeredFunctions.forEach(fn => {
+                                    if (fn !== bp && functionSignatures[fn] === signature) {
+                                        alternates.push(fn);
+                                    }
+                                });
+                            }
+                            if (bp in replacements) {
+                                selectedReplacements[bp] = replacements[bp];
+                            }
+                            const replacement = selectedReplacements[bp] || bp;
+                            if (alternates.length > 0 && !(bp in selectedReplacements)) {
+                                selectedReplacements[bp] = replacement;
+                            }
+                            const replacementSelect = alternates.length > 0
+                                ? `<select class="breakpoint-replacement-select"
+                                          onchange="setBreakpointReplacement('${bp}', this.value)">
+                                        <option value="${escapeHtml(bp)}" ${replacement === bp ? 'selected' : ''}>
+                                            ${escapeHtml(bp)}()
+                                        </option>
+                                        ${alternates.map(fn => `
+                                            <option value="${escapeHtml(fn)}" ${replacement === fn ? 'selected' : ''}>
+                                                ${escapeHtml(fn)}()
+                                            </option>
+                                        `).join('')}
+                                   </select>`
+                                : '';
+                            return `
+                                <div class="breakpoint-item ${states[bp] === 'go' ? 'go' : (states[bp] === 'yield' ? 'yield' : 'stop')}">
+                                    <span><strong>${escapeHtml(bp)}</strong>()</span>
+                                    <div class="state-toggle">
+                                        <button class="state-btn ${states[bp] === 'stop' ? 'selected' : ''}"
+                                                onclick="setBreakpointBehavior('${bp}', 'stop')"
+                                                title="Stop (pause)">
+                                            🛑
+                                        </button>
+                                        <button class="state-btn ${states[bp] === 'yield' ? 'selected' : ''}"
+                                                onclick="setBreakpointBehavior('${bp}', 'yield')"
+                                                title="Yield (inherit global default)">
+                                            ⚠️
+                                        </button>
+                                        <button class="state-btn ${states[bp] === 'go' ? 'selected' : ''}"
+                                                onclick="setBreakpointBehavior('${bp}', 'go')"
+                                                title="Go (don't pause)">
+                                            🟢
+                                        </button>
+                                        ${replacementSelect}
+                                    </div>
                                 </div>
-                            </div>
-                        `).join('') + '</div>';
+                            `;
+                        }).join('') + '</div>';
                 } else {
                     container.innerHTML = '<div class="empty-state">' +
                         'No breakpoints set.</div>';
@@ -378,9 +441,25 @@ HTML_TEMPLATE = """
 
         async function refresh() {
             await loadFunctions();
+            if (!isBreakpointSelectActive) {
+                await loadBreakpoints();
+            }
             await loadPausedExecutions();
-            await loadBreakpoints();
         }
+
+        document.addEventListener('focusin', (event) => {
+            const target = event.target;
+            if (target && target.classList && target.classList.contains('breakpoint-replacement-select')) {
+                isBreakpointSelectActive = true;
+            }
+        });
+
+        document.addEventListener('focusout', (event) => {
+            const target = event.target;
+            if (target && target.classList && target.classList.contains('breakpoint-replacement-select')) {
+                isBreakpointSelectActive = false;
+            }
+        });
 
         document.addEventListener('DOMContentLoaded', function() {
             // Load initial state
@@ -471,7 +550,10 @@ ${argsBlock}</div>`;
                     return '';
                 }
                 const radioName = `replacement-${paused.id}`;
-                const saved = selectedReplacements[paused.id];
+                const saved = selectedReplacements[paused.id] || selectedReplacements[displayName];
+                if (!selectedReplacements[paused.id] && selectedReplacements[displayName]) {
+                    selectedReplacements[paused.id] = selectedReplacements[displayName];
+                }
                 const options = candidates.map(fn => `
                     <label>
                         <input type="radio" name="${radioName}" value="${escapeHtml(fn)}"
@@ -725,6 +807,7 @@ class BreakpointServer:
             return jsonify({
                 "breakpoints": self.manager.get_breakpoints(),
                 "breakpoint_behaviors": self.manager.get_breakpoint_behaviors(),
+                "breakpoint_replacements": self.manager.get_breakpoint_replacements(),
             })
 
         @self.app.route('/api/functions', methods=['GET'])
@@ -781,6 +864,27 @@ class BreakpointServer:
             except KeyError:
                 return jsonify({"error": "breakpoint_not_found"}), 404
             return jsonify({"status": "ok", "function_name": function_name, "behavior": behavior})
+
+        @self.app.route('/api/breakpoints/<function_name>/replacement', methods=['POST'])
+        def set_breakpoint_replacement(function_name):
+            """Set replacement for a single breakpoint."""
+            data = request.get_json() or {}
+            replacement = data.get('replacement_function')
+            signatures = self.manager.get_function_signatures()
+            if replacement and replacement != function_name:
+                expected = signatures.get(function_name)
+                actual = signatures.get(replacement)
+                if not expected or expected != actual:
+                    return jsonify({"error": "signature_mismatch"}), 400
+            try:
+                self.manager.set_breakpoint_replacement(function_name, replacement)
+            except KeyError:
+                return jsonify({"error": "breakpoint_not_found"}), 404
+            return jsonify({
+                "status": "ok",
+                "function_name": function_name,
+                "replacement_function": replacement,
+            })
 
         @self.app.route('/api/behavior', methods=['GET'])
         def get_behavior():
@@ -857,6 +961,14 @@ class BreakpointServer:
                     "poll_url": f"/api/poll/{pause_id}",
                     "timeout_ms": 60_000,
                 }
+            else:
+                replacement = self.manager.get_breakpoint_replacement(method_name)
+                if replacement and self.manager.has_breakpoint(method_name):
+                    action = {
+                        "call_id": call_id,
+                        "action": "replace",
+                        "function_name": replacement,
+                    }
 
             return jsonify(action)
 
