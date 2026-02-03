@@ -20,9 +20,9 @@ from cideldill.breakpoint_manager import BreakpointManager
 from cideldill.cid_store import CIDStore
 from cideldill.serialization import deserialize
 
-# Configure Flask's logging to show startup info but not request spam
+# Configure Flask's logging to suppress request spam by default
 log = logging.getLogger('werkzeug')
-log.setLevel(logging.INFO)
+log.setLevel(logging.WARNING)
 
 
 # HTML template for the web UI
@@ -811,7 +811,12 @@ class BreakpointServer:
         app: Flask application instance.
     """
 
-    def __init__(self, manager: BreakpointManager, port: int = 5000) -> None:
+    def __init__(
+        self,
+        manager: BreakpointManager,
+        port: int = 5000,
+        debug_enabled: bool = False,
+    ) -> None:
         """Initialize the server.
 
         Args:
@@ -826,10 +831,27 @@ class BreakpointServer:
         self._cid_store = CIDStore()
         self._call_seq = 0
         self._call_seq_lock = threading.Lock()
+        self._debug_enabled = debug_enabled
         self._setup_routes()
 
     def _setup_routes(self) -> None:
         """Set up Flask routes."""
+
+        @self.app.after_request
+        def log_poll_requests(response):
+            if not self._debug_enabled:
+                return response
+            if request.path.startswith("/api/poll/") and response.status_code == 200:
+                timestamp = time.strftime("%d/%b/%Y %H:%M:%S", time.localtime())
+                remote_addr = request.remote_addr or "-"
+                protocol = request.environ.get("SERVER_PROTOCOL", "HTTP/1.1")
+                log_line = (
+                    f"{remote_addr} - - [{timestamp}] "
+                    f"\"{request.method} {request.path} {protocol}\" "
+                    f"{response.status_code} -"
+                )
+                print(log_line)
+            return response
 
         def next_call_id() -> str:
             with self._call_seq_lock:
