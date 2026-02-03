@@ -345,7 +345,9 @@ class BreakpointManager:
         """
         if completed_at is None:
             completed_at = time.time()
+        record_id = str(uuid.uuid4())
         record = {
+            "id": record_id,
             "function_name": function_name,
             "call_data": call_data,
             "completed_at": completed_at,
@@ -354,6 +356,18 @@ class BreakpointManager:
             if function_name not in self._execution_history:
                 self._execution_history[function_name] = []
             self._execution_history[function_name].append(record)
+
+    def get_execution_record(
+        self, function_name: str, record_id: str
+    ) -> Optional[dict[str, Any]]:
+        with self._lock:
+            history = self._execution_history.get(function_name, [])
+            for record in history:
+                if "id" not in record:
+                    record["id"] = str(uuid.uuid4())
+                if record.get("id") == record_id:
+                    return dict(record)
+        return None
 
     def get_execution_history(
         self, function_name: str, limit: int | None = None
@@ -369,6 +383,9 @@ class BreakpointManager:
         """
         with self._lock:
             history = self._execution_history.get(function_name, [])
+            for record in history:
+                if "id" not in record:
+                    record["id"] = str(uuid.uuid4())
             # Sort by completed_at descending (most recent first)
             sorted_history = sorted(
                 history, key=lambda r: r.get("completed_at", 0), reverse=True

@@ -6,10 +6,12 @@ for managing breakpoints and paused executions through a web UI.
 
 import base64
 import html
+import json
 import logging
 import os
 import threading
 import time
+from urllib.parse import quote
 
 from flask import Flask, jsonify, render_template_string, request
 from pygments import highlight
@@ -995,77 +997,12 @@ class BreakpointServer:
             """Serve the breakpoint execution history page."""
             history = self.manager.get_execution_history(function_name)
 
-            # Format history entries for display
-            history_html = ""
-            if history:
-                for record in history:
-                    call_data = record.get("call_data", {})
-                    completed_at = record.get("completed_at", 0)
-                    status = call_data.get("status", "unknown")
-                    pretty_args = call_data.get("pretty_args", [])
-                    pretty_kwargs = call_data.get("pretty_kwargs", {})
-                    pretty_result = call_data.get("pretty_result")
-                    exception = call_data.get("exception")
-
-                    # Format timestamp
-                    from datetime import datetime
-                    timestamp = datetime.fromtimestamp(completed_at).strftime(
-                        "%Y-%m-%d %H:%M:%S"
-                    ) if completed_at else "Unknown"
-
-                    # Format arguments
-                    args_display = ", ".join(str(a) for a in pretty_args)
-                    if pretty_kwargs:
-                        kwargs_display = ", ".join(
-                            f"{k}={v}" for k, v in pretty_kwargs.items()
-                        )
-                        if args_display:
-                            args_display += ", " + kwargs_display
-                        else:
-                            args_display = kwargs_display
-
-                    status_class = "success" if status == "success" else "error"
-                    status_icon = "✓" if status == "success" else "✗"
-
-                    history_html += f"""
-                    <div class="execution-record">
-                        <div class="execution-header">
-                            <span class="execution-time">{html.escape(timestamp)}</span>
-                            <span class="execution-status {status_class}">{status_icon} {html.escape(status)}</span>
-                        </div>
-                        <div class="execution-details">
-                            <div class="execution-call">
-                                <strong>Call:</strong>
-                                <code>{html.escape(function_name)}({html.escape(args_display)})</code>
-                            </div>
-                    """
-                    if pretty_result is not None:
-                        history_html += f"""
-                            <div class="execution-result">
-                                <strong>Result:</strong>
-                                <code>{html.escape(str(pretty_result))}</code>
-                            </div>
-                        """
-                    if exception:
-                        history_html += f"""
-                            <div class="execution-exception">
-                                <strong>Exception:</strong>
-                                <code>{html.escape(str(exception))}</code>
-                            </div>
-                        """
-                    history_html += """
-                        </div>
-                    </div>
-                    """
-            else:
-                history_html = '<div class="empty-state">No executions recorded yet.</div>'
-
-            page = """<!DOCTYPE html>
+            template = """<!DOCTYPE html>
 <html lang='en'>
 <head>
   <meta charset='UTF-8'>
   <meta name='viewport' content='width=device-width, initial-scale=1.0'>
-  <title>Execution History - {function_name}()</title>
+  <title>Execution History: @@FUNCTION_NAME@@()</title>
   <style>
     body {{
         font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -1086,53 +1023,90 @@ class BreakpointServer:
         text-decoration: none;
     }}
     .back-link:hover {{ text-decoration: underline; }}
-    .execution-record {{
-        background-color: white;
+    .toolbar {{
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        margin: 14px 0 16px;
+        flex-wrap: wrap;
+    }}
+    .search-input {{
+        flex: 1;
+        min-width: 280px;
+        padding: 10px 12px;
         border: 1px solid #ddd;
         border-radius: 8px;
-        padding: 15px;
-        margin-bottom: 10px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        font-size: 0.95em;
+        background: white;
     }}
-    .execution-header {{
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 10px;
-        padding-bottom: 10px;
-        border-bottom: 1px solid #eee;
-    }}
-    .execution-time {{
+    .summary {{
         color: #666;
         font-size: 0.9em;
+        white-space: nowrap;
     }}
-    .execution-status {{
-        padding: 4px 8px;
-        border-radius: 4px;
+    table {{
+        width: 100%;
+        border-collapse: collapse;
+        background: white;
+        border: 1px solid #ddd;
+        border-radius: 10px;
+        overflow: hidden;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.06);
+    }}
+    thead th {{
+        text-align: left;
+        background: #fafafa;
+        border-bottom: 1px solid #eee;
+        padding: 12px 10px;
+        font-size: 0.9em;
+        color: #444;
+        user-select: none;
+        cursor: pointer;
+        white-space: nowrap;
+    }}
+    thead th.sort-active {{
+        color: #111;
+    }}
+    tbody td {{
+        padding: 10px;
+        border-bottom: 1px solid #f0f0f0;
+        vertical-align: top;
+        font-size: 0.92em;
+        color: #222;
+    }}
+    tbody tr:hover {{
+        background: #f7fbff;
+    }}
+    .mono {{
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.92em;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }}
+    .status-pill {{
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 8px;
+        border-radius: 999px;
+        font-weight: 700;
         font-size: 0.85em;
-        font-weight: 600;
+        white-space: nowrap;
     }}
-    .execution-status.success {{
+    .status-pill.success {{
         background-color: #d4edda;
         color: #155724;
     }}
-    .execution-status.error {{
+    .status-pill.error {{
         background-color: #f8d7da;
         color: #721c24;
     }}
-    .execution-details code {{
-        background-color: #f8f8f8;
-        padding: 2px 6px;
-        border-radius: 3px;
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-        font-size: 0.9em;
+    .row-link {{
+        color: #1976D2;
+        text-decoration: none;
     }}
-    .execution-call, .execution-result, .execution-exception {{
-        margin: 8px 0;
-    }}
-    .execution-exception code {{
-        background-color: #f8d7da;
-        color: #721c24;
+    .row-link:hover {{
+        text-decoration: underline;
     }}
     .empty-state {{
         text-align: center;
@@ -1145,14 +1119,437 @@ class BreakpointServer:
 <body>
   <div class='container'>
     <a href="/" class="back-link">← Back to Breakpoints</a>
-    <h1>Execution History: {function_name}()</h1>
-    <p>Past executions ordered by time (most recent first):</p>
-    {history_html}
+    <h1>Execution History: @@FUNCTION_NAME@@()</h1>
+
+    <div class="toolbar">
+        <input id="searchInput" class="search-input" type="search" placeholder="Filter rows (time, call, result, status)" autocomplete="off" />
+        <div id="summary" class="summary"></div>
+    </div>
+
+    <table id="historyTable">
+        <thead>
+            <tr>
+                <th data-key="time">Time</th>
+                <th data-key="call">Call</th>
+                <th data-key="result">Result</th>
+                <th data-key="status">Success/Failure</th>
+            </tr>
+        </thead>
+        <tbody id="historyBody"></tbody>
+    </table>
+
+    <div id="emptyState" class="empty-state" style="display:none;">No executions recorded yet.</div>
+  </div>
+
+  <script>
+    const functionName = @@FUNCTION_NAME_JSON@@;
+    const history = @@HISTORY_JSON@@;
+
+    const state = {{
+      sortKey: 'time',
+      sortDir: 'desc',
+      filter: ''
+    }};
+
+    function escapeHtml(text) {{
+      return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }}
+
+    function recordToRowData(record) {{
+      const callData = record.call_data || {{}};
+      const completedAt = record.completed_at || 0;
+      const timeText = completedAt ? new Date(completedAt * 1000).toLocaleString() : 'Unknown';
+
+      const prettyArgs = callData.pretty_args || [];
+      const prettyKwargs = callData.pretty_kwargs || {{}};
+      const argParts = [];
+      try {{
+        for (const a of prettyArgs) {{
+          argParts.push(String(a));
+        }}
+        for (const [k, v] of Object.entries(prettyKwargs)) {{
+          argParts.push(`${{k}}=${{v}}`);
+        }}
+      }} catch (e) {{
+      }}
+      const callText = `${{functionName}}(${{argParts.join(', ')}})`;
+
+      const status = String(callData.status || 'unknown');
+      const ok = status === 'success';
+      const statusText = ok ? 'success' : status;
+      const statusIcon = ok ? '✓' : '✗';
+
+      let resultText = '';
+      if (callData.exception) {{
+        resultText = String(callData.exception);
+      }} else if (callData.pretty_result !== null && callData.pretty_result !== undefined) {{
+        resultText = String(callData.pretty_result);
+      }}
+
+      const id = String(record.id || '');
+      const detailUrl = `/breakpoint/${{encodeURIComponent(functionName)}}/history/${{encodeURIComponent(id)}}`;
+
+      return {{
+        id,
+        detailUrl,
+        completedAt,
+        timeText,
+        callText,
+        resultText,
+        statusText,
+        statusIcon,
+        ok,
+        searchText: `${{timeText}} ${{callText}} ${{resultText}} ${{statusText}}`.toLowerCase(),
+      }};
+    }}
+
+    function compare(a, b) {{
+      const dir = state.sortDir === 'asc' ? 1 : -1;
+      const key = state.sortKey;
+      if (key === 'time') {{
+        return (a.completedAt - b.completedAt) * dir;
+      }}
+      if (key === 'status') {{
+        const av = a.ok ? 1 : 0;
+        const bv = b.ok ? 1 : 0;
+        if (av !== bv) return (av - bv) * dir;
+        return (a.completedAt - b.completedAt) * dir;
+      }}
+      const av = String(a[key + 'Text'] || a[key] || '').toLowerCase();
+      const bv = String(b[key + 'Text'] || b[key] || '').toLowerCase();
+      if (av < bv) return -1 * dir;
+      if (av > bv) return 1 * dir;
+      return (a.completedAt - b.completedAt) * dir;
+    }}
+
+    function updateHeaderIndicators() {{
+      const headers = document.querySelectorAll('thead th');
+      headers.forEach((h) => {{
+        const isActive = h.dataset.key === state.sortKey;
+        h.classList.toggle('sort-active', isActive);
+        const base = h.textContent.replace(/\\s*[▲▼]$/, '');
+        if (!isActive) {{
+          h.textContent = base;
+          return;
+        }}
+        const arrow = state.sortDir === 'asc' ? ' ▲' : ' ▼';
+        h.textContent = base + arrow;
+      }});
+    }}
+
+    function render() {{
+      const body = document.getElementById('historyBody');
+      const empty = document.getElementById('emptyState');
+      const table = document.getElementById('historyTable');
+      const summary = document.getElementById('summary');
+
+      if (history.length === 0) {{
+        table.style.display = 'none';
+        empty.style.display = 'block';
+        summary.textContent = '';
+        return;
+      }}
+
+      const rows = history.map(recordToRowData)
+        .filter((r) => !state.filter || r.searchText.includes(state.filter));
+
+      rows.sort(compare);
+
+      table.style.display = 'table';
+      empty.style.display = rows.length === 0 ? 'block' : 'none';
+      summary.textContent = `${{rows.length}} of ${{history.length}}`;
+
+      body.innerHTML = rows.map((r) => `
+        <tr>
+          <td class="mono">${{escapeHtml(r.timeText)}}</td>
+          <td class="mono"><a class="row-link" href="${{r.detailUrl}}">${{escapeHtml(r.callText)}}</a></td>
+          <td class="mono">${{escapeHtml(r.resultText)}}</td>
+          <td><span class="status-pill ${{r.ok ? 'success' : 'error'}}">${{r.statusIcon}} ${{escapeHtml(r.statusText)}}</span></td>
+        </tr>
+      `).join('');
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {{
+      const search = document.getElementById('searchInput');
+      search.addEventListener('input', () => {{
+        state.filter = String(search.value || '').trim().toLowerCase();
+        render();
+      }});
+
+      const headers = document.querySelectorAll('thead th');
+      headers.forEach((h) => {{
+        h.addEventListener('click', () => {{
+          const key = h.dataset.key;
+          if (!key) return;
+          if (state.sortKey === key) {{
+            state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
+          }} else {{
+            state.sortKey = key;
+            state.sortDir = key === 'time' ? 'desc' : 'asc';
+          }}
+          updateHeaderIndicators();
+          render();
+        }});
+      }});
+
+      updateHeaderIndicators();
+      render();
+    }});
+  </script>
+</body>
+
+</html>"""
+            # This template previously relied on str.format(), so it contains doubled
+            # braces ({{ / }}) to escape literal braces in CSS/JS. Since we no longer
+            # use str.format(), normalize them back to single braces before injecting
+            # any dynamic data.
+            page = template.replace("{{", "{").replace("}}", "}")
+            page = (
+                page.replace("@@FUNCTION_NAME@@", html.escape(function_name))
+                .replace("@@FUNCTION_NAME_JSON@@", json.dumps(function_name))
+                .replace("@@HISTORY_JSON@@", json.dumps(history))
+            )
+
+            return page
+
+        @self.app.route('/breakpoint/<function_name>/history/<record_id>', methods=['GET'])
+        def breakpoint_execution_detail_page(function_name: str, record_id: str):
+            record = self.manager.get_execution_record(function_name, record_id)
+            if not record:
+                return jsonify({"error": "record_not_found"}), 404
+
+            call_data = record.get("call_data", {})
+            completed_at = record.get("completed_at", 0)
+            status = call_data.get("status", "unknown")
+            pretty_args = call_data.get("pretty_args", [])
+            pretty_kwargs = call_data.get("pretty_kwargs", {})
+            pretty_result = call_data.get("pretty_result")
+            exception = call_data.get("exception")
+            signature = call_data.get("signature")
+            call_site = call_data.get("call_site") or {}
+            started_at = call_site.get("timestamp", 0)
+
+            stack_trace = (call_site.get("stack_trace") or []) if isinstance(call_site, dict) else []
+
+            from datetime import datetime
+
+            started_at_text = (
+                datetime.fromtimestamp(float(started_at)).strftime("%Y-%m-%d %H:%M:%S")
+                if started_at
+                else "Unknown"
+            )
+            completed_at_text = (
+                datetime.fromtimestamp(float(completed_at)).strftime("%Y-%m-%d %H:%M:%S")
+                if completed_at
+                else "Unknown"
+            )
+
+            args_block = json.dumps({"args": pretty_args, "kwargs": pretty_kwargs}, indent=2)
+
+            parts: list[str] = []
+            try:
+                parts.extend([str(a) for a in pretty_args])
+                parts.extend([f"{k}={v}" for k, v in pretty_kwargs.items()])
+            except Exception:
+                pass
+            call_str = f"{function_name}({', '.join(parts)})"
+
+            frame_index = request.args.get("frame", default=0, type=int)
+            if frame_index < 0:
+                frame_index = 0
+            if stack_trace and frame_index >= len(stack_trace):
+                frame_index = 0
+
+            highlighted_source = ""
+            source_title = "Source not available"
+            css_styles = ""
+            if stack_trace:
+                frame = stack_trace[frame_index]
+                file_path = frame.get("filename") or ""
+                line_no = frame.get("lineno") or 0
+                try:
+                    line_no = int(line_no) if line_no else 0
+                except ValueError:
+                    line_no = 0
+
+                if file_path and os.path.isfile(file_path):
+                    with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                        source = f.read()
+                    source_title = (
+                        f"{os.path.basename(file_path)}:{line_no}"
+                        if line_no
+                        else os.path.basename(file_path)
+                    )
+                    lexer = get_lexer_by_name("python", stripall=True)
+                    formatter = HtmlFormatter(
+                        linenos=True,
+                        cssclass="source",
+                        style="default",
+                        hl_lines=[line_no] if line_no else [],
+                        linenostart=1,
+                    )
+                    highlighted_source = highlight(source, lexer, formatter)
+                    css_styles = formatter.get_style_defs(".source")
+                else:
+                    source_title = file_path or source_title
+
+            status_ok = status == "success"
+            status_class = "success" if status_ok else "error"
+            status_icon = "✓" if status_ok else "✗"
+
+            stack_html = ""
+            if stack_trace:
+                items = []
+                for idx, fr in enumerate(stack_trace):
+                    file_path = fr.get("filename") or ""
+                    lineno = fr.get("lineno") or ""
+                    func = fr.get("function") or ""
+                    ctx = fr.get("code_context") or ""
+                    file_label = os.path.basename(file_path) if file_path else ""
+                    label = f"{func} ({file_label}:{lineno})" if file_label else f"{func}"
+                    url = (
+                        "/breakpoint/"
+                        + quote(function_name, safe="")
+                        + "/history/"
+                        + quote(record_id, safe="")
+                        + f"?frame={idx}"
+                    )
+                    ctx_html = (
+                        f"<div style='margin-top:4px;color:#444;'><code>{html.escape(str(ctx))}</code></div>"
+                        if ctx
+                        else ""
+                    )
+                    active = "font-weight:700;" if idx == frame_index else ""
+                    items.append(
+                        "<li style='margin:8px 0;'>"
+                        f"<a href='{html.escape(url)}' style='color:#1565c0;text-decoration:none;{active}'>"
+                        f"{html.escape(label)}"
+                        "</a>"
+                        f"{ctx_html}"
+                        f"<div style='margin-top:2px;font-size:0.85em;color:#666;'>Frame {idx}</div>"
+                        "</li>"
+                    )
+                stack_html = "<ol style='margin: 8px 0 0 18px; padding: 0;'>" + "".join(items) + "</ol>"
+            else:
+                stack_html = "<div style='color:#666;font-style:italic;'>No call stack recorded.</div>"
+
+            history_url = "/breakpoint/" + quote(function_name, safe="") + "/history"
+
+            template = """<!DOCTYPE html>
+<html lang='en'>
+<head>
+  <meta charset='UTF-8'>
+  <meta name='viewport' content='width=device-width, initial-scale=1.0'>
+  <title>Execution Detail: @@FUNCTION_NAME@@()</title>
+  <style>
+    body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }}
+    .container {{ max-width: 1200px; margin: 0 auto; }}
+    h1 {{ color: #333; border-bottom: 3px solid #4CAF50; padding-bottom: 10px; }}
+    h2 {{ color: #444; margin-top: 26px; }}
+    .back-link {{ display: inline-block; margin-bottom: 18px; color: #1976D2; text-decoration: none; }}
+    .back-link:hover {{ text-decoration: underline; }}
+    .card {{ background: white; border: 1px solid #ddd; border-radius: 10px; padding: 14px 16px; box-shadow: 0 2px 4px rgba(0,0,0,0.06); }}
+    .meta {{ display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }}
+    .pill {{ display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-weight: 700; font-size: 0.85em; }}
+    .pill.success {{ background: #d4edda; color: #155724; }}
+    .pill.error {{ background: #f8d7da; color: #721c24; }}
+    .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }}
+    pre {{ margin: 0; white-space: pre-wrap; word-break: break-word; }}
+    .grid {{ display: grid; grid-template-columns: 1fr; gap: 14px; }}
+    .source-container {{ background: white; border: 1px solid #ddd; border-radius: 10px; padding: 12px; overflow-x: auto; }}
+    .source {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size: 0.95em; }}
+    .source .hll {{ background-color: #fff3cd; display: block; }}
+    .source pre {{ margin: 0; }}
+    .source table {{ width: 100%; border-spacing: 0; }}
+    .source td.linenos {{ user-select: none; color: #666; padding-right: 12px; }}
+    .source td.code {{ width: 100%; }}
+    @@CSS_STYLES@@
+  </style>
+</head>
+<body>
+  <div class='container'>
+    <a href="@@HISTORY_URL@@" class="back-link">← Back to History</a>
+    <h1>Execution Detail: @@FUNCTION_NAME@@()</h1>
+
+    <div class="card">
+      <div class="meta">
+        <div><strong>Started:</strong> <span class="mono">@@STARTED_AT@@</span></div>
+        <div><strong>Completed:</strong> <span class="mono">@@COMPLETED_AT@@</span></div>
+        <div class="pill @@STATUS_CLASS@@">@@STATUS_ICON@@ @@STATUS@@</div>
+        <div><strong>Record:</strong> <span class="mono">@@RECORD_ID@@</span></div>
+      </div>
+      <div style="margin-top:10px;">
+        <strong>Call:</strong>
+        <div class="mono" style="margin-top:4px;">@@CALL_STR@@</div>
+        @@SIGNATURE_BLOCK@@
+      </div>
+    </div>
+
+    <div class="grid" style="margin-top:14px;">
+      <div class="card">
+        <h2 style="margin-top:0;">Parameters</h2>
+        <pre class="mono">@@ARGS_BLOCK@@</pre>
+      </div>
+
+      <div class="card">
+        <h2 style="margin-top:0;">Return Value / Exception</h2>
+        <div><strong>Return:</strong></div>
+        <pre class="mono">@@PRETTY_RESULT@@</pre>
+        <div style="margin-top:10px;"><strong>Exception:</strong></div>
+        <pre class="mono">@@EXCEPTION@@</pre>
+      </div>
+
+      <div class="card">
+        <h2 style="margin-top:0;">Call Stack</h2>
+        @@STACK_HTML@@
+      </div>
+
+      <div class="card">
+        <h2 style="margin-top:0;">Python Source</h2>
+        <div style="color:#666; margin-bottom:8px;" class="mono">@@SOURCE_TITLE@@</div>
+        <div class="source-container">@@HIGHLIGHTED_SOURCE@@</div>
+      </div>
+    </div>
   </div>
 </body>
-</html>""".format(
-                function_name=html.escape(function_name),
-                history_html=history_html,
+</html>"""
+
+            signature_block = (
+                f"<div style='margin-top:6px;'><strong>Signature:</strong> <span class='mono'>{html.escape(str(signature))}</span></div>"
+                if signature
+                else ""
+            )
+
+            page = template.replace("{{", "{").replace("}}", "}")
+            page = (
+                page.replace("@@FUNCTION_NAME@@", html.escape(function_name))
+                .replace("@@HISTORY_URL@@", html.escape(history_url))
+                .replace("@@STARTED_AT@@", html.escape(started_at_text))
+                .replace("@@COMPLETED_AT@@", html.escape(completed_at_text))
+                .replace("@@STATUS_CLASS@@", status_class)
+                .replace("@@STATUS_ICON@@", status_icon)
+                .replace("@@STATUS@@", html.escape(str(status)))
+                .replace("@@RECORD_ID@@", html.escape(record_id))
+                .replace("@@CALL_STR@@", html.escape(call_str))
+                .replace("@@SIGNATURE_BLOCK@@", signature_block)
+                .replace("@@ARGS_BLOCK@@", html.escape(args_block))
+                .replace(
+                    "@@PRETTY_RESULT@@",
+                    html.escape(str(pretty_result) if pretty_result is not None else ""),
+                )
+                .replace(
+                    "@@EXCEPTION@@",
+                    html.escape(str(exception) if exception is not None else ""),
+                )
+                .replace("@@STACK_HTML@@", stack_html)
+                .replace("@@SOURCE_TITLE@@", html.escape(source_title))
+                .replace("@@HIGHLIGHTED_SOURCE@@", highlighted_source or "")
+                .replace("@@CSS_STYLES@@", css_styles)
             )
 
             return page
