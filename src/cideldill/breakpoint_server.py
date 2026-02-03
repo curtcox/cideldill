@@ -1320,6 +1320,8 @@ class BreakpointServer:
             self.manager.register_call(call_id, call_data)
             if self.manager.should_pause_at_breakpoint(method_name):
                 pause_id = self.manager.add_paused_execution(call_data)
+                # Store the pause_id with the call for cleanup later
+                self.manager.associate_pause_with_call(call_id, pause_id)
                 action = {
                     "call_id": call_id,
                     "action": "poll",
@@ -1340,8 +1342,14 @@ class BreakpointServer:
 
         @self.app.route('/api/poll/<pause_id>', methods=['GET'])
         def poll(pause_id):
-            """Poll for resume actions."""
-            action = self.manager.pop_resume_action(pause_id)
+            """Poll for resume actions.
+
+            Uses get (peek) instead of pop to be idempotent - if the network
+            fails after the server responds, the client can retry and still
+            get the same resume action. The action is cleaned up when the
+            call completes.
+            """
+            action = self.manager.get_resume_action(pause_id)
             if action is None:
                 return jsonify({"status": "waiting"})
             return jsonify({"status": "ready", "action": action})

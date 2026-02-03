@@ -36,6 +36,7 @@ class BreakpointManager:
         self._paused_executions: dict[str, dict[str, Any]] = {}
         self._resume_actions: dict[str, dict[str, Any]] = {}
         self._call_data: dict[str, dict[str, Any]] = {}
+        self._call_to_pause: dict[str, str] = {}  # Maps call_id -> pause_id
         self._execution_history: dict[str, list[dict[str, Any]]] = {}
         self._lock = threading.Lock()
         # Default behavior when a breakpoint is hit: "stop" or "go"
@@ -317,9 +318,19 @@ class BreakpointManager:
         with self._lock:
             self._call_data[call_id] = dict(call_data)
 
-    def pop_call(self, call_id: str) -> Optional[dict[str, Any]]:
-        """Pop call data for the given call_id."""
+    def associate_pause_with_call(self, call_id: str, pause_id: str) -> None:
+        """Associate a pause_id with a call_id for cleanup purposes."""
         with self._lock:
+            self._call_to_pause[call_id] = pause_id
+
+    def pop_call(self, call_id: str) -> Optional[dict[str, Any]]:
+        """Pop call data for the given call_id and clean up associated resources."""
+        with self._lock:
+            # Clean up any associated pause/resume data
+            pause_id = self._call_to_pause.pop(call_id, None)
+            if pause_id:
+                self._resume_actions.pop(pause_id, None)
+                self._paused_executions.pop(pause_id, None)
             return self._call_data.pop(call_id, None)
 
     def record_execution(

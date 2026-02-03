@@ -240,3 +240,46 @@ def test_execution_history_empty_for_unknown_function() -> None:
     manager = BreakpointManager()
     history = manager.get_execution_history("unknown_func")
     assert history == []
+
+
+def test_pop_call_cleans_up_associated_pause() -> None:
+    """Test that pop_call cleans up associated pause and resume data."""
+    manager = BreakpointManager()
+
+    # Register a call and create a pause
+    call_data = {"method_name": "add", "args": [1, 2]}
+    manager.register_call("call-123", call_data)
+
+    pause_id = manager.add_paused_execution(call_data)
+    manager.associate_pause_with_call("call-123", pause_id)
+
+    # Resume the execution (stores the action)
+    manager.resume_execution(pause_id, {"action": "continue"})
+
+    # Verify the resume action is available
+    assert manager.get_resume_action(pause_id) == {"action": "continue"}
+
+    # Pop the call - should clean up the resume action too
+    popped = manager.pop_call("call-123")
+    assert popped is not None
+
+    # Resume action should now be cleaned up
+    assert manager.get_resume_action(pause_id) is None
+
+
+def test_get_resume_action_is_idempotent() -> None:
+    """Test that get_resume_action can be called multiple times."""
+    manager = BreakpointManager()
+
+    call_data = {"method_name": "add", "args": [1, 2]}
+    pause_id = manager.add_paused_execution(call_data)
+    manager.resume_execution(pause_id, {"action": "continue"})
+
+    # get_resume_action should return the same value on repeated calls
+    action1 = manager.get_resume_action(pause_id)
+    action2 = manager.get_resume_action(pause_id)
+    action3 = manager.get_resume_action(pause_id)
+
+    assert action1 == {"action": "continue"}
+    assert action2 == {"action": "continue"}
+    assert action3 == {"action": "continue"}
