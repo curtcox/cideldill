@@ -14,7 +14,8 @@ from .debug_client import DebugClient
 from .debug_info import DebugInfo
 from .debug_proxy import AsyncDebugProxy, DebugProxy
 from .exceptions import DebugServerError
-from .function_registry import compute_signature, register_function as register_local_function
+from .function_registry import compute_signature
+from .function_registry import register_function as register_local_function
 
 
 @dataclass
@@ -117,7 +118,7 @@ def _set_debug_mode(enabled: bool) -> DebugInfo:
         with _state_lock:
             _state.enabled = False
             _state.client = None
-        return DebugInfo(enabled=False, server=None, status="disabled")
+        raise
 
     with _state_lock:
         _state.client = client

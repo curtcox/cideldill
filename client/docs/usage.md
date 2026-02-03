@@ -24,11 +24,11 @@ The server package (which you run separately) additionally requires `flask` and 
 Install the client as an editable package in your application's virtual environment.
 
 ```bash
-pip install -e /path/to/cideldill-client
+pip install -e /path/to/cideldill/client
 ```
 
 **Pros:**
-- Changes to cideldill-client are immediately available without reinstalling
+- Changes to /path/to/cideldill/client are immediately available without reinstalling
 - Standard Python packaging approach
 - Full IDE support (autocomplete, go-to-definition)
 
@@ -42,7 +42,7 @@ pip install -e /path/to/cideldill-client
 Add the client source to `PYTHONPATH` at runtime or in your shell config.
 
 ```bash
-export PYTHONPATH="/path/to/cideldill-client/src:$PYTHONPATH"
+export PYTHONPATH="/path/to/cideldill/client/src:$PYTHONPATH"
 ```
 
 **Pros:**
@@ -61,8 +61,8 @@ export PYTHONPATH="/path/to/cideldill-client/src:$PYTHONPATH"
 Create a symlink from your venv's site-packages to the client source.
 
 ```bash
-ln -s /path/to/cideldill-client/src/cideldill_client \
-      /path/to/your-app/.venv/lib/python3.11/site-packages/cideldill_client
+ln -s /path/to/cideldill/client/src/cideldill_client \
+    /path/to/your-app/.venv/lib/python3.11/site-packages/cideldill_client
 ```
 
 **Pros:**
@@ -81,7 +81,7 @@ Add cideldill-client as a git submodule inside your project.
 
 ```bash
 cd /path/to/your-app
-git submodule add /path/to/cideldill-client libs/cideldill-client
+git submodule add /path/to/cideldill/client libs/cideldill-client
 pip install -e libs/cideldill-client
 ```
 
@@ -102,7 +102,7 @@ Use `uv` workspaces or similar tools to manage both repos as a unified workspace
 In your `pyproject.toml`:
 ```toml
 [tool.uv.sources]
-cideldill-client = { path = "/path/to/cideldill-client", editable = true }
+cideldill-client = { path = "/path/to/cideldill/client", editable = true }
 ```
 
 **Pros:**
@@ -158,10 +158,10 @@ Combine with any of the above options for the actual import path.
 ```bash
 # 1. Install client in your app's venv
 source /path/to/your-app/.venv/bin/activate
-pip install -e /path/to/cideldill-client
+pip install -e /path/to/cideldill/client
 
-# 2. Start the server (in a separate terminal, from cideldill-server's venv)
-cd /path/to/cideldill-server && source venv/bin/activate
+# 2. Start the server (in a separate terminal, from /path/to/cideldill/server)
+cd /path/to/cideldill/server && source venv/bin/activate
 python -m cideldill_server --port 5000
 
 # 3. In your application code:
@@ -173,5 +173,5 @@ my_function = with_debug(my_function)
 ```
 
 See also:
-- [with_debug API Reference](with_debug_api.md)
-- [Breakpoints Web UI](breakpoints_web_ui.md)
+- [with_debug API Reference](../../docs/with_debug_api.md)
+- [Breakpoints Web UI](../../docs/breakpoints_web_ui.md)
