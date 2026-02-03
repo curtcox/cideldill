@@ -189,6 +189,50 @@ HTML_TEMPLATE = """
         .state-btn.selected {
             border-color: #333;
         }
+        .tabs {
+            display: flex;
+            gap: 8px;
+            margin: 12px 0 16px;
+            padding: 6px;
+            background: #f8f8f8;
+            border: 1px solid #ddd;
+            border-radius: 10px;
+        }
+        .tab-btn {
+            flex: 1;
+            border: 1px solid transparent;
+            background: transparent;
+            cursor: pointer;
+            padding: 10px 12px;
+            border-radius: 8px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        .tab-btn.active {
+            background: white;
+            border-color: #ddd;
+        }
+        .tab-count {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 24px;
+            height: 22px;
+            padding: 0 8px;
+            border-radius: 999px;
+            background: #eee;
+            font-size: 0.85em;
+            font-weight: 700;
+        }
+        .tab-panel {
+            display: none;
+        }
+        .tab-panel.active {
+            display: block;
+        }
         .empty-state {
             color: #666;
             font-style: italic;
@@ -203,42 +247,55 @@ HTML_TEMPLATE = """
 
         <div id="statusMessage" class="status-message"></div>
 
-        <h2>⏸️ Paused Executions</h2>
-        <div id="pausedExecutions">
-            <div class="empty-state">No executions currently paused.</div>
+        <div class="tabs">
+            <button id="tabBtnPaused" class="tab-btn active" type="button">
+                ⏸️ Paused Executions <span id="pausedCount" class="tab-count">0</span>
+            </button>
+            <button id="tabBtnBreakpoints" class="tab-btn" type="button">
+                🔴 Active Breakpoints <span id="breakpointsCount" class="tab-count">0</span>
+            </button>
         </div>
 
-        <h2>🔴 Active Breakpoints</h2>
-        <div class="breakpoint-list">
-            <div style="margin-bottom: 20px; padding: 15px; background-color: #fff3cd;
-                        border: 1px solid #ffc107; border-radius: 8px;">
-                <div style="margin-bottom: 10px;">
-                    <strong>Default Breakpoint Behavior:</strong>
-                </div>
-                <div style="display: flex; gap: 10px; align-items: center;">
-                    <label style="display: flex; align-items: center; cursor: pointer;">
-                        <input type="radio" name="behavior" value="stop"
-                               id="behavior-stop" checked
-                               onchange="setBehavior('stop')"
-                               style="margin-right: 5px; cursor: pointer;">
-                        <span>🛑 Stop at breakpoints</span>
-                    </label>
-                    <label style="display: flex; align-items: center; cursor: pointer;">
-                        <input type="radio" name="behavior" value="go"
-                               id="behavior-go"
-                               onchange="setBehavior('go')"
-                               style="margin-right: 5px; cursor: pointer;">
-                        <span>🟢 Go (log only)</span>
-                    </label>
-                </div>
-                <div style="margin-top: 10px; font-size: 0.9em; color: #856404;">
-                    When "Stop" is selected, execution pauses at breakpoints.
-                    When "Go" is selected, breakpoints are logged but don't pause.
-                </div>
+        <div id="tabPaused" class="tab-panel active">
+            <h2>⏸️ Paused Executions</h2>
+            <div id="pausedExecutions">
+                <div class="empty-state">No executions currently paused.</div>
             </div>
         </div>
-        <div id="breakpointsList">
-            <div class="empty-state">No breakpoints set.</div>
+
+        <div id="tabBreakpoints" class="tab-panel">
+            <h2>🔴 Active Breakpoints</h2>
+            <div class="breakpoint-list">
+                <div style="margin-bottom: 20px; padding: 15px; background-color: #fff3cd;
+                            border: 1px solid #ffc107; border-radius: 8px;">
+                    <div style="margin-bottom: 10px;">
+                        <strong>Default Breakpoint Behavior:</strong>
+                    </div>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <label style="display: flex; align-items: center; cursor: pointer;">
+                            <input type="radio" name="behavior" value="stop"
+                                   id="behavior-stop" checked
+                                   onchange="setBehavior('stop')"
+                                   style="margin-right: 5px; cursor: pointer;">
+                            <span>🛑 Stop at breakpoints</span>
+                        </label>
+                        <label style="display: flex; align-items: center; cursor: pointer;">
+                            <input type="radio" name="behavior" value="go"
+                                   id="behavior-go"
+                                   onchange="setBehavior('go')"
+                                   style="margin-right: 5px; cursor: pointer;">
+                            <span>🟢 Go (log only)</span>
+                        </label>
+                    </div>
+                    <div style="margin-top: 10px; font-size: 0.9em; color: #856404;">
+                        When "Stop" is selected, execution pauses at breakpoints.
+                        When "Go" is selected, breakpoints are logged but don't pause.
+                    </div>
+                </div>
+            </div>
+            <div id="breakpointsList">
+                <div class="empty-state">No breakpoints set.</div>
+            </div>
         </div>
     </div>
 
@@ -249,6 +306,7 @@ HTML_TEMPLATE = """
         let functionSignatures = {};
         const selectedReplacements = {};
         let isBreakpointSelectActive = false;
+        let activeTab = 'paused';
 
         function escapeHtml(text) {
             return String(text)
@@ -257,6 +315,19 @@ HTML_TEMPLATE = """
                 .replace(/>/g, '&gt;')
                 .replace(/"/g, '&quot;')
                 .replace(/'/g, '&#039;');
+        }
+
+        function setActiveTab(tab) {
+            activeTab = tab;
+            const pausedPanel = document.getElementById('tabPaused');
+            const breakpointsPanel = document.getElementById('tabBreakpoints');
+            const pausedBtn = document.getElementById('tabBtnPaused');
+            const breakpointsBtn = document.getElementById('tabBtnBreakpoints');
+            const pausedActive = tab === 'paused';
+            pausedPanel.classList.toggle('active', pausedActive);
+            breakpointsPanel.classList.toggle('active', !pausedActive);
+            pausedBtn.classList.toggle('active', pausedActive);
+            breakpointsBtn.classList.toggle('active', !pausedActive);
         }
 
         // Set breakpoint behavior
@@ -391,6 +462,12 @@ HTML_TEMPLATE = """
                 const response = await fetch(`${API_BASE}/breakpoints`);
                 const data = await response.json();
 
+                const bpCount = (data.breakpoints && data.breakpoints.length) ? data.breakpoints.length : 0;
+                const bpCountEl = document.getElementById('breakpointsCount');
+                if (bpCountEl) {
+                    bpCountEl.textContent = bpCount;
+                }
+
                 const container = document.getElementById('breakpointsList');
                 if (data.breakpoints && data.breakpoints.length > 0) {
                     const states = data.breakpoint_behaviors || {};
@@ -522,6 +599,15 @@ HTML_TEMPLATE = """
         });
 
         document.addEventListener('DOMContentLoaded', function() {
+            const pausedBtn = document.getElementById('tabBtnPaused');
+            const breakpointsBtn = document.getElementById('tabBtnBreakpoints');
+            if (pausedBtn) {
+                pausedBtn.addEventListener('click', () => setActiveTab('paused'));
+            }
+            if (breakpointsBtn) {
+                breakpointsBtn.addEventListener('click', () => setActiveTab('breakpoints'));
+            }
+            setActiveTab(activeTab);
             // Load initial state
             loadBehavior();
             refresh();
@@ -536,6 +622,12 @@ HTML_TEMPLATE = """
             try {
                 const response = await fetch(`${API_BASE}/paused`);
                 const data = await response.json();
+
+                const pausedCount = (data.paused && data.paused.length) ? data.paused.length : 0;
+                const pausedCountEl = document.getElementById('pausedCount');
+                if (pausedCountEl) {
+                    pausedCountEl.textContent = pausedCount;
+                }
 
                 const container = document.getElementById('pausedExecutions');
                 if (data.paused && data.paused.length > 0) {
