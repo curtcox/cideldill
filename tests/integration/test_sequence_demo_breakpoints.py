@@ -8,9 +8,9 @@ from pathlib import Path
 import pytest
 import requests
 
-from cideldill import configure_debug, with_debug
-from cideldill.breakpoint_manager import BreakpointManager
-from cideldill.breakpoint_server import BreakpointServer
+from cideldill_client import configure_debug, with_debug
+from cideldill_server.breakpoint_manager import BreakpointManager
+from cideldill_server.breakpoint_server import BreakpointServer
 
 
 def test_sequence_demo_actually_stops_at_breakpoints():

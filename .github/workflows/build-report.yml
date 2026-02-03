@@ -37,7 +37,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          pip install -e "client[dev]" -e "server[dev]"
           pip install anybadge
 
       - name: Install Node.js dependencies
@@ -65,40 +65,43 @@ jobs:
       - name: Create reports directory
         run: mkdir -p reports
 
+      - name: Check duplicated files
+        run: python scripts/check_duplicate_files.py
+
       - name: Run Ruff
         continue-on-error: true
         run: |
-          ruff check src/ --output-format=json > reports/ruff.json || true
-          ruff check src/ --output-format=full > reports/ruff.txt || true
+          ruff check client/src server/src --output-format=json > reports/ruff.json || true
+          ruff check client/src server/src --output-format=full > reports/ruff.txt || true
 
       - name: Run Pylint
         continue-on-error: true
         run: |
-          pylint src/ --output-format=json > reports/pylint.json || true
-          pylint src/ > reports/pylint.txt || true
+          pylint client/src server/src --output-format=json > reports/pylint.json || true
+          pylint client/src server/src > reports/pylint.txt || true
 
       - name: Run Mypy
         continue-on-error: true
         run: |
-          mypy src/ --html-report reports/mypy-html --txt-report reports/mypy-txt || true
+          mypy client/src server/src --html-report reports/mypy-html --txt-report reports/mypy-txt || true
 
       - name: Run Pydoclint
         continue-on-error: true
         run: |
-          pydoclint src/ > reports/pydoclint.txt || true
+          pydoclint client/src server/src > reports/pydoclint.txt || true
 
       - name: Run Radon (Complexity)
         continue-on-error: true
         run: |
-          radon cc src/ -s -j > reports/radon-cc.json || true
-          radon cc src/ -s > reports/radon-cc.txt || true
-          radon mi src/ -j > reports/radon-mi.json || true
-          radon mi src/ > reports/radon-mi.txt || true
+          radon cc client/src server/src -s -j > reports/radon-cc.json || true
+          radon cc client/src server/src -s > reports/radon-cc.txt || true
+          radon mi client/src server/src -j > reports/radon-mi.json || true
+          radon mi client/src server/src > reports/radon-mi.txt || true
 
       - name: Run Vulture
         continue-on-error: true
         run: |
-          vulture src/ > reports/vulture.txt || true
+          vulture client/src server/src > reports/vulture.txt || true
 
       - name: Run ShellCheck
         continue-on-error: true
@@ -127,7 +130,7 @@ jobs:
       - name: Run pytest with coverage
         continue-on-error: true
         run: |
-          pytest --cov=src --cov-report=html:reports/coverage --cov-report=json:reports/coverage.json --cov-report=term > reports/pytest.txt || true
+          pytest --cov=cideldill_client --cov=cideldill_server --cov-report=html:reports/coverage --cov-report=json:reports/coverage.json --cov-report=term > reports/pytest.txt || true
 
       - name: Run Gauge tests
         continue-on-error: true

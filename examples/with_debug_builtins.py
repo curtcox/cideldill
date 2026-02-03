@@ -1,6 +1,6 @@
 """Built-in type wrapping example."""
 
-from cideldill import with_debug
+from cideldill_client import with_debug
 
 
 def main() -> None:

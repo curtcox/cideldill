@@ -33,10 +33,10 @@ from pathlib import Path
 
 script_dir = Path(__file__).parent
 repo_root = script_dir.parent.parent
-sys.path.insert(0, str(repo_root / "src"))
+sys.path.insert(0, str(repo_root / "server" / "src"))
 
-from cideldill.breakpoint_manager import BreakpointManager
-from cideldill.breakpoint_server import BreakpointServer
+from cideldill_server.breakpoint_manager import BreakpointManager
+from cideldill_server.breakpoint_server import BreakpointServer
 
 
 def parse_args():

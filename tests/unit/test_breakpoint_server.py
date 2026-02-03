@@ -11,9 +11,9 @@ import pytest
 
 pytest.importorskip("dill")
 
-from cideldill.breakpoint_manager import BreakpointManager
-from cideldill.breakpoint_server import BreakpointServer
-from cideldill.serialization import Serializer
+from cideldill_server.breakpoint_manager import BreakpointManager
+from cideldill_server.breakpoint_server import BreakpointServer
+from cideldill_server.serialization import Serializer
 
 
 @pytest.fixture

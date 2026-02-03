@@ -5,7 +5,7 @@ CID el Dill ships with a Flask-based breakpoint server that manages call pauses 
 ## Start the Server
 
 ```bash
-python -m cideldill --port 5000
+python -m cideldill_server --port 5000
 ```
 
 Open `http://localhost:5000/` to access the web UI.
@@ -39,7 +39,7 @@ To manually run the sequence demo with debugging:
 
 ```bash
 # Terminal 1: Start the breakpoint server
-python -m cideldill --port 5000
+python -m cideldill_server --port 5000
 
 # Terminal 2: Run the demo with debugging enabled
 python examples/sequence_demo.py --debug ON --iterations 10

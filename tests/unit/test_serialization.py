@@ -1,4 +1,4 @@
-from cideldill.serialization import CIDCache, Serializer, compute_cid, deserialize, serialize
+from cideldill_client.serialization import CIDCache, Serializer, compute_cid, deserialize, serialize
 
 
 def test_compute_cid_returns_64_char_hex():

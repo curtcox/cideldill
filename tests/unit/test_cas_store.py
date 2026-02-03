@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from cideldill.cas_store import CASStore
+from cideldill_server.cas_store import CASStore
 
 
 @pytest.fixture

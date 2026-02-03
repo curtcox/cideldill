@@ -1,6 +1,6 @@
 """Hypothesis property-based tests for Logger."""
 
-from cideldill.logger import Logger
+from cideldill_client.logger import Logger
 from hypothesis import given
 from hypothesis import strategies as st
 

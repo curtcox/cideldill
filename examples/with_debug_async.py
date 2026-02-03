@@ -2,7 +2,7 @@
 
 import asyncio
 
-from cideldill import with_debug
+from cideldill_client import with_debug
 
 
 class AsyncCalculator:

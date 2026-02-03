@@ -19,7 +19,7 @@ def generate_html_viewer(db_path: str, output_path: str, title: str = "CAS Store
         title: Title for the HTML page.
     """
     # Read data from database using CASStore
-    from cideldill import CASStore
+    from .cas_store import CASStore
 
     store = CASStore(db_path)
     records = store.get_all_call_records()
@@ -298,8 +298,8 @@ def _generate_source_viewer_pages(db_path: str, main_output_path: str) -> None:
         db_path: Path to the database.
         main_output_path: Path to the main HTML output file (used for determining output directory).
     """
-    from cideldill import CASStore
-    from cideldill.source_viewer import generate_frame_view, generate_source_view
+    from .cas_store import CASStore
+    from .source_viewer import generate_frame_view, generate_source_view
 
     store = CASStore(db_path)
     records = store.get_all_call_records()
@@ -1190,7 +1190,7 @@ def _generate_breakpoints_page(
             <div style="margin-top: 5px; font-size: 0.9em;">
                 To enable interactive breakpoints, start the server with:
                 <code style="background: #f0f0f0; padding: 2px 6px; border-radius: 3px;">
-                    python -m cideldill.breakpoint_server
+                    python -m cideldill_server
                 </code>
             </div>
         </div>
@@ -1396,5 +1396,4 @@ def _generate_breakpoints_page(
 
     breakpoints_path = output_dir / "breakpoints.html"
     breakpoints_path.write_text(html, encoding="utf-8")
-
 

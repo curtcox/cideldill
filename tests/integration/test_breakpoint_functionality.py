@@ -12,9 +12,9 @@ import requests
 def test_breakpoint_actually_pauses_execution():
     """Test that setting a breakpoint causes execution to pause."""
     # This test should fail initially - breakpoints aren't working
-    from cideldill.breakpoint_manager import BreakpointManager
-    from cideldill.breakpoint_server import BreakpointServer
-    from cideldill import with_debug, configure_debug
+    from cideldill_server.breakpoint_manager import BreakpointManager
+    from cideldill_server.breakpoint_server import BreakpointServer
+    from cideldill_client import with_debug, configure_debug
 
     # Start server
     manager = BreakpointManager()
@@ -96,7 +96,7 @@ def test_breakpoint_actually_pauses_execution():
 
 def test_web_ui_has_toggle_breakpoint_functionality():
     """Test that the web UI HTML includes functionality to toggle breakpoints."""
-    from cideldill.breakpoint_server import HTML_TEMPLATE
+    from cideldill_server.breakpoint_server import HTML_TEMPLATE
 
     # Check for per-breakpoint stop/go toggle
     assert "setbreakpointbehavior" in HTML_TEMPLATE.lower(), \
@@ -115,7 +115,7 @@ def test_web_ui_has_toggle_breakpoint_functionality():
 
 def test_breakpoint_manager_tracks_function_names():
     """Test that breakpoint manager correctly tracks function names."""
-    from cideldill.breakpoint_manager import BreakpointManager
+    from cideldill_server.breakpoint_manager import BreakpointManager
 
     manager = BreakpointManager()
 
@@ -139,7 +139,7 @@ def test_breakpoint_manager_tracks_function_names():
 
 def test_with_debug_preserves_function_name():
     """Test that with_debug wrapper preserves the original function name."""
-    from cideldill import with_debug
+    from cideldill_client import with_debug
 
     def my_test_function():
         return "result"
@@ -159,7 +159,7 @@ def test_with_debug_preserves_function_name():
 
 def test_server_matches_breakpoints_correctly():
     """Test that server correctly matches method names to breakpoints."""
-    from cideldill.breakpoint_manager import BreakpointManager
+    from cideldill_server.breakpoint_manager import BreakpointManager
 
     manager = BreakpointManager()
     manager.add_breakpoint("whole_numbers")
