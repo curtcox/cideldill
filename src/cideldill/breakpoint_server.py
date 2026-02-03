@@ -1459,14 +1459,16 @@ class BreakpointServer:
     .pill.success {{ background: #d4edda; color: #155724; }}
     .pill.error {{ background: #f8d7da; color: #721c24; }}
     .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }}
-    pre {{ margin: 0; white-space: pre-wrap; word-break: break-word; }}
+    pre {{ margin: 0; }}
+    .card pre {{ white-space: pre-wrap; word-break: break-word; }}
     .grid {{ display: grid; grid-template-columns: 1fr; gap: 14px; }}
     .source-container {{ background: white; border: 1px solid #ddd; border-radius: 10px; padding: 12px; overflow-x: auto; }}
     .source {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size: 0.95em; }}
     .source .hll {{ background-color: #fff3cd; display: block; }}
-    .source pre {{ margin: 0; }}
+    .source pre {{ margin: 0; white-space: pre; word-break: normal; }}
     .source table {{ width: 100%; border-spacing: 0; }}
-    .source td.linenos {{ user-select: none; color: #666; padding-right: 12px; }}
+    .source td.linenos {{ user-select: none; color: #666; padding-right: 12px; min-width: 5ch; text-align: right; white-space: nowrap; }}
+    .source td.linenos pre {{ white-space: pre; }}
     .source td.code {{ width: 100%; }}
     @@CSS_STYLES@@
   </style>
