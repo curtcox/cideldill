@@ -1207,7 +1207,7 @@ def _generate_breakpoints_page(
     </div>
 
     <script>
-        const API_BASE = 'http://localhost:5000/api';
+        const API_BASE = 'http://localhost:5174/api';
         let updateInterval = null;
 
         // Check server status
@@ -1396,4 +1396,3 @@ def _generate_breakpoints_page(
 
     breakpoints_path = output_dir / "breakpoints.html"
     breakpoints_path.write_text(html, encoding="utf-8")
-

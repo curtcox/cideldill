@@ -16,6 +16,7 @@ from .debug_proxy import AsyncDebugProxy, DebugProxy
 from .exceptions import DebugServerError
 from .function_registry import compute_signature
 from .function_registry import register_function as register_local_function
+from .port_discovery import read_port_from_discovery_file
 
 
 @dataclass
@@ -137,7 +138,10 @@ def _resolve_server_url() -> str:
     if env_url:
         _validate_localhost(env_url)
         return env_url
-    default_url = "http://localhost:5000"
+    discovered_port = read_port_from_discovery_file()
+    if discovered_port:
+        return f"http://localhost:{discovered_port}"
+    default_url = "http://localhost:5174"
     return default_url
 
 

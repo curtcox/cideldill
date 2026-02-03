@@ -83,7 +83,7 @@ from cideldill_client import with_debug
 
 info = with_debug("ON")
 print(info.is_enabled())       # True
-print(info.server_url())       # http://localhost:5000
+print(info.server_url())       # http://localhost:5174
 print(info.connection_status())  # connected
 ```
 
@@ -112,17 +112,19 @@ print(info.is_enabled())  # False
 ```python
 from cideldill_client import configure_debug, with_debug
 
-configure_debug(server_url="http://localhost:5000")
+configure_debug(server_url="http://localhost:5174")
 with_debug("ON")
 ```
 
 ### Start the Breakpoint Server
 
 ```bash
-python -m cideldill_server --port 5000
+python -m cideldill_server --port 5174
 ```
 
-Then open `http://localhost:5000/` to manage breakpoints and paused calls.
+The server will automatically find a free port if 5174 is occupied. The actual port
+is written to `~/.cideldill/port` for client auto-discovery. Then open the web UI at
+the port shown in the server output (for example `http://localhost:5174/`).
 
 ### Try the Interactive Demo
 

@@ -39,11 +39,38 @@ calculator.add(1, 2)
 
 ## Configure Server URL
 
+### Automatic Discovery (Recommended)
+
+The client automatically discovers the server port:
+
+```python
+from cideldill_client import with_debug
+
+# No configuration needed - uses port discovery
+with_debug("ON")
+```
+
+Discovery priority:
+1. Explicit `configure_debug(server_url=...)`
+2. `CIDELDILL_SERVER_URL` environment variable
+3. Port discovery file (`~/.cideldill/port`)
+4. Default (`http://localhost:5174`)
+
+### Manual Configuration
+
 ```python
 from cideldill_client import configure_debug, with_debug
 
-configure_debug(server_url="http://localhost:5000")
+# Explicit configuration (overrides discovery)
+configure_debug(server_url="http://localhost:5174")
 with_debug("ON")
+```
+
+### Environment Variable
+
+```bash
+export CIDELDILL_SERVER_URL="http://localhost:8080"
+python my_app.py
 ```
 
 The server URL must be localhost-only.

@@ -162,7 +162,7 @@ pip install -e /path/to/cideldill/client
 
 # 2. Start the server (in a separate terminal, from /path/to/cideldill/server)
 cd /path/to/cideldill/server && source venv/bin/activate
-python -m cideldill_server --port 5000
+python -m cideldill_server --port 5174
 
 # 3. In your application code:
 from cideldill_client import with_debug
