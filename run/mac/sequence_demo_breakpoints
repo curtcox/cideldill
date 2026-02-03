@@ -202,6 +202,7 @@ def main():
     print("=" * 60)
     print()
 
+    demo_process = None
     try:
         # Run the demo with debugging enabled
         demo_env = os.environ.copy()
@@ -225,11 +226,28 @@ def main():
 
     except KeyboardInterrupt:
         print("\n\n✓ Interrupted by user")
-        demo_process.terminate()
+        if demo_process is not None:
+            demo_process.terminate()
     finally:
-        # Clean up: stop the server
         print("\n" + "=" * 60)
-        print("Stopping breakpoint server...")
+        demo_return_code = demo_process.returncode if demo_process is not None else None
+        print("✓ Sequence demo execution complete")
+        if demo_return_code is not None:
+            print(f"✓ Demo process exit code: {demo_return_code}")
+        print()
+        print("Breakpoint server is still running so you can browse the UI:")
+        print(f"  {ui_url}")
+        print()
+        print("Press Ctrl+C to stop the breakpoint server.")
+
+        try:
+            while server_process.poll() is None:
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            pass
+
+        # Clean up: stop the server
+        print("\nStopping breakpoint server...")
         server_process.terminate()
         server_process.wait(timeout=5)
         print("✓ Server stopped")
