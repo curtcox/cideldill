@@ -6,6 +6,7 @@ import inspect
 import os
 import threading
 from dataclasses import dataclass
+from functools import wraps
 from typing import Any
 from urllib.parse import urlparse
 
@@ -36,6 +37,17 @@ def configure_debug(server_url: str | None = None) -> None:
 
 def with_debug(target: Any) -> Any:
     """Enable/disable debugging or wrap objects for debugging."""
+    alias_name: str | None = None
+
+    if (
+        isinstance(target, tuple)
+        and len(target) == 2
+        and isinstance(target[0], str)
+        and callable(target[1])
+    ):
+        alias_name = target[0]
+        target = target[1]
+
     # Check if it's a control command (ON/OFF)
     if isinstance(target, str):
         mode = target.strip().upper()
@@ -53,16 +65,31 @@ def with_debug(target: Any) -> Any:
     if not _is_debug_enabled():
         return target
 
-    if isinstance(target, (DebugProxy, AsyncDebugProxy)):
-        return target
-
     client = _state.client
     if client is None:
         client = DebugClient(_resolve_server_url())
         _state.client = client
 
+    if isinstance(target, (DebugProxy, AsyncDebugProxy)):
+        underlying = object.__getattribute__(target, "_target")
+        if callable(underlying) and hasattr(underlying, "__name__"):
+            client.register_function(underlying.__name__)
+        return target
+
     if callable(target) and hasattr(target, "__name__"):
-        client.register_function(target.__name__)
+        if alias_name is not None:
+            client.register_function(alias_name)
+
+            original = target
+
+            @wraps(target)
+            def _aliased(*args: Any, **kwargs: Any) -> Any:
+                return original(*args, **kwargs)
+
+            _aliased.__name__ = alias_name
+            target = _aliased
+        else:
+            client.register_function(target.__name__)
 
     proxy_class = AsyncDebugProxy if _is_coroutine_target(target) else DebugProxy
     return proxy_class(target, client, _is_debug_enabled)

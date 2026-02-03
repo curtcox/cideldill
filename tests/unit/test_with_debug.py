@@ -105,6 +105,85 @@ def test_with_debug_registers_callable_for_breakpoints(monkeypatch) -> None:
     assert "my_breakpoint_target" in register_calls
 
 
+def test_with_debug_registers_callable_even_when_target_is_proxy(monkeypatch) -> None:
+    def noop_check(self) -> None:
+        return None
+
+    register_calls: list[str] = []
+
+    def record_register(self, function_name: str) -> None:
+        register_calls.append(function_name)
+
+    monkeypatch.setattr("cideldill.debug_client.DebugClient.check_connection", noop_check)
+    monkeypatch.setattr(
+        "cideldill.debug_client.DebugClient.register_function",
+        record_register,
+        raising=False,
+    )
+
+    configure_debug(server_url="http://localhost:5000")
+    with_debug("ON")
+
+    def primes() -> int:
+        return 2
+
+    proxy = with_debug(primes)
+    _proxy_again = with_debug(proxy)
+
+    assert "primes" in register_calls
+
+
+def test_with_debug_registers_alias_name_for_callable(monkeypatch) -> None:
+    def noop_check(self) -> None:
+        return None
+
+    register_calls: list[str] = []
+
+    def record_register(self, function_name: str) -> None:
+        register_calls.append(function_name)
+
+    monkeypatch.setattr("cideldill.debug_client.DebugClient.check_connection", noop_check)
+    monkeypatch.setattr(
+        "cideldill.debug_client.DebugClient.register_function",
+        record_register,
+        raising=False,
+    )
+
+    configure_debug(server_url="http://localhost:5000")
+    with_debug("ON")
+
+    def primes() -> int:
+        return 2
+
+    _wrapped = with_debug(("sequence_fn", primes))
+
+    assert "sequence_fn" in register_calls
+
+
+def test_with_debug_alias_callable_is_serializable(monkeypatch) -> None:
+    def noop_check(self) -> None:
+        return None
+
+    def record_register(self, function_name: str) -> None:
+        return None
+
+    monkeypatch.setattr("cideldill.debug_client.DebugClient.check_connection", noop_check)
+    monkeypatch.setattr(
+        "cideldill.debug_client.DebugClient.register_function",
+        record_register,
+        raising=False,
+    )
+
+    configure_debug(server_url="http://localhost:5000")
+    with_debug("ON")
+
+    def primes() -> int:
+        return 2
+
+    aliased_proxy = with_debug(("sequence_fn", primes))
+    assert aliased_proxy is not None
+
+
 def test_with_debug_nop_preserves_identity_when_off() -> None:
     """obj = with_debug(obj) is a true NOP when debug is OFF."""
     with_debug("OFF")

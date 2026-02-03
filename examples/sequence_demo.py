@@ -292,9 +292,9 @@ def main() -> None:
         announce_print, announce_log, announce_say_default, announce_say_alex, announce_say_samantha, announce_say_victoria,
         delay_01s, delay_1s, delay_10s, delay_100s]:
         with_debug(f)
-    sequence_fn = with_debug(primes)
-    announce_fn = with_debug(announce_say_default)
-    delay_fn = with_debug(delay_1s)
+    sequence_fn = with_debug(("sequence_fn", primes))
+    announce_fn = with_debug(("announce_fn", announce_say_default))
+    delay_fn = with_debug(("delay_fn", delay_1s))
 
     print("Starting sequence demo with configuration:")
     print("- Sequence: whole numbers")
