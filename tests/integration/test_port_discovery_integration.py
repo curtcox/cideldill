@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
@@ -13,11 +15,20 @@ pytest.importorskip("requests")
 import requests
 
 
+def _read_port(port_file: Path) -> Optional[int]:
+    try:
+        return int(port_file.read_text())
+    except (OSError, ValueError):
+        return None
+
+
 def _wait_for_port_file(port_file: Path, timeout: float = 10.0) -> int:
     deadline = time.time() + timeout
     while time.time() < deadline:
         if port_file.exists():
-            return int(port_file.read_text())
+            port = _read_port(port_file)
+            if port is not None:
+                return port
         time.sleep(0.5)
     raise AssertionError("Discovery file not created")
 
@@ -26,8 +37,8 @@ def _wait_for_port_value(port_file: Path, expected: int, timeout: float = 10.0) 
     deadline = time.time() + timeout
     while time.time() < deadline:
         if port_file.exists():
-            port = int(port_file.read_text())
-            if port == expected:
+            port = _read_port(port_file)
+            if port is not None and port == expected:
                 return port
         time.sleep(0.5)
     raise AssertionError(f"Discovery file did not contain port {expected}")
@@ -37,8 +48,8 @@ def _wait_for_port_change(port_file: Path, previous: int, timeout: float = 10.0)
     deadline = time.time() + timeout
     while time.time() < deadline:
         if port_file.exists():
-            port = int(port_file.read_text())
-            if port != previous:
+            port = _read_port(port_file)
+            if port is not None and port != previous:
                 return port
         time.sleep(0.5)
     raise AssertionError("Discovery file did not update to a new port")
@@ -85,6 +96,15 @@ def test_server_handles_port_conflict() -> None:
     """Test that server recovers from port conflict."""
     repo_root = Path(__file__).resolve().parents[2]
     server_script = repo_root / "run" / "mac" / "breakpoint_server"
+    port_file = Path.home() / ".cideldill" / "port"
+    port_file.unlink(missing_ok=True)
+    port_dir = port_file.parent
+    port_dir.mkdir(parents=True, exist_ok=True)
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.2)
+        if sock.connect_ex(("127.0.0.1", 5174)) == 0:
+            pytest.skip("Port 5174 already in use by another process")
 
     server1 = subprocess.Popen(
         [sys.executable, str(server_script), "--port", "5174"],
@@ -92,7 +112,6 @@ def test_server_handles_port_conflict() -> None:
         stderr=subprocess.PIPE,
         text=True,
     )
-    port_file = Path.home() / ".cideldill" / "port"
 
     try:
         _wait_for_port_value(port_file, 5174)
