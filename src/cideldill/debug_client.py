@@ -56,6 +56,20 @@ class DebugClient:
                 f"Debug server error: {response.status_code} {response.text}"
             )
 
+
+    def register_breakpoint(self, function_name: str) -> None:
+        payload: dict[str, Any] = {
+            "function_name": function_name,
+            "behavior": "go",
+            "timestamp": time.time(),
+        }
+        response = self._post_json("/api/breakpoints", payload)
+        if response.get("status") != "ok":
+            raise DebugServerError("Debug server failed to register breakpoint")
+
+    def register_function(self, function_name: str) -> None:
+        self.register_breakpoint(function_name)
+
     def record_call_start(
         self,
         method_name: str,

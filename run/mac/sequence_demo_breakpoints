@@ -174,10 +174,7 @@ def main():
     print("✓ Server is ready")
     print()
 
-    # Set breakpoints
-    print("Setting breakpoints on sequence_demo functions...")
-    if not set_breakpoints(args.port):
-        print("⚠ Warning: Some breakpoints failed to set")
+    print("Breakpoints will be registered by with_debug() as the demo starts.")
     print()
 
     # Open browser to the UI
@@ -209,6 +206,10 @@ def main():
         # Run the demo with debugging enabled
         demo_env = os.environ.copy()
         demo_env["CIDELDILL_SERVER_URL"] = f"http://localhost:{args.port}"
+        existing_pythonpath = demo_env.get("PYTHONPATH", "")
+        demo_env["PYTHONPATH"] = str(repo_root / "src") + (
+            (os.pathsep + existing_pythonpath) if existing_pythonpath else ""
+        )
         demo_process = subprocess.Popen(
             [
                 sys.executable,

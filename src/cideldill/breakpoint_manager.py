@@ -29,11 +29,20 @@ class BreakpointManager:
         """Initialize the BreakpointManager."""
         self._breakpoints: set[str] = set()
         self._breakpoint_behaviors: dict[str, str] = {}
+        self._registered_functions: set[str] = set()
         self._paused_executions: dict[str, dict[str, Any]] = {}
         self._resume_actions: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
         # Default behavior when a breakpoint is hit: "stop" or "go"
         self._default_behavior: str = "stop"
+
+    def register_function(self, function_name: str) -> None:
+        with self._lock:
+            self._registered_functions.add(function_name)
+
+    def get_registered_functions(self) -> list[str]:
+        with self._lock:
+            return sorted(self._registered_functions)
 
     def add_breakpoint(self, function_name: str) -> None:
         """Add a breakpoint on a function.

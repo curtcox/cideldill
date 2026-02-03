@@ -287,7 +287,12 @@ def main() -> None:
     with_debug(args.debug)
 
     # Wrap functions with with_debug
-    sequence_fn = with_debug(whole_numbers)
+    for f in [
+        whole_numbers, multiples_of_2, multiples_of_3, composites, primes,
+        announce_print, announce_log, announce_say_default, announce_say_alex, announce_say_samantha, announce_say_victoria,
+        delay_01s, delay_1s, delay_10s, delay_100s]:
+        with_debug(f)
+    sequence_fn = with_debug(primes)
     announce_fn = with_debug(announce_say_default)
     delay_fn = with_debug(delay_1s)
 

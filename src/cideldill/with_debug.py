@@ -61,6 +61,9 @@ def with_debug(target: Any) -> Any:
         client = DebugClient(_resolve_server_url())
         _state.client = client
 
+    if callable(target) and hasattr(target, "__name__"):
+        client.register_function(target.__name__)
+
     proxy_class = AsyncDebugProxy if _is_coroutine_target(target) else DebugProxy
     return proxy_class(target, client, _is_debug_enabled)
 

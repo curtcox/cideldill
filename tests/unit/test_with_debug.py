@@ -76,17 +76,33 @@ def test_with_debug_wraps_object_when_on(monkeypatch) -> None:
     assert proxy == proxy
 
 
-def test_with_debug_returns_original_when_off() -> None:
-    """When debug is OFF, with_debug(obj) returns the original object unchanged (NOP)."""
-    with_debug("OFF")
-    
-    target = Sample()
-    result = with_debug(target)
-    
-    # Should return the exact same object (true NOP)
-    assert result is target
-    assert type(result) is Sample
-    assert not isinstance(result, DebugProxy)
+def test_with_debug_registers_callable_for_breakpoints(monkeypatch) -> None:
+    """Calling with_debug(callable) should register it for breakpoint UI/discovery."""
+
+    def noop_check(self) -> None:
+        return None
+
+    register_calls: list[str] = []
+
+    def record_register(self, function_name: str) -> None:
+        register_calls.append(function_name)
+
+    monkeypatch.setattr("cideldill.debug_client.DebugClient.check_connection", noop_check)
+    monkeypatch.setattr(
+        "cideldill.debug_client.DebugClient.register_function",
+        record_register,
+        raising=False,
+    )
+
+    configure_debug(server_url="http://localhost:5000")
+    with_debug("ON")
+
+    def my_breakpoint_target() -> int:
+        return 123
+
+    _wrapped = with_debug(my_breakpoint_target)
+
+    assert "my_breakpoint_target" in register_calls
 
 
 def test_with_debug_nop_preserves_identity_when_off() -> None:

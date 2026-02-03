@@ -335,18 +335,16 @@ HTML_TEMPLATE = """
             }
         }
 
-        // Handle Enter key in input field
         document.addEventListener('DOMContentLoaded', function() {
             // Load initial state
             loadBehavior();
             loadBreakpoints();
             loadPausedExecutions();
 
-            // Poll for updates every 2 seconds
             updateInterval = setInterval(() => {
                 loadPausedExecutions();
                 loadBreakpoints();
-            }, 2000);
+            }, 1000);
         });
 
         // Load paused executions
@@ -441,33 +439,6 @@ ${argsBlock}</div>`;
             }
         }
 
-        // Show status message
-        function showMessage(message, type) {
-            const msgEl = document.getElementById('statusMessage');
-            msgEl.textContent = message;
-            msgEl.className = `status-message status-${type}`;
-            msgEl.style.display = 'block';
-            setTimeout(() => {
-                msgEl.style.display = 'none';
-            }, 3000);
-        }
-
-        // Start polling for updates
-        function startPolling() {
-            loadBreakpoints();
-            loadPausedExecutions();
-            updateInterval = setInterval(() => {
-                loadBreakpoints();
-                loadPausedExecutions();
-            }, 1000);  // Poll every second
-        }
-
-        // Initialize on page load
-        window.addEventListener('load', () => {
-            startPolling();
-        });
-
-        // Clean up on page unload
         window.addEventListener('beforeunload', () => {
             if (updateInterval) {
                 clearInterval(updateInterval);
@@ -657,6 +628,21 @@ class BreakpointServer:
                 "breakpoints": self.manager.get_breakpoints(),
                 "breakpoint_behaviors": self.manager.get_breakpoint_behaviors(),
             })
+
+        @self.app.route('/api/functions', methods=['GET'])
+        def get_functions():
+            return jsonify({
+                "functions": self.manager.get_registered_functions(),
+            })
+
+        @self.app.route('/api/functions', methods=['POST'])
+        def register_function():
+            data = request.get_json() or {}
+            function_name = data.get('function_name')
+            if not function_name:
+                return jsonify({"error": "function_name required"}), 400
+            self.manager.register_function(function_name)
+            return jsonify({"status": "ok", "function_name": function_name})
 
         @self.app.route('/api/breakpoints', methods=['POST'])
         def add_breakpoint():
