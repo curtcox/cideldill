@@ -14,6 +14,7 @@ from .debug_client import DebugClient
 from .debug_info import DebugInfo
 from .debug_proxy import AsyncDebugProxy, DebugProxy
 from .exceptions import DebugServerError
+from .function_registry import compute_signature, register_function as register_local_function
 
 
 @dataclass
@@ -73,12 +74,16 @@ def with_debug(target: Any) -> Any:
     if isinstance(target, (DebugProxy, AsyncDebugProxy)):
         underlying = object.__getattribute__(target, "_target")
         if callable(underlying) and hasattr(underlying, "__name__"):
-            client.register_function(underlying.__name__)
+            signature = compute_signature(underlying)
+            client.register_function(underlying.__name__, signature=signature)
+            register_local_function(underlying, signature=signature)
         return target
 
     if callable(target) and hasattr(target, "__name__"):
         if alias_name is not None:
-            client.register_function(alias_name)
+            signature = compute_signature(target)
+            client.register_function(alias_name, signature=signature)
+            register_local_function(target, name=alias_name, signature=signature)
 
             original = target
 
@@ -89,7 +94,9 @@ def with_debug(target: Any) -> Any:
             _aliased.__name__ = alias_name
             target = _aliased
         else:
-            client.register_function(target.__name__)
+            signature = compute_signature(target)
+            client.register_function(target.__name__, signature=signature)
+            register_local_function(target, signature=signature)
 
     proxy_class = AsyncDebugProxy if _is_coroutine_target(target) else DebugProxy
     return proxy_class(target, client, _is_debug_enabled)

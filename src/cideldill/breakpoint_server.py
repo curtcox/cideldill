@@ -99,6 +99,22 @@ HTML_TEMPLATE = """
             font-size: 0.9em;
             white-space: pre-wrap;
         }
+        .function-choices {
+            background-color: #f8f8f8;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .function-choices label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin: 4px 0;
+            cursor: pointer;
+        }
+        .function-choices input {
+            cursor: pointer;
+        }
         .actions {
             display: flex;
             gap: 10px;
@@ -218,6 +234,18 @@ HTML_TEMPLATE = """
     <script>
         const API_BASE = '/api';
         let updateInterval = null;
+        let registeredFunctions = [];
+        let functionSignatures = {};
+        const selectedReplacements = {};
+
+        function escapeHtml(text) {
+            return String(text)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
 
         // Set breakpoint behavior
         async function setBehavior(behavior) {
@@ -335,15 +363,32 @@ HTML_TEMPLATE = """
             }
         }
 
+        async function loadFunctions() {
+            try {
+                const response = await fetch(`${API_BASE}/functions`);
+                const data = await response.json();
+                registeredFunctions = data.functions || [];
+                functionSignatures = data.function_signatures || {};
+            } catch (e) {
+                console.error('Failed to load functions:', e);
+                registeredFunctions = [];
+                functionSignatures = {};
+            }
+        }
+
+        async function refresh() {
+            await loadFunctions();
+            await loadPausedExecutions();
+            await loadBreakpoints();
+        }
+
         document.addEventListener('DOMContentLoaded', function() {
             // Load initial state
             loadBehavior();
-            loadBreakpoints();
-            loadPausedExecutions();
+            refresh();
 
             updateInterval = setInterval(() => {
-                loadPausedExecutions();
-                loadBreakpoints();
+                refresh();
             }, 1000);
         });
 
@@ -373,6 +418,7 @@ HTML_TEMPLATE = """
             const prettyArgs = callData.pretty_args || [];
             const prettyKwargs = callData.pretty_kwargs || {};
             const stackTrace = (callData.call_site && callData.call_site.stack_trace) ? callData.call_site.stack_trace : [];
+            const signature = callData.signature || null;
 
             const renderArgs = () => {
                 const argsBlock = JSON.stringify({ args: prettyArgs, kwargs: prettyKwargs }, null, 2);
@@ -405,15 +451,52 @@ ${argsBlock}</div>`;
 </div>`;
             };
 
+            const renderFunctionChoices = () => {
+                const candidates = [];
+                const seen = new Set();
+                const defaultName = displayName;
+                if (defaultName && !seen.has(defaultName)) {
+                    candidates.push(defaultName);
+                    seen.add(defaultName);
+                }
+                if (signature) {
+                    registeredFunctions.forEach((fn) => {
+                        if (functionSignatures[fn] === signature && !seen.has(fn)) {
+                            candidates.push(fn);
+                            seen.add(fn);
+                        }
+                    });
+                }
+                if (candidates.length === 0) {
+                    return '';
+                }
+                const radioName = `replacement-${paused.id}`;
+                const saved = selectedReplacements[paused.id];
+                const options = candidates.map(fn => `
+                    <label>
+                        <input type="radio" name="${radioName}" value="${escapeHtml(fn)}"
+                               ${fn === (saved || defaultName) ? 'checked' : ''}
+                               onchange="setReplacementSelection('${paused.id}', '${escapeHtml(fn)}')">
+                        <span>${escapeHtml(fn)}()</span>
+                    </label>
+                `).join('');
+                return `<div class="function-choices">
+                    <div style="font-weight: 600; margin-bottom: 6px;">Execute:</div>
+                    ${options}
+                </div>`;
+            };
+
             return `
                 <div class="paused-card">
                     <div class="paused-header">
-                        ⏸️ ${displayName}() - Paused at ${pausedAt}
+                        ⏸️ ${escapeHtml(displayName)}() - Paused at ${pausedAt}
                     </div>
                     ${renderArgs()}
                     ${renderStack()}
+                    ${renderFunctionChoices()}
                     <div class="actions">
-                        <button class="btn btn-go" onclick="continueExecution('${paused.id}')">
+                        <button class="btn btn-go" data-default-function="${escapeHtml(displayName)}"
+                                onclick="continueExecution('${paused.id}', this.dataset.defaultFunction)">
                             🟢
                         </button>
                     </div>
@@ -422,12 +505,27 @@ ${argsBlock}</div>`;
         }
 
         // Continue execution
-        async function continueExecution(pauseId) {
+        function selectedReplacement(pauseId) {
+            return selectedReplacements[pauseId] || null;
+        }
+
+        function setReplacementSelection(pauseId, functionName) {
+            selectedReplacements[pauseId] = functionName;
+        }
+
+        async function continueExecution(pauseId, defaultFunction) {
             try {
+                const selected = selectedReplacement(pauseId)
+                    || defaultFunction
+                    || null;
+                const payload = { action: 'continue' };
+                if (selected && defaultFunction && selected !== defaultFunction) {
+                    payload.replacement_function = selected;
+                }
                 const response = await fetch(`${API_BASE}/paused/${pauseId}/continue`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action: 'continue' })
+                    body: JSON.stringify(payload)
                 });
 
                 if (response.ok) {
@@ -633,26 +731,34 @@ class BreakpointServer:
         def get_functions():
             return jsonify({
                 "functions": self.manager.get_registered_functions(),
+                "function_signatures": self.manager.get_function_signatures(),
             })
 
         @self.app.route('/api/functions', methods=['POST'])
         def register_function():
             data = request.get_json() or {}
             function_name = data.get('function_name')
+            signature = data.get('signature')
             if not function_name:
                 return jsonify({"error": "function_name required"}), 400
-            self.manager.register_function(function_name)
-            return jsonify({"status": "ok", "function_name": function_name})
+            self.manager.register_function(function_name, signature=signature)
+            return jsonify({
+                "status": "ok",
+                "function_name": function_name,
+                "signature": signature,
+            })
 
         @self.app.route('/api/breakpoints', methods=['POST'])
         def add_breakpoint():
             """Add a new breakpoint."""
             data = request.get_json() or {}
             function_name = data.get('function_name')
+            signature = data.get('signature')
             if not function_name:
                 return jsonify({"error": "function_name required"}), 400
 
             self.manager.add_breakpoint(function_name)
+            self.manager.register_function(function_name, signature=signature)
             return jsonify({"status": "ok", "function_name": function_name})
 
         @self.app.route('/api/breakpoints/<function_name>', methods=['DELETE'])
@@ -741,6 +847,7 @@ class BreakpointServer:
                     "kwargs": kwargs,
                     "pretty_args": pretty_args,
                     "pretty_kwargs": pretty_kwargs,
+                    "signature": data.get("signature"),
                     "call_site": data.get("call_site"),
                 })
                 action = {
@@ -789,11 +896,18 @@ class BreakpointServer:
             """Continue a paused execution."""
             data = request.get_json() or {}
             action = data.get('action', 'continue')
+            replacement_function = data.get('replacement_function')
 
             if action == 'skip':
                 return jsonify({"error": "skip_not_supported"}), 400
 
-            action_dict = {"action": action}
+            if replacement_function:
+                action_dict = {
+                    "action": "replace",
+                    "function_name": replacement_function,
+                }
+            else:
+                action_dict = {"action": action}
 
             # Include additional fields if present
             if 'modified_args' in data:

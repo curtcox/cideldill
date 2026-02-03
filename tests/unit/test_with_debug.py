@@ -84,7 +84,7 @@ def test_with_debug_registers_callable_for_breakpoints(monkeypatch) -> None:
 
     register_calls: list[str] = []
 
-    def record_register(self, function_name: str) -> None:
+    def record_register(self, function_name: str, signature: str | None = None) -> None:
         register_calls.append(function_name)
 
     monkeypatch.setattr("cideldill.debug_client.DebugClient.check_connection", noop_check)
@@ -111,7 +111,7 @@ def test_with_debug_registers_callable_even_when_target_is_proxy(monkeypatch) ->
 
     register_calls: list[str] = []
 
-    def record_register(self, function_name: str) -> None:
+    def record_register(self, function_name: str, signature: str | None = None) -> None:
         register_calls.append(function_name)
 
     monkeypatch.setattr("cideldill.debug_client.DebugClient.check_connection", noop_check)
@@ -139,7 +139,7 @@ def test_with_debug_registers_alias_name_for_callable(monkeypatch) -> None:
 
     register_calls: list[str] = []
 
-    def record_register(self, function_name: str) -> None:
+    def record_register(self, function_name: str, signature: str | None = None) -> None:
         register_calls.append(function_name)
 
     monkeypatch.setattr("cideldill.debug_client.DebugClient.check_connection", noop_check)
@@ -164,7 +164,7 @@ def test_with_debug_alias_callable_is_serializable(monkeypatch) -> None:
     def noop_check(self) -> None:
         return None
 
-    def record_register(self, function_name: str) -> None:
+    def record_register(self, function_name: str, signature: str | None = None) -> None:
         return None
 
     monkeypatch.setattr("cideldill.debug_client.DebugClient.check_connection", noop_check)

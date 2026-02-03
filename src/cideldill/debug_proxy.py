@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 from .debug_client import DebugClient
 from .exceptions import DebugProtocolError, DebugServerError
+from .function_registry import compute_signature, get_function
 from .serialization import compute_cid
 
 logger = logging.getLogger(__name__)
@@ -76,6 +77,7 @@ class DebugProxy:
                 args=args,
                 kwargs=kwargs,
                 call_site=call_site,
+                signature=compute_signature(method),
             )
 
             call_id = action.get("call_id")
@@ -133,6 +135,7 @@ class DebugProxy:
                 args=args,
                 kwargs=kwargs,
                 call_site=call_site,
+                signature=compute_signature(method),
             )
 
             call_id = action.get("call_id")
@@ -183,6 +186,14 @@ class DebugProxy:
         action_type = action.get("action")
         if action_type == "continue":
             return method(*args, **kwargs)
+        if action_type == "replace":
+            function_name = action.get("function_name")
+            if not function_name:
+                raise DebugProtocolError("Missing function_name for replace action")
+            replacement = get_function(function_name)
+            if replacement is None:
+                raise DebugProtocolError(f"Unknown replacement function: {function_name}")
+            return replacement(*args, **kwargs)
         if action_type == "modify":
             new_args, new_kwargs = self._deserialize_modified(action)
             return method(*new_args, **new_kwargs)
@@ -205,6 +216,17 @@ class DebugProxy:
         action_type = action.get("action")
         if action_type == "continue":
             return await method(*args, **kwargs)
+        if action_type == "replace":
+            function_name = action.get("function_name")
+            if not function_name:
+                raise DebugProtocolError("Missing function_name for replace action")
+            replacement = get_function(function_name)
+            if replacement is None:
+                raise DebugProtocolError(f"Unknown replacement function: {function_name}")
+            result = replacement(*args, **kwargs)
+            if inspect.isawaitable(result):
+                return await result
+            return result
         if action_type == "modify":
             new_args, new_kwargs = self._deserialize_modified(action)
             return await method(*new_args, **new_kwargs)

@@ -57,18 +57,26 @@ class DebugClient:
             )
 
 
-    def register_breakpoint(self, function_name: str) -> None:
+    def register_breakpoint(self, function_name: str, signature: str | None = None) -> None:
         payload: dict[str, Any] = {
             "function_name": function_name,
             "behavior": "go",
             "timestamp": time.time(),
         }
+        if signature is not None:
+            payload["signature"] = signature
         response = self._post_json("/api/breakpoints", payload)
         if response.get("status") != "ok":
             raise DebugServerError("Debug server failed to register breakpoint")
 
-    def register_function(self, function_name: str) -> None:
-        self.register_breakpoint(function_name)
+    def register_function(self, function_name: str, signature: str | None = None) -> None:
+        self.register_breakpoint(function_name, signature=signature)
+        payload: dict[str, Any] = {"function_name": function_name}
+        if signature is not None:
+            payload["signature"] = signature
+        response = self._post_json("/api/functions", payload)
+        if response.get("status") != "ok":
+            raise DebugServerError("Debug server failed to register function")
 
     def record_call_start(
         self,
@@ -78,9 +86,10 @@ class DebugClient:
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
         call_site: dict[str, Any],
+        signature: str | None = None,
     ) -> dict[str, Any]:
         payload, cid_to_obj = self._build_call_payload(
-            method_name, target, target_cid, args, kwargs, call_site
+            method_name, target, target_cid, args, kwargs, call_site, signature
         )
         response = self._post_json_allowing_cid_errors("/api/call/start", payload)
         if response.get("error") == "cid_not_found":
@@ -220,6 +229,7 @@ class DebugClient:
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
         call_site: dict[str, Any],
+        signature: str | None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         cid_to_obj: dict[str, Any] = {}
 
@@ -258,6 +268,8 @@ class DebugClient:
             "kwargs": kwargs_payload,
             "call_site": call_site,
         }
+        if signature is not None:
+            payload["signature"] = signature
         return payload, cid_to_obj
 
     def _attach_missing_data(

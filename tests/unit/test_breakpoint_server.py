@@ -141,6 +141,29 @@ def test_continue_execution_endpoint(server) -> None:
     assert len(server.manager.get_paused_executions()) == 0
 
 
+def test_continue_execution_can_replace_function(server) -> None:
+    """Test POST /api/paused/<id>/continue supports replacement function."""
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    pause_id = server.manager.add_paused_execution({"method_name": "add"})
+
+    response = server.test_client().post(
+        f"/api/paused/{pause_id}/continue",
+        data=json.dumps({
+            "action": "continue",
+            "replacement_function": "multiply",
+        }),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200
+    action = server.manager.get_resume_action(pause_id)
+    assert action["action"] == "replace"
+    assert action["function_name"] == "multiply"
+
+
 def test_get_port_number(server) -> None:
     """Test that we can get the port number."""
     # When using port=0, Flask will assign a random port
@@ -163,6 +186,7 @@ def test_root_page_serves_html(server) -> None:
     # Check for key UI elements
     assert b"pausedExecutions" in response.data
     assert b"breakpointsList" in response.data
+    assert b"selectedReplacements" in response.data
 
 
 def test_frame_endpoint_renders_source_for_paused_execution(server) -> None:

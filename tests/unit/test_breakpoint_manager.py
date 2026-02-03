@@ -157,3 +157,12 @@ def test_multiple_paused_executions() -> None:
     paused = manager.get_paused_executions()
     assert len(paused) == 2
     assert id2 not in [p["id"] for p in paused]
+
+
+def test_register_function_tracks_signature() -> None:
+    """Registering a function should track its signature for UI matching."""
+    manager = BreakpointManager()
+    manager.register_function("add", signature="(x: int, y: int) -> int")
+
+    assert "add" in manager.get_registered_functions()
+    assert manager.get_function_signatures()["add"] == "(x: int, y: int) -> int"
