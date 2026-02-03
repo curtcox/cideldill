@@ -13,6 +13,14 @@
 - Minimal code changes (~100 lines)
 - No new dependencies
 
+## Progress
+
+- [x] Phase 1: Server changes (tests + port discovery + BreakpointServer updates)
+- [x] Phase 2: Client changes (tests + port discovery + with_debug updates)
+- [x] Phase 3: Script updates
+- [x] Phase 4: Documentation updates
+- [x] Phase 5: Integration tests added (not executed yet)
+
 ---
 
 ## Design Decisions
@@ -1001,5 +1009,5 @@ No migration needed - all existing code continues to work.
 
 - Follow TDD: Write tests first, then implementation
 - Commit after each phase
-- Update CHANGELOG.md when complete
+- Update CHANGELOG.md when complete (no CHANGELOG.md found in repo)
 - Consider adding `.cideldill/` to `.gitignore` examples in docs

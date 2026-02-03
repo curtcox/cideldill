@@ -33,6 +33,7 @@ node_modules/
 .DS_Store
 .vscode/
 .idea/
+.cideldill/
 
 # Generated HTML reports and databases
 *.db

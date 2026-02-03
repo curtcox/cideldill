@@ -5,10 +5,12 @@ CID el Dill ships with a Flask-based breakpoint server that manages call pauses 
 ## Start the Server
 
 ```bash
-python -m cideldill_server --port 5000
+python -m cideldill_server --port 5174
 ```
 
-Open `http://localhost:5000/` to access the web UI.
+The server will automatically find a free port if 5174 is occupied. The actual port
+is written to `~/.cideldill/port` for client auto-discovery. Open the web UI at the
+port shown in the server output (for example `http://localhost:5174/`).
 
 ## Quick Start with Sequence Demo
 
@@ -39,7 +41,7 @@ To manually run the sequence demo with debugging:
 
 ```bash
 # Terminal 1: Start the breakpoint server
-python -m cideldill_server --port 5000
+python -m cideldill_server --port 5174
 
 # Terminal 2: Run the demo with debugging enabled
 python examples/sequence_demo.py --debug ON --iterations 10
@@ -48,6 +50,38 @@ python examples/sequence_demo.py --debug ON --iterations 10
 You can customize the debug flag and iterations via command-line arguments:
 - `--debug {ON,OFF}` or `-d {ON,OFF}`: Enable or disable debugging
 - `--iterations N` or `-i N`: Set the number of iterations to run
+
+## Port Discovery
+
+The server automatically handles port conflicts:
+
+1. **Default behavior**: Attempts to use port 5174
+2. **Conflict resolution**: If occupied, automatically selects a free port
+3. **Discovery file**: Writes actual port to `~/.cideldill/port`
+4. **Client auto-discovery**: Clients read the port from the discovery file
+
+### Manual Port Selection
+
+```bash
+# Request specific port
+python -m cideldill_server --port 8080
+
+# Server will use 8080 if available, otherwise fallback to auto-assigned port
+```
+
+### Environment Variables
+
+For explicit control, use the environment variable:
+
+```bash
+export CIDELDILL_SERVER_URL="http://localhost:8080"
+```
+
+Priority order:
+1. `configure_debug(server_url=...)`
+2. `CIDELDILL_SERVER_URL` environment variable
+3. Port discovery file (`~/.cideldill/port`)
+4. Default (`http://localhost:5174`)
 
 ## API Endpoints
 

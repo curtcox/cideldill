@@ -9,13 +9,13 @@ Usage:
     sequence_demo_breakpoints [OPTIONS]
 
 Options:
-    --port PORT         Port for breakpoint server (default: 5000)
+    --port PORT         Port for breakpoint server (default: 5174)
     --iterations N      Number of iterations to run (default: 10)
     --no-browser        Don't open browser automatically
     -h, --help          Show this help message
 
 Examples:
-    # Run with defaults (port 5000, 10 iterations, open browser)
+    # Run with defaults (port 5174, 10 iterations, open browser)
     sequence_demo_breakpoints
 
     # Run on custom port with more iterations
@@ -64,8 +64,8 @@ Examples:
     parser.add_argument(
         "--port",
         type=int,
-        default=5000,
-        help="Port for breakpoint server (default: 5000)"
+        default=5174,
+        help="Port for breakpoint server (default: 5174)"
     )
 
     parser.add_argument(
@@ -88,23 +88,28 @@ def wait_for_server(port, max_attempts=30, delay=0.5):
     """Wait for the server to be ready.
 
     Args:
-        port: Port number to check
+        port: Initial port number to check
         max_attempts: Maximum number of attempts
         delay: Delay between attempts in seconds
 
     Returns:
-        True if server is ready, False otherwise
+        Actual port number if server is ready, None otherwise
     """
-    url = f"http://localhost:{port}/api/breakpoints"
+    from cideldill_server.port_discovery import read_port_file
+
+    port_file = Path.home() / ".cideldill" / "port"
+
     for _ in range(max_attempts):
+        actual_port = read_port_file(port_file) or port
+        url = f"http://localhost:{actual_port}/api/breakpoints"
         try:
             response = requests.get(url, timeout=1)
             if response.status_code == 200:
-                return True
+                return actual_port
         except requests.exceptions.RequestException:
             pass
         time.sleep(delay)
-    return False
+    return None
 
 
 def set_breakpoints(port):
@@ -167,19 +172,20 @@ def main():
 
     # Give the server time to start
     print("Waiting for server to be ready...")
-    if not wait_for_server(args.port):
+    actual_port = wait_for_server(args.port)
+    if not actual_port:
         print("✗ Error: Server failed to start")
         server_process.terminate()
         return 1
 
-    print("✓ Server is ready")
+    print(f"✓ Server is ready on port {actual_port}")
     print()
 
     print("Breakpoints will be registered by with_debug() as the demo starts.")
     print()
 
     # Open browser to the UI
-    ui_url = f"http://localhost:{args.port}/"
+    ui_url = f"http://localhost:{actual_port}/"
     if not args.no_browser:
         print(f"Opening browser to: {ui_url}")
         try:
@@ -207,7 +213,7 @@ def main():
     try:
         # Run the demo with debugging enabled
         demo_env = os.environ.copy()
-        demo_env["CIDELDILL_SERVER_URL"] = f"http://localhost:{args.port}"
+        demo_env["CIDELDILL_SERVER_URL"] = f"http://localhost:{actual_port}"
         existing_pythonpath = demo_env.get("PYTHONPATH", "")
         pythonpaths = [str(repo_root / "client" / "src"), str(repo_root / "server" / "src")]
         pythonpaths.extend(

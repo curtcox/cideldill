@@ -11,15 +11,18 @@ import logging
 import os
 import threading
 import time
+from pathlib import Path
 from urllib.parse import quote
 
 from flask import Flask, jsonify, render_template_string, request
 from pygments import highlight
 from pygments.formatters import HtmlFormatter
 from pygments.lexers import get_lexer_by_name
+from werkzeug.serving import BaseWSGIServer, make_server
 
 from .breakpoint_manager import BreakpointManager
 from .cid_store import CIDStore
+from .port_discovery import get_discovery_file_path, write_port_file
 from .serialization import deserialize
 
 # Configure Flask's logging to suppress request spam by default
@@ -816,8 +819,10 @@ class BreakpointServer:
     def __init__(
         self,
         manager: BreakpointManager,
-        port: int = 5000,
+        port: int = 5174,
+        host: str = "0.0.0.0",
         debug_enabled: bool = False,
+        port_file: Path | None = None,
     ) -> None:
         """Initialize the server.
 
@@ -826,14 +831,17 @@ class BreakpointServer:
             port: Port number to listen on (0 for random available port).
         """
         self.manager = manager
-        self.port = port
+        self.requested_port = port
+        self.actual_port = port
+        self.host = host
         self.app = Flask(__name__)
         self._running = False
-        self._server = None
+        self._server: BaseWSGIServer | None = None
         self._cid_store = CIDStore()
         self._call_seq = 0
         self._call_seq_lock = threading.Lock()
         self._debug_enabled = debug_enabled
+        self.port_file = port_file or get_discovery_file_path()
         self._setup_routes()
 
     def _setup_routes(self) -> None:
@@ -1876,14 +1884,20 @@ class BreakpointServer:
     def start(self) -> None:
         """Start the server (blocking)."""
         self._running = True
-        # Use threaded=True for better concurrency
-        self.app.run(host='0.0.0.0', port=self.port, threaded=True, use_reloader=False)
+        self._server = self._create_server()
+        self.actual_port = self._server.server_port
+        self._write_port_file()
+        print(f"Server running on http://{self.host}:{self.actual_port}")
+        try:
+            self._server.serve_forever()
+        finally:
+            self._running = False
 
     def stop(self) -> None:
         """Stop the server."""
         self._running = False
-        # Flask doesn't have a clean shutdown method, so we just set the flag
-        # In production, you'd use a proper WSGI server with shutdown support
+        if self._server is not None:
+            self._server.shutdown()
 
     def is_running(self) -> bool:
         """Check if server is running.
@@ -1907,4 +1921,28 @@ class BreakpointServer:
         Returns:
             Port number.
         """
-        return self.port
+        return self.actual_port
+
+    def _create_server(self) -> BaseWSGIServer:
+        try:
+            return make_server(self.host, self.requested_port, self.app, threaded=True)
+        except OSError as exc:
+            if not _is_address_in_use(exc):
+                raise
+            print(
+                f"Port {self.requested_port} is occupied, finding free port...",
+            )
+            return make_server(self.host, 0, self.app, threaded=True)
+
+    def _write_port_file(self) -> None:
+        try:
+            write_port_file(self.actual_port, self.port_file)
+            print(f"Port written to: {self.port_file}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"Warning: Could not write port file: {exc}")
+
+
+def _is_address_in_use(exc: OSError) -> bool:
+    if exc.errno in {98, 48}:  # Linux and macOS
+        return True
+    return "Address already in use" in str(exc)
