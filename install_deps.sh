@@ -19,11 +19,17 @@ fi
 
 echo "Using Python: $PYTHON_CMD ($($PYTHON_CMD --version))"
 echo "Python executable: $($PYTHON_CMD -c 'import sys; print(sys.executable)')"
-echo "Installing CID el Dill dependencies..."
+echo "Installing CID el Dill client/server dependencies..."
 echo ""
 
-# Determine install flags
-INSTALL_FLAGS="-e"
+# Determine install targets
+if [ "$1" = "--dev" ]; then
+    CLIENT_TARGET="client[dev]"
+    SERVER_TARGET="server[dev]"
+else
+    CLIENT_TARGET="client"
+    SERVER_TARGET="server"
+fi
 
 # Check if we're in a virtual environment
 if [ -z "$VIRTUAL_ENV" ]; then
@@ -34,20 +40,20 @@ if [ -z "$VIRTUAL_ENV" ]; then
     echo ""
     
     if [ "$1" = "--dev" ]; then
-        if ! $PYTHON_CMD -m pip install -e ".[dev]" 2>/dev/null; then
+        if ! $PYTHON_CMD -m pip install -e "$CLIENT_TARGET" -e "$SERVER_TARGET" 2>/dev/null; then
             echo ""
             echo "System installation failed (externally-managed environment)."
             echo "Installing to user site-packages with --user flag..."
             echo ""
-            $PYTHON_CMD -m pip install --user -e ".[dev]"
+            $PYTHON_CMD -m pip install --user -e "$CLIENT_TARGET" -e "$SERVER_TARGET"
         fi
     else
-        if ! $PYTHON_CMD -m pip install -e . 2>/dev/null; then
+        if ! $PYTHON_CMD -m pip install -e "$CLIENT_TARGET" -e "$SERVER_TARGET" 2>/dev/null; then
             echo ""
             echo "System installation failed (externally-managed environment)."
             echo "Installing to user site-packages with --user flag..."
             echo ""
-            $PYTHON_CMD -m pip install --user -e .
+            $PYTHON_CMD -m pip install --user -e "$CLIENT_TARGET" -e "$SERVER_TARGET"
         fi
     fi
 else
@@ -55,18 +61,15 @@ else
     echo "Installing in virtual environment: $VIRTUAL_ENV"
     echo ""
     
-    if [ "$1" = "--dev" ]; then
-        $PYTHON_CMD -m pip install -e ".[dev]"
-    else
-        $PYTHON_CMD -m pip install -e .
-    fi
+    $PYTHON_CMD -m pip install -e "$CLIENT_TARGET" -e "$SERVER_TARGET"
 fi
 
 echo ""
 echo "✓ Dependencies installed successfully!"
 echo ""
-echo "Installed package location:"
-$PYTHON_CMD -m pip show cideldill 2>/dev/null | grep "Location:" || echo "  (Unable to determine location)"
+echo "Installed package locations:"
+$PYTHON_CMD -m pip show cideldill-client 2>/dev/null | grep "Location:" || echo "  (Unable to determine location for cideldill-client)"
+$PYTHON_CMD -m pip show cideldill-server 2>/dev/null | grep "Location:" || echo "  (Unable to determine location for cideldill-server)"
 echo ""
 echo "To verify installation, run:"
 echo "  $PYTHON_CMD doctor.py"

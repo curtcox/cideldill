@@ -11,14 +11,28 @@ CID el Dill is a Python library for debugging and inspecting applications throug
 - **Dill serialization + CID deduplication**: Efficient, content-addressed payloads
 - **Breakpoint web UI**: Pause and resume calls through the debug server
 
+## Client and Server Packages
+
+CID el Dill is split into two independent code bases:
+
+- **cideldill-client**: the client-side debugging helpers (minimal deps: `dill`, `requests`)
+- **cideldill-server**: the breakpoint server and web UI (minimal deps: `dill`, `flask`, `pygments`)
+
 ## Installation
 
 ### Quick Start
 
-To install CID el Dill with all dependencies:
+To install both the client and server with all dependencies:
 
 ```bash
 ./install_deps.sh
+```
+
+To install just one package:
+
+```bash
+pip install cideldill-client
+pip install cideldill-server
 ```
 
 For development (includes testing and linting tools):
@@ -65,7 +79,7 @@ python3 doctor.py
 ### Enable Debugging at Startup
 
 ```python
-from cideldill import with_debug
+from cideldill_client import with_debug
 
 info = with_debug("ON")
 print(info.is_enabled())       # True
@@ -76,7 +90,7 @@ print(info.connection_status())  # connected
 ### Wrap Objects for Debugging
 
 ```python
-from cideldill import with_debug
+from cideldill_client import with_debug
 
 calculator = Calculator()
 calculator = with_debug(calculator)
@@ -87,7 +101,7 @@ result = calculator.add(1, 2)  # Intercepted if debug is ON
 ### Disable Debugging
 
 ```python
-from cideldill import with_debug
+from cideldill_client import with_debug
 
 info = with_debug("OFF")
 print(info.is_enabled())  # False
@@ -96,7 +110,7 @@ print(info.is_enabled())  # False
 ### Configure the Debug Server URL
 
 ```python
-from cideldill import configure_debug, with_debug
+from cideldill_client import configure_debug, with_debug
 
 configure_debug(server_url="http://localhost:5000")
 with_debug("ON")
@@ -105,7 +119,7 @@ with_debug("ON")
 ### Start the Breakpoint Server
 
 ```bash
-python -m cideldill --port 5000
+python -m cideldill_server --port 5000
 ```
 
 Then open `http://localhost:5000/` to manage breakpoints and paused calls.

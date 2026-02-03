@@ -1,7 +1,7 @@
 """Unit tests for DebugProxy replacement execution."""
 
-from cideldill.debug_proxy import DebugProxy
-from cideldill.function_registry import register_function, clear_registry
+from cideldill_client.debug_proxy import DebugProxy
+from cideldill_client.function_registry import register_function, clear_registry
 
 
 def test_execute_action_can_replace_function() -> None:

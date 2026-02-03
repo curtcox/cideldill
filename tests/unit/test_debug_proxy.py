@@ -9,7 +9,7 @@ import pytest
 pytest.importorskip("dill")
 pytest.importorskip("requests")
 
-from cideldill.debug_proxy import AsyncDebugProxy, DebugProxy
+from cideldill_client.debug_proxy import AsyncDebugProxy, DebugProxy
 
 
 class _StubClient:

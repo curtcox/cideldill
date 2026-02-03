@@ -5,7 +5,7 @@
 ## Enable Debugging
 
 ```python
-from cideldill import with_debug
+from cideldill_client import with_debug
 
 info = with_debug("ON")
 ```
@@ -17,7 +17,7 @@ info = with_debug("ON")
 ## Disable Debugging
 
 ```python
-from cideldill import with_debug
+from cideldill_client import with_debug
 
 info = with_debug("OFF")
 ```
@@ -28,7 +28,7 @@ info = with_debug("OFF")
 ## Wrap Objects
 
 ```python
-from cideldill import with_debug
+from cideldill_client import with_debug
 
 calculator = with_debug(Calculator())
 calculator.add(1, 2)
@@ -40,7 +40,7 @@ calculator.add(1, 2)
 ## Configure Server URL
 
 ```python
-from cideldill import configure_debug, with_debug
+from cideldill_client import configure_debug, with_debug
 
 configure_debug(server_url="http://localhost:5000")
 with_debug("ON")

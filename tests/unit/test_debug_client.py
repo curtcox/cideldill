@@ -13,8 +13,8 @@ pytest.importorskip("requests")
 
 import dill
 
-from cideldill.debug_client import DebugClient
-from cideldill.serialization import Serializer
+from cideldill_client.debug_client import DebugClient
+from cideldill_client.serialization import Serializer
 
 
 class _Response:

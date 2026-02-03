@@ -38,24 +38,33 @@ def check_module(module_name: str, import_name: str = None) -> tuple[bool, str]:
         return False, module_name
 
 
-def check_cideldill_installed() -> tuple[bool, str]:
-    """Check if cideldill package is properly installed."""
+def check_cideldill_client_installed() -> tuple[bool, str]:
+    """Check if cideldill-client package is properly installed."""
     try:
-        import cideldill
-        return True, f"cideldill (from {cideldill.__file__})"
+        import cideldill_client
+        return True, f"cideldill-client (from {cideldill_client.__file__})"
     except ImportError:
-        return False, "cideldill (NOT INSTALLED)"
+        return False, "cideldill-client (NOT INSTALLED)"
+
+
+def check_cideldill_server_installed() -> tuple[bool, str]:
+    """Check if cideldill-server package is properly installed."""
+    try:
+        import cideldill_server
+        return True, f"cideldill-server (from {cideldill_server.__file__})"
+    except ImportError:
+        return False, "cideldill-server (NOT INSTALLED)"
 
 
 def check_cideldill_components() -> list[tuple[bool, str]]:
-    """Check if all cideldill components are accessible."""
+    """Check if all CID el Dill components are accessible."""
     components = [
-        ('with_debug', 'cideldill.with_debug'),
-        ('DebugClient', 'cideldill.debug_client'),
-        ('DebugProxy', 'cideldill.debug_proxy'),
-        ('Logger', 'cideldill.logger'),
-        ('BreakpointManager', 'cideldill.breakpoint_manager'),
-        ('BreakpointServer', 'cideldill.breakpoint_server'),
+        ('with_debug', 'cideldill_client.with_debug'),
+        ('DebugClient', 'cideldill_client.debug_client'),
+        ('DebugProxy', 'cideldill_client.debug_proxy'),
+        ('Logger', 'cideldill_client.logger'),
+        ('BreakpointManager', 'cideldill_server.breakpoint_manager'),
+        ('BreakpointServer', 'cideldill_server.breakpoint_server'),
     ]
 
     results = []
@@ -88,8 +97,12 @@ def main():
     print()
 
     # Check cideldill installation
-    print(f"{BOLD}2. CID el Dill Package{RESET}")
-    passed, msg = check_cideldill_installed()
+    print(f"{BOLD}2. CID el Dill Packages{RESET}")
+    passed, msg = check_cideldill_client_installed()
+    status = f"{GREEN}✓{RESET}" if passed else f"{RED}✗{RESET}"
+    print(f"   {status} {msg}")
+    all_passed = all_passed and passed
+    passed, msg = check_cideldill_server_installed()
     status = f"{GREEN}✓{RESET}" if passed else f"{RED}✗{RESET}"
     print(f"   {status} {msg}")
     all_passed = all_passed and passed
@@ -107,10 +120,10 @@ def main():
     # Check required dependencies
     print(f"{BOLD}4. Required Dependencies{RESET}")
     required_deps = [
-        ('pygments', 'pygments'),
-        ('flask', 'flask'),
         ('dill', 'dill'),
         ('requests', 'requests'),
+        ('flask', 'flask'),
+        ('pygments', 'pygments'),
     ]
 
     for module_name, import_name in required_deps:

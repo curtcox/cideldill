@@ -1,6 +1,6 @@
 """Unit tests for Logger class."""
 
-from cideldill.logger import Logger
+from cideldill_client.logger import Logger
 
 
 def test_logger_initialization() -> None:

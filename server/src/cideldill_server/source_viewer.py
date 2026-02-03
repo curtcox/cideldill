@@ -318,7 +318,7 @@ def _generate_navigation_section(call_id: int, db_path: str) -> str:
     Returns:
         HTML string for the navigation section.
     """
-    from cideldill import CASStore
+    from .cas_store import CASStore
 
     store = CASStore(db_path)
     current_record = store.get_call_record(call_id)
@@ -670,4 +670,3 @@ def _generate_frame_context_section(
 
     html += "</div>\n"
     return html
-

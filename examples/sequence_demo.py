@@ -22,7 +22,7 @@ import subprocess
 import time
 from typing import Callable, Optional
 
-from cideldill import with_debug
+from cideldill_client import with_debug
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(message)s')

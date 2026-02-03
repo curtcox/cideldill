@@ -18,9 +18,9 @@ from pygments import highlight
 from pygments.formatters import HtmlFormatter
 from pygments.lexers import get_lexer_by_name
 
-from cideldill.breakpoint_manager import BreakpointManager
-from cideldill.cid_store import CIDStore
-from cideldill.serialization import deserialize
+from .breakpoint_manager import BreakpointManager
+from .cid_store import CIDStore
+from .serialization import deserialize
 
 # Configure Flask's logging to suppress request spam by default
 log = logging.getLogger('werkzeug')

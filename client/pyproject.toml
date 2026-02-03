@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cideldill-client"
+version = "0.1.0"
+description = "CID el Dill client for remote debugging"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "CID el Dill Contributors"}
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "dill>=0.3.6",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "hypothesis>=6.82.0",
+    "ruff>=0.1.0",
+    "pylint>=3.0.0",
+    "mypy>=1.5.0",
+    "pydoclint>=0.3.0",
+    "radon>=6.0.0",
+    "vulture>=2.9.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

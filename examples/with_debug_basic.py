@@ -1,6 +1,6 @@
 """Basic with_debug usage example."""
 
-from cideldill import with_debug
+from cideldill_client import with_debug
 
 
 class Calculator:

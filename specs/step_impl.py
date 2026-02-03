@@ -1,7 +1,7 @@
 """Step implementations for Gauge tests."""
 
 from getgauge.python import step
-from cideldill.logger import Logger
+from cideldill_client.logger import Logger
 
 # Logger steps
 _logger = None
@@ -36,4 +36,3 @@ def check_message_count(count):
 def clear_messages():
     """Clear all messages."""
     _logger.clear()
-

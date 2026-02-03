@@ -36,7 +36,8 @@ from pathlib import Path
 # Add src to path if running from repo
 script_dir = Path(__file__).parent
 repo_root = script_dir.parent.parent
-sys.path.insert(0, str(repo_root / "src"))
+sys.path.insert(0, str(repo_root / "client" / "src"))
+sys.path.insert(0, str(repo_root / "server" / "src"))
 
 try:
     import requests
@@ -208,9 +209,11 @@ def main():
         demo_env = os.environ.copy()
         demo_env["CIDELDILL_SERVER_URL"] = f"http://localhost:{args.port}"
         existing_pythonpath = demo_env.get("PYTHONPATH", "")
-        demo_env["PYTHONPATH"] = str(repo_root / "src") + (
-            (os.pathsep + existing_pythonpath) if existing_pythonpath else ""
+        pythonpaths = [str(repo_root / "client" / "src"), str(repo_root / "server" / "src")]
+        pythonpaths.extend(
+            [existing_pythonpath] if existing_pythonpath else []
         )
+        demo_env["PYTHONPATH"] = os.pathsep.join([p for p in pythonpaths if p])
         demo_process = subprocess.Popen(
             [
                 sys.executable,

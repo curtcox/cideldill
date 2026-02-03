@@ -7,8 +7,8 @@ This script starts the Flask web server for interactive breakpoint management.
 import argparse
 import sys
 
-from cideldill.breakpoint_manager import BreakpointManager
-from cideldill.breakpoint_server import BreakpointServer
+from .breakpoint_manager import BreakpointManager
+from .breakpoint_server import BreakpointServer
 
 
 def main():

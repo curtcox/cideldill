@@ -5,7 +5,7 @@ This test suite validates the breakpoint state management functionality.
 
 import pytest
 
-from cideldill.breakpoint_manager import BreakpointManager
+from cideldill_server.breakpoint_manager import BreakpointManager
 
 
 def test_can_create_breakpoint_manager() -> None:
