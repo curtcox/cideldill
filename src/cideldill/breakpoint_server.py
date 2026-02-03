@@ -174,6 +174,11 @@ HTML_TEMPLATE = """
             border-radius: 999px;
             font-size: 16px;
             line-height: 1;
+            width: 34px;
+            height: 30px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
         }
         .state-btn.selected {
             border-color: #333;
@@ -362,8 +367,17 @@ HTML_TEMPLATE = """
                 if (data.breakpoints && data.breakpoints.length > 0) {
                     const states = data.breakpoint_behaviors || {};
                     const replacements = data.breakpoint_replacements || {};
+                    const sortBreakpoints = (items) => {
+                        return [...items].sort((a, b) => {
+                            const sigA = functionSignatures[a] || '';
+                            const sigB = functionSignatures[b] || '';
+                            if (sigA < sigB) return -1;
+                            if (sigA > sigB) return 1;
+                            return a.localeCompare(b);
+                        });
+                    };
                     container.innerHTML = '<div class="breakpoint-list">' +
-                        data.breakpoints.map(bp => {
+                        sortBreakpoints(data.breakpoints).map(bp => {
                             const signature = functionSignatures[bp];
                             const alternates = [];
                             if (signature) {

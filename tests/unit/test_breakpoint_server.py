@@ -219,6 +219,7 @@ def test_root_page_serves_html(server) -> None:
     assert b"selectedReplacements" in response.data
     assert b"breakpoint-replacement-select" in response.data
     assert b"isBreakpointSelectActive" in response.data
+    assert b"sortBreakpoints" in response.data
 
 
 def test_frame_endpoint_renders_source_for_paused_execution(server) -> None:
