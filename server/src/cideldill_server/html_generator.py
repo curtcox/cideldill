@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .port_discovery import get_discovery_file_path, read_port_file
+
 
 def generate_html_viewer(db_path: str, output_path: str, title: str = "CAS Store Viewer") -> None:
     """Generate an HTML viewer for a CAS Store database.
@@ -988,6 +990,8 @@ def _generate_breakpoints_page(
         db_path: Path to the database.
         records: List of all call records.
     """
+    port = read_port_file(get_discovery_file_path()) or 5174
+    api_base = f"http://localhost:{port}/api"
     nav_header = _generate_navigation_header("breakpoints.html")
 
     # Get unique functions
@@ -1207,7 +1211,7 @@ def _generate_breakpoints_page(
     </div>
 
     <script>
-        const API_BASE = 'http://localhost:5174/api';
+        const API_BASE = '{api_base}';
         let updateInterval = null;
 
         // Check server status
