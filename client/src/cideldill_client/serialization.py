@@ -297,7 +297,7 @@ def _safe_dumps(
         "Serialization degraded to placeholder",
         extra={
             "type": type(obj).__qualname__,
-            "module": type(obj).__module__,
+            "object_module": type(obj).__module__,
             "error": str(last_error),
             "captured_attrs": len(placeholder.attributes),
             "failed_attrs": list(placeholder.failed_attributes.keys()),

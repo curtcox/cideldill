@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 from cideldill_client.custom_picklers import UnpicklablePlaceholder
@@ -52,3 +54,17 @@ def test_circular_reference_becomes_placeholder():
 def test_serialize_strict_raises_debug_serialization_error():
     with pytest.raises(DebugSerializationError):
         serialize(UnpicklableContainer(), strict=True)
+
+
+def test_safe_dumps_logging_extra_does_not_overwrite_logrecord(caplog):
+    with caplog.at_level(logging.INFO, logger="cideldill_client.serialization"):
+        data = _safe_dumps(UnpicklableContainer())
+
+    assert data
+    records = [
+        record
+        for record in caplog.records
+        if record.message == "Serialization degraded to placeholder"
+    ]
+    assert records
+    assert getattr(records[0], "object_module") == UnpicklableContainer.__module__
