@@ -1,3 +1,5 @@
+from unittest.mock import AsyncMock
+
 from cideldill_client.serialization import CIDCache, Serializer, compute_cid, deserialize, serialize
 
 
@@ -28,3 +30,9 @@ def test_serialize_roundtrip():
     payload = {"items": [1, 2, 3]}
     data = serialize(payload)
     assert deserialize(data) == payload
+
+
+def test_1_simple_async_mock_with_cideldill_serialization():
+    """Test 1: Serialize a simple AsyncMock using cideldill's serialization."""
+    async_mock = AsyncMock()
+    serialize(async_mock)
