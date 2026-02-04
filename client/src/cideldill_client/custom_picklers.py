@@ -20,18 +20,45 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class UnpicklablePlaceholder:
-    """Placeholder for objects that cannot be fully reconstructed."""
+    """Rich snapshot for objects that cannot be fully reconstructed."""
 
     type_name: str
     module: str
     qualname: str
+    object_id: str
     repr_text: str
+    str_text: str | None
+    attributes: dict[str, Any]
+    failed_attributes: dict[str, str]
+    pickle_error: str
+    pickle_attempts: list[str]
+    capture_timestamp: float
+    depth: int
 
     def __repr__(self) -> str:
+        n_ok = len(self.attributes)
+        n_fail = len(self.failed_attributes)
         return (
-            f"<Unpicklable {self.module}.{self.qualname} "
-            f"repr={self.repr_text!r}>"
+            f"<UnpicklablePlaceholder {self.module}.{self.qualname} "
+            f"attrs={n_ok} failed={n_fail} error={self.pickle_error!r}>"
         )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert the placeholder to a JSON-serializable dict."""
+        return {
+            "type_name": self.type_name,
+            "module": self.module,
+            "qualname": self.qualname,
+            "object_id": self.object_id,
+            "repr_text": self.repr_text,
+            "str_text": self.str_text,
+            "attributes": self.attributes,
+            "failed_attributes": self.failed_attributes,
+            "pickle_error": self.pickle_error,
+            "pickle_attempts": list(self.pickle_attempts),
+            "capture_timestamp": self.capture_timestamp,
+            "depth": self.depth,
+        }
 
 
 class PickleRegistry:
@@ -275,8 +302,16 @@ def _reconstruct_from_dict(obj_type: type, init_args: dict, state: dict) -> Any:
 def _reconstruct_placeholder(info: dict) -> UnpicklablePlaceholder:
     """Reconstruct a placeholder for an unpicklable object."""
     return UnpicklablePlaceholder(
-        type_name=str(info.get("type", "Unknown")),
+        type_name=str(info.get("type_name", info.get("type", "Unknown"))),
         module=info.get("module", "unknown"),
         qualname=info.get("qualname", "Unknown"),
-        repr_text=info.get("repr", ""),
+        object_id=info.get("object_id", info.get("id", "unknown")),
+        repr_text=info.get("repr_text", info.get("repr", "")),
+        str_text=info.get("str_text"),
+        attributes=info.get("attributes", {}),
+        failed_attributes=info.get("failed_attributes", {}),
+        pickle_error=info.get("pickle_error", info.get("error", "")),
+        pickle_attempts=info.get("pickle_attempts", info.get("attempts", [])),
+        capture_timestamp=info.get("capture_timestamp", 0.0),
+        depth=info.get("depth", 0),
     )

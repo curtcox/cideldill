@@ -73,6 +73,17 @@ class UnpicklablePlaceholder:
 
 ## Implementation Plan
 
+### Progress
+
+- [x] Phase 1: Core serialization changes (client + server parity)
+- [x] Phase 2: Update `UnpicklablePlaceholder`
+- [x] Phase 3: Public API surface (strict mode)
+- [x] Phase 4: Logging & diagnostics (degradation log)
+- [x] Unit tests for new behavior
+- [x] Integration tests with real unpicklable objects (SSLContext, DB connections)
+- [x] End-to-end DebugProxy test with placeholder payloads
+- [x] Server UI updates (render placeholder details)
+
 ### Phase 1: Core Serialization Changes
 
 **File: `serialization.py`**
@@ -322,11 +333,11 @@ class UnpicklablePlaceholder:
 
 ## Implementation Order
 
-1. `UnpicklablePlaceholder` expansion (custom_picklers.py)
-2. `_iter_attributes()`, `_safe_repr()` helpers (serialization.py)
-3. `_build_snapshot()` implementation (serialization.py)
-4. Modified `_safe_dumps()` waterfall (serialization.py)
-5. Unit tests for new behavior
-6. Integration test with real unpicklable object (mock SSLContext)
-7. Manual test with actual ChatOpenAI
-8. Server UI updates (separate PR)
+1. [x] `UnpicklablePlaceholder` expansion (custom_picklers.py)
+2. [x] `_iter_attributes()`, `_safe_repr()` helpers (serialization.py)
+3. [x] `_build_snapshot()` implementation (serialization.py)
+4. [x] Modified `_safe_dumps()` waterfall (serialization.py)
+5. [x] Unit tests for new behavior
+6. [x] Integration test with real unpicklable object (SSLContext + sqlite3)
+7. [ ] Manual test with actual ChatOpenAI (deferred)
+8. [x] Server UI updates (render placeholders)

@@ -352,6 +352,13 @@ HTML_TEMPLATE = """
                 .replace(/'/g, '&#039;');
         }
 
+        function formatPretty(value) {
+            if (value && typeof value === 'object' && value.__cideldill_placeholder__) {
+                return value.summary || '<Unpicklable>';
+            }
+            return String(value);
+        }
+
         function setActiveTab(tab) {
             activeTab = tab;
             const pausedPanel = document.getElementById('tabPaused');
@@ -723,7 +730,7 @@ ${argsBlock}</div>`;
                     return '';
                 }
                 return `<div class="call-data"><strong>Return Value:</strong>
-${prettyResult}</div>`;
+${escapeHtml(formatPretty(prettyResult))}</div>`;
             };
 
             const renderFunctionChoices = () => {
@@ -922,7 +929,63 @@ class BreakpointServer:
                 return text[:limit] + "..."
             return text
 
-        def _format_payload_value(item: dict[str, object]) -> str:
+        def _is_placeholder(value: object) -> bool:
+            return (
+                hasattr(value, "pickle_error")
+                and hasattr(value, "attributes")
+                and hasattr(value, "failed_attributes")
+                and hasattr(value, "type_name")
+            )
+
+        def _placeholder_summary(value: object) -> str:
+            module = getattr(value, "module", "unknown")
+            qualname = getattr(value, "qualname", getattr(value, "type_name", "Unknown"))
+            attrs = getattr(value, "attributes", {}) or {}
+            failed = getattr(value, "failed_attributes", {}) or {}
+            error = getattr(value, "pickle_error", "")
+            return (
+                f"<Unpicklable {module}.{qualname} "
+                f"attrs={len(attrs)} failed={len(failed)} error={error}>"
+            )
+
+        def _format_placeholder(value: object, depth: int = 0, max_depth: int = 2) -> dict[str, object]:
+            attributes = getattr(value, "attributes", {}) or {}
+            failed_attributes = getattr(value, "failed_attributes", {}) or {}
+
+            formatted_attributes: dict[str, object] = {}
+            for idx, (name, attr_value) in enumerate(attributes.items()):
+                if idx >= 50:
+                    remaining = len(attributes) - 50
+                    if remaining > 0:
+                        formatted_attributes["__skipped__"] = f"{remaining} more attributes skipped"
+                    break
+                if _is_placeholder(attr_value) and depth < max_depth:
+                    formatted_attributes[name] = _format_placeholder(
+                        attr_value, depth=depth + 1, max_depth=max_depth
+                    )
+                else:
+                    formatted_attributes[name] = _safe_repr(attr_value)
+
+            return {
+                "__cideldill_placeholder__": True,
+                "summary": _placeholder_summary(value),
+                "type_name": getattr(value, "type_name", "Unknown"),
+                "module": getattr(value, "module", "unknown"),
+                "qualname": getattr(value, "qualname", "Unknown"),
+                "object_id": getattr(value, "object_id", "unknown"),
+                "repr_text": getattr(value, "repr_text", ""),
+                "str_text": getattr(value, "str_text", None),
+                "pickle_error": getattr(value, "pickle_error", ""),
+                "pickle_attempts": list(getattr(value, "pickle_attempts", []) or []),
+                "attributes": formatted_attributes,
+                "failed_attributes": {
+                    key: _safe_repr(val) for key, val in failed_attributes.items()
+                },
+                "depth": getattr(value, "depth", 0),
+                "capture_timestamp": getattr(value, "capture_timestamp", 0.0),
+            }
+
+        def _format_payload_value(item: dict[str, object]) -> object:
             cid = item.get("cid")
             if not isinstance(cid, str):
                 return "<missing cid>"
@@ -936,7 +999,22 @@ class BreakpointServer:
                 value = deserialize(stored)
             except Exception as exc:  # noqa: BLE001
                 return f"<unavailable: {type(exc).__name__}>"
+            if _is_placeholder(value):
+                return _format_placeholder(value)
             return _safe_repr(value)
+
+        def _pretty_text(value: object) -> str:
+            if isinstance(value, dict) and value.get("__cideldill_placeholder__"):
+                summary = value.get("summary")
+                if summary:
+                    return str(summary)
+                return "<Unpicklable>"
+            return str(value)
+
+        def _format_pretty_for_html(value: object) -> str:
+            if isinstance(value, dict):
+                return json.dumps(value, indent=2)
+            return str(value)
 
         def _normalize_stack_trace(call_site: object) -> list[dict[str, object]]:
             if not isinstance(call_site, dict):
@@ -1291,6 +1369,13 @@ class BreakpointServer:
       return `${seconds.toFixed(3)}s`;
     }
 
+    function formatPretty(value) {
+      if (value && typeof value === 'object' && value.__cideldill_placeholder__) {
+        return value.summary || '<Unpicklable>';
+      }
+      return String(value);
+    }
+
     function updateTimelineControls() {
       const slider = document.getElementById('timeline');
       slider.max = Math.max(0, timeline.length - 1);
@@ -1397,13 +1482,13 @@ class BreakpointServer:
         ${node.pretty_result !== undefined && node.pretty_result !== null ? `
           <div class="detail-item">
             <div class="detail-label">Result</div>
-            <div class="detail-value">${String(node.pretty_result)}</div>
+            <div class="detail-value">${formatPretty(node.pretty_result)}</div>
           </div>
         ` : ''}
         ${node.exception ? `
           <div class="detail-item">
             <div class="detail-label">Exception</div>
-            <div class="detail-value">${String(node.exception)}</div>
+            <div class="detail-value">${formatPretty(node.exception)}</div>
           </div>
         ` : ''}
         <div class="detail-item">
@@ -1756,6 +1841,13 @@ class BreakpointServer:
         .replace(/'/g, '&#039;');
     }}
 
+    function formatPretty(value) {{
+      if (value && typeof value === 'object' && value.__cideldill_placeholder__) {{
+        return value.summary || '<Unpicklable>';
+      }}
+      return String(value);
+    }}
+
     function recordToRowData(record) {{
       const callData = record.call_data || {{}};
       const completedAt = record.completed_at || 0;
@@ -1766,10 +1858,10 @@ class BreakpointServer:
       const argParts = [];
       try {{
         for (const a of prettyArgs) {{
-          argParts.push(String(a));
+          argParts.push(formatPretty(a));
         }}
         for (const [k, v] of Object.entries(prettyKwargs)) {{
-          argParts.push(`${{k}}=${{v}}`);
+          argParts.push(`${{k}}=${{formatPretty(v)}}`);
         }}
       }} catch (e) {{
       }}
@@ -1782,9 +1874,9 @@ class BreakpointServer:
 
       let resultText = '';
       if (callData.exception) {{
-        resultText = String(callData.exception);
+        resultText = formatPretty(callData.exception);
       }} else if (callData.pretty_result !== null && callData.pretty_result !== undefined) {{
-        resultText = String(callData.pretty_result);
+        resultText = formatPretty(callData.pretty_result);
       }}
 
       const id = String(record.id || '');
@@ -1949,8 +2041,8 @@ class BreakpointServer:
 
             parts: list[str] = []
             try:
-                parts.extend([str(a) for a in pretty_args])
-                parts.extend([f"{k}={v}" for k, v in pretty_kwargs.items()])
+                parts.extend([_pretty_text(a) for a in pretty_args])
+                parts.extend([f"{k}={_pretty_text(v)}" for k, v in pretty_kwargs.items()])
             except Exception:
                 pass
             call_str = f"{function_name}({', '.join(parts)})"
@@ -2138,11 +2230,15 @@ class BreakpointServer:
                 .replace("@@ARGS_BLOCK@@", html.escape(args_block))
                 .replace(
                     "@@PRETTY_RESULT@@",
-                    html.escape(str(pretty_result) if pretty_result is not None else ""),
+                    html.escape(
+                        _format_pretty_for_html(pretty_result) if pretty_result is not None else ""
+                    ),
                 )
                 .replace(
                     "@@EXCEPTION@@",
-                    html.escape(str(exception) if exception is not None else ""),
+                    html.escape(
+                        _format_pretty_for_html(exception) if exception is not None else ""
+                    ),
                 )
                 .replace("@@STACK_HTML@@", stack_html)
                 .replace("@@SOURCE_TITLE@@", html.escape(source_title))
