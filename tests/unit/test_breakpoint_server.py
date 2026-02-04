@@ -185,6 +185,8 @@ def test_call_start_replaces_when_breakpoint_go_and_replacement_set(server) -> N
             "args": [],
             "kwargs": {},
             "call_site": {"timestamp": 123.0},
+            "process_pid": 4242,
+            "process_start_time": 123.456,
         }),
         content_type="application/json",
     )
@@ -216,6 +218,8 @@ def test_call_complete_pauses_when_after_breakpoint_set(server) -> None:
             "args": [],
             "kwargs": {},
             "call_site": {"timestamp": 123.0},
+            "process_pid": 4242,
+            "process_start_time": 123.456,
         }),
         content_type="application/json",
     )
@@ -269,6 +273,42 @@ def test_root_page_serves_html(server) -> None:
     assert b"breakpoint-replacement-select" in response.data
     assert b"isBreakpointSelectActive" in response.data
     assert b"sortBreakpoints" in response.data
+
+
+def test_report_com_error_endpoint(server) -> None:
+    """Test POST /api/report-com-error and /api/com-errors."""
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    payload = {
+        "summary": "timeout",
+        "method": "POST",
+        "path": "/api/call/start",
+        "timestamp": 123.0,
+        "exception_type": "Timeout",
+        "exception_message": "request timed out",
+    }
+
+    response = server.test_client().post(
+        "/api/report-com-error",
+        data=json.dumps(payload),
+        content_type="application/json",
+    )
+    assert response.status_code == 200
+
+    errors = server.manager.get_com_errors()
+    assert errors
+    assert errors[-1]["summary"] == "timeout"
+
+    response = server.test_client().get("/api/com-errors")
+    assert response.status_code == 200
+    data = json.loads(response.data)
+    assert data["errors"][0]["summary"] == "timeout"
+
+    response = server.test_client().get("/com-errors")
+    assert response.status_code == 200
+    assert b"Communication Errors" in response.data
 
 
 def test_frame_endpoint_renders_source_for_paused_execution(server) -> None:
@@ -325,6 +365,8 @@ def test_call_start_returns_continue_when_no_breakpoint(server) -> None:
             "args": [],
             "kwargs": {},
             "call_site": {"timestamp": 123.0},
+            "process_pid": 4242,
+            "process_start_time": 123.456,
         }),
         content_type="application/json",
     )

@@ -155,6 +155,8 @@ def test_sequence_demo_uses_discovered_port() -> None:
             str(script),
             "--iterations",
             "1",
+            "--behavior",
+            "go",
             "--no-browser",
         ],
         stdout=subprocess.PIPE,

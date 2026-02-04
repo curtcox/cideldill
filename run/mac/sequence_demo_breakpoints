@@ -11,7 +11,9 @@ Usage:
 Options:
     --port PORT         Port for breakpoint server (default: 5174)
     --iterations N      Number of iterations to run (default: 10)
+    --behavior MODE      Breakpoint behavior: stop or go (default: stop)
     --no-browser        Don't open browser automatically
+    --keep-alive         Keep server running after demo completes
     -h, --help          Show this help message
 
 Examples:
@@ -23,6 +25,9 @@ Examples:
 
     # Run without opening browser
     sequence_demo_breakpoints --no-browser
+
+    # Run without pausing at breakpoints
+    sequence_demo_breakpoints --behavior go
 """
 
 import argparse
@@ -76,9 +81,22 @@ Examples:
     )
 
     parser.add_argument(
+        "--behavior",
+        choices=["stop", "go"],
+        default="stop",
+        help="Breakpoint behavior: stop or go (default: stop)"
+    )
+
+    parser.add_argument(
         "--no-browser",
         action="store_true",
         help="Don't open browser automatically"
+    )
+
+    parser.add_argument(
+        "--keep-alive",
+        action="store_true",
+        help="Keep server running after demo completes"
     )
 
     return parser.parse_args()
@@ -100,14 +118,20 @@ def wait_for_server(port, max_attempts=30, delay=0.5):
     port_file = Path.home() / ".cideldill" / "port"
 
     for _ in range(max_attempts):
-        actual_port = read_port_file(port_file) or port
+        actual_port = read_port_file(port_file)
+        if actual_port is None:
+            time.sleep(delay)
+            continue
         url = f"http://localhost:{actual_port}/api/breakpoints"
         try:
             response = requests.get(url, timeout=1)
             if response.status_code == 200:
-                return actual_port
-        except requests.exceptions.RequestException:
+                data = response.json()
+                if isinstance(data, dict) and "breakpoints" in data:
+                    return actual_port
+        except (requests.exceptions.RequestException, ValueError):
             pass
+
         time.sleep(delay)
     return None
 
@@ -125,8 +149,11 @@ def set_breakpoints(port):
 
     # Key functions to set breakpoints on
     breakpoint_functions = [
-        "whole_numbers",
+        "sequence_fn",
+        "primes",
+        "announce_fn",
         "announce_say_default",
+        "delay_fn",
         "delay_1s",
     ]
 
@@ -150,6 +177,52 @@ def set_breakpoints(port):
     return success
 
 
+def set_default_behavior(port, behavior):
+    """Set the default breakpoint behavior on the server."""
+    try:
+        response = requests.post(
+            f"http://localhost:{port}/api/behavior",
+            json={"behavior": behavior},
+            timeout=5,
+        )
+        return response.status_code == 200
+    except requests.exceptions.RequestException:
+        return False
+
+
+def set_breakpoint_behavior(port, function_name, behavior):
+    encoded = function_name.replace("/", "%2F")
+    try:
+        response = requests.post(
+            f"http://localhost:{port}/api/breakpoints/{encoded}/behavior",
+            json={"behavior": behavior},
+            timeout=5,
+        )
+        return response.status_code == 200
+    except requests.exceptions.RequestException:
+        return False
+
+
+def wait_for_breakpoints(port, expected, timeout=5.0):
+    deadline = time.time() + timeout
+    url = f"http://localhost:{port}/api/breakpoints"
+    expected_set = set(expected)
+    while time.time() < deadline:
+        try:
+            response = requests.get(url, timeout=1)
+            if response.status_code != 200:
+                time.sleep(0.1)
+                continue
+            data = response.json()
+            present = set(data.get("breakpoints", []))
+            if expected_set.issubset(present):
+                return True
+        except requests.exceptions.RequestException:
+            pass
+        time.sleep(0.1)
+    return False
+
+
 def main():
     """Main entry point."""
     args = parse_args()
@@ -164,6 +237,13 @@ def main():
     if not server_script.exists():
         print(f"✗ Error: Breakpoint server script not found at {server_script}")
         return 1
+
+    # Remove any stale port discovery file to avoid connecting to an old server.
+    port_file = Path.home() / ".cideldill" / "port"
+    try:
+        port_file.unlink(missing_ok=True)
+    except OSError as exc:
+        print(f"⚠ Warning: Could not remove stale port file: {exc}")
 
     print(f"Starting breakpoint server on port {args.port}...")
     server_process = subprocess.Popen(
@@ -181,7 +261,33 @@ def main():
     print(f"✓ Server is ready on port {actual_port}")
     print()
 
-    print("Breakpoints will be registered by with_debug() as the demo starts.")
+    if not set_default_behavior(actual_port, args.behavior):
+        print("✗ Failed to set breakpoint behavior")
+        server_process.terminate()
+        return 1
+
+    if not set_breakpoints(actual_port):
+        print("✗ Failed to set breakpoints")
+        server_process.terminate()
+        return 1
+
+    if not wait_for_breakpoints(actual_port, [
+        "sequence_fn",
+        "announce_fn",
+        "delay_fn",
+    ]):
+        print("✗ Breakpoints not visible on server")
+        server_process.terminate()
+        return 1
+
+    if args.behavior == "stop":
+        for name in ["sequence_fn", "announce_fn", "delay_fn"]:
+            if not set_breakpoint_behavior(actual_port, name, "stop"):
+                print(f"✗ Failed to set stop behavior for {name}")
+                server_process.terminate()
+                return 1
+
+    print("✓ Breakpoints configured")
     print()
 
     # Open browser to the UI
@@ -210,6 +316,7 @@ def main():
     print()
 
     demo_process = None
+    demo_timeout_s = max(90.0, float(args.iterations) * 10.0)
     try:
         # Run the demo with debugging enabled
         demo_env = os.environ.copy()
@@ -231,7 +338,16 @@ def main():
         )
 
         # Wait for the demo to complete
-        demo_process.wait()
+        try:
+            demo_process.wait(timeout=demo_timeout_s)
+        except subprocess.TimeoutExpired:
+            print(f"✗ Demo timed out after {demo_timeout_s:.0f}s")
+            demo_process.terminate()
+            try:
+                demo_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                demo_process.kill()
+            return 1
 
     except KeyboardInterrupt:
         print("\n\n✓ Interrupted by user")
@@ -244,21 +360,25 @@ def main():
         if demo_return_code is not None:
             print(f"✓ Demo process exit code: {demo_return_code}")
         print()
-        print("Breakpoint server is still running so you can browse the UI:")
-        print(f"  {ui_url}")
-        print()
-        print("Press Ctrl+C to stop the breakpoint server.")
+        if args.keep_alive:
+            print("Breakpoint server is still running so you can browse the UI:")
+            print(f"  {ui_url}")
+            print()
+            print("Press Ctrl+C to stop the breakpoint server.")
 
-        try:
-            while server_process.poll() is None:
-                time.sleep(0.5)
-        except KeyboardInterrupt:
-            pass
+            try:
+                while server_process.poll() is None:
+                    time.sleep(0.5)
+            except KeyboardInterrupt:
+                pass
 
         # Clean up: stop the server
         print("\nStopping breakpoint server...")
         server_process.terminate()
-        server_process.wait(timeout=5)
+        try:
+            server_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            server_process.kill()
         print("✓ Server stopped")
 
     print("=" * 60)

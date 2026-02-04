@@ -9,6 +9,10 @@ __all__ = [
 ]
 
 from .breakpoint_manager import BreakpointManager
-from .breakpoint_server import BreakpointServer
 from .cas_store import CASStore
 from .cid_store import CIDStore
+
+try:
+    from .breakpoint_server import BreakpointServer
+except Exception:  # pragma: no cover - optional dependency (flask)
+    BreakpointServer = None  # type: ignore[assignment]

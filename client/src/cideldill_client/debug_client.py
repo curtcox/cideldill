@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import time
+import traceback
 from collections import OrderedDict
 from collections.abc import Iterable
 from typing import Any
@@ -53,12 +54,25 @@ class DebugClient:
                 f"{self._server_url}/api/breakpoints", timeout=self._timeout_s
             )
         except requests.RequestException as exc:
+            self._report_com_error(
+                "Debug server is unreachable",
+                method="GET",
+                path="/api/breakpoints",
+                exception=exc,
+            )
             exit_with_server_failure(
                 "Debug server is unreachable",
                 self._server_url,
                 exc,
             )
         if response.status_code >= 400:
+            self._report_com_error(
+                "Debug server error",
+                method="GET",
+                path="/api/breakpoints",
+                status_code=response.status_code,
+                response_text=response.text,
+            )
             exit_with_server_failure(
                 f"Debug server error: {response.status_code} {response.text}",
                 self._server_url,
@@ -321,12 +335,26 @@ class DebugClient:
                 )
                 time.sleep(self._retry_sleep_s)
             except requests.RequestException as exc:
+                self._report_com_error(
+                    "Debug server request failed",
+                    method="POST",
+                    path=path,
+                    payload=payload,
+                    exception=exc,
+                )
                 exit_with_server_failure(
                     "Debug server request failed",
                     self._server_url,
                     exc,
                 )
         else:
+            self._report_com_error(
+                "Debug server request failed",
+                method="POST",
+                path=path,
+                payload=payload,
+                exception=last_exc,
+            )
             exit_with_server_failure(
                 "Debug server request failed",
                 self._server_url,
@@ -334,6 +362,14 @@ class DebugClient:
             )
 
         if response.status_code >= 400:
+            self._report_com_error(
+                "Debug server error",
+                method="POST",
+                path=path,
+                payload=payload,
+                status_code=response.status_code,
+                response_text=response.text,
+            )
             exit_with_server_failure(
                 f"Debug server error: {response.status_code} {response.text}",
                 self._server_url,
@@ -341,6 +377,15 @@ class DebugClient:
         try:
             return response.json()
         except ValueError as exc:
+            self._report_com_error(
+                "Malformed JSON response",
+                method="POST",
+                path=path,
+                payload=payload,
+                status_code=response.status_code,
+                response_text=response.text,
+                exception=exc,
+            )
             raise DebugProtocolError("Malformed JSON response") from exc
 
     def _post_json_allowing_cid_errors(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -366,12 +411,26 @@ class DebugClient:
                 )
                 time.sleep(self._retry_sleep_s)
             except requests.RequestException as exc:
+                self._report_com_error(
+                    "Debug server request failed",
+                    method="POST",
+                    path=path,
+                    payload=payload,
+                    exception=exc,
+                )
                 exit_with_server_failure(
                     "Debug server request failed",
                     self._server_url,
                     exc,
                 )
         else:
+            self._report_com_error(
+                "Debug server request failed",
+                method="POST",
+                path=path,
+                payload=payload,
+                exception=last_exc,
+            )
             exit_with_server_failure(
                 "Debug server request failed",
                 self._server_url,
@@ -381,9 +440,26 @@ class DebugClient:
         try:
             data = response.json()
         except ValueError as exc:
+            self._report_com_error(
+                "Malformed JSON response",
+                method="POST",
+                path=path,
+                payload=payload,
+                status_code=response.status_code,
+                response_text=response.text,
+                exception=exc,
+            )
             raise DebugProtocolError("Malformed JSON response") from exc
 
         if response.status_code >= 400 and data.get("error") != "cid_not_found":
+            self._report_com_error(
+                "Debug server error",
+                method="POST",
+                path=path,
+                payload=payload,
+                status_code=response.status_code,
+                response_text=response.text,
+            )
             exit_with_server_failure(
                 f"Debug server error: {response.status_code} {response.text}",
                 self._server_url,
@@ -412,18 +488,37 @@ class DebugClient:
                 )
                 time.sleep(self._retry_sleep_s)
             except requests.RequestException as exc:
+                self._report_com_error(
+                    "Debug server request failed",
+                    method="GET",
+                    path=path,
+                    exception=exc,
+                )
                 exit_with_server_failure(
                     "Debug server request failed",
                     self._server_url,
                     exc,
                 )
         else:
+            self._report_com_error(
+                "Debug server request failed",
+                method="GET",
+                path=path,
+                exception=last_exc,
+            )
             exit_with_server_failure(
                 "Debug server request failed",
                 self._server_url,
                 last_exc,
             )
         if response.status_code >= 400:
+            self._report_com_error(
+                "Debug server error",
+                method="GET",
+                path=path,
+                status_code=response.status_code,
+                response_text=response.text,
+            )
             exit_with_server_failure(
                 f"Debug server error: {response.status_code} {response.text}",
                 self._server_url,
@@ -431,7 +526,69 @@ class DebugClient:
         try:
             return response.json()
         except ValueError as exc:
+            self._report_com_error(
+                "Malformed JSON response",
+                method="GET",
+                path=path,
+                status_code=response.status_code,
+                response_text=response.text,
+                exception=exc,
+            )
             raise DebugProtocolError("Malformed JSON response") from exc
+
+    def _sanitize_for_json(self, value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, dict):
+            return {str(key): self._sanitize_for_json(val) for key, val in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [self._sanitize_for_json(item) for item in value]
+        return repr(value)
+
+    def _truncate_text(self, text: str, limit: int = 4000) -> str:
+        if len(text) <= limit:
+            return text
+        return text[:limit] + "..."
+
+    def _report_com_error(
+        self,
+        summary: str,
+        *,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        status_code: int | None = None,
+        response_text: str | None = None,
+        exception: BaseException | None = None,
+    ) -> None:
+        error_payload: dict[str, Any] = {
+            "summary": summary,
+            "timestamp": time.time(),
+            "method": method,
+            "path": path,
+            "server_url": self._server_url,
+            "process_pid": self._process_pid,
+            "process_start_time": self._process_start_time,
+        }
+        if payload is not None:
+            error_payload["payload"] = self._sanitize_for_json(payload)
+        if status_code is not None:
+            error_payload["status_code"] = status_code
+        if response_text is not None:
+            error_payload["response_text"] = self._truncate_text(str(response_text))
+        if exception is not None:
+            error_payload["exception_type"] = type(exception).__name__
+            error_payload["exception_message"] = str(exception)
+            error_payload["traceback"] = self._truncate_text(traceback.format_exc())
+
+        try:
+            requests.post(
+                f"{self._server_url}/api/report-com-error",
+                json=error_payload,
+                timeout=min(5.0, self._timeout_s),
+            )
+        except requests.RequestException:
+            return
 
     def _require_action(self, response: dict[str, Any]) -> dict[str, Any]:
         if "action" not in response:

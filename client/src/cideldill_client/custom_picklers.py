@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import ssl
 import threading
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -68,6 +69,7 @@ class PickleRegistry:
     """
 
     _reducers: dict[type, Callable] = {}
+    _type_registry: dict[str, type] = {}
     _lock = threading.Lock()
 
     @classmethod
@@ -91,10 +93,29 @@ class PickleRegistry:
                     cls._reducers[obj_type] = reducer
             else:
                 cls._reducers[obj_type] = reducer
+            cls._type_registry[cls._type_key(obj_type)] = obj_type
 
-        dill.Pickler.dispatch[obj_type] = lambda pickler, obj: pickler.save_reduce(
-            *reducer(obj), obj=obj
-        )
+        def _dispatch(pickler, obj):
+            reduced = reducer(obj)
+            if len(reduced) == 2:
+                reconstructor, args = reduced
+                pickler.save_reduce(reconstructor, args, obj=obj)
+            elif len(reduced) == 3:
+                reconstructor, args, state = reduced
+                pickler.save_reduce(reconstructor, args, state, obj=obj)
+            elif len(reduced) == 4:
+                reconstructor, args, state, state_setter = reduced
+                pickler.save_reduce(
+                    reconstructor,
+                    args,
+                    state,
+                    obj=obj,
+                    state_setter=state_setter,
+                )
+            else:
+                raise ValueError("Reducer must return 2-4 values")
+
+        dill.Pickler.dispatch[obj_type] = _dispatch
 
         logger.debug("Registered custom pickler for %s", obj_type)
 
@@ -108,8 +129,11 @@ class PickleRegistry:
         Returns:
             A reducer function compatible with pickle protocol.
         """
-        if hasattr(obj_type, "__getstate__") and hasattr(obj_type, "__setstate__"):
-            return cls._reducer_for_getstate(obj_type)
+        for klass in inspect.getmro(obj_type):
+            if klass is object:
+                continue
+            if "__getstate__" in getattr(klass, "__dict__", {}):
+                return cls._reducer_for_getstate(obj_type)
 
         if hasattr(obj_type, "__slots__"):
             return cls._reducer_for_slots(obj_type)
@@ -122,7 +146,8 @@ class PickleRegistry:
 
         def reducer(obj):
             state = obj.__getstate__()
-            return (_reconstruct_with_setstate, (obj_type, state))
+            type_key = PickleRegistry._type_key(obj_type)
+            return (_reconstruct_with_setstate, (type_key, obj_type, state))
 
         return reducer
 
@@ -140,6 +165,10 @@ class PickleRegistry:
         slots.discard("__weakref__")
         return slots
 
+    @staticmethod
+    def _type_key(obj_type: type) -> str:
+        return f"{obj_type.__module__}:{obj_type.__qualname__}:{id(obj_type)}"
+
     @classmethod
     def _reducer_for_slots(cls, obj_type: type) -> Callable:
         """Create reducer for objects with __slots__."""
@@ -155,7 +184,21 @@ class PickleRegistry:
                 except AttributeError:
                     continue
 
-            return (_reconstruct_from_slots, (obj_type, state))
+            if hasattr(obj, "__dict__"):
+                try:
+                    for key, value in obj.__dict__.items():
+                        if key not in state:
+                            state[key] = value
+                except Exception:
+                    pass
+
+            type_key = PickleRegistry._type_key(obj_type)
+            return (
+                _reconstruct_from_slots,
+                (type_key, obj_type),
+                state,
+                _apply_state,
+            )
 
         return reducer
 
@@ -195,7 +238,13 @@ class PickleRegistry:
                     if param_name in state:
                         init_args[param_name] = state.pop(param_name)
 
-            return (_reconstruct_from_dict, (obj_type, init_args, state))
+            type_key = PickleRegistry._type_key(obj_type)
+            return (
+                _reconstruct_from_dict,
+                (type_key, obj_type, init_args),
+                state,
+                _apply_state,
+            )
 
         return reducer
 
@@ -204,6 +253,78 @@ class PickleRegistry:
         """Clear all registered reducers (useful for testing)."""
         with cls._lock:
             cls._reducers.clear()
+            cls._type_registry.clear()
+
+
+def _reconstruct_ssl_context(
+    protocol: int,
+    options: int | None,
+    verify_mode: int | None,
+    check_hostname: bool | None,
+    minimum_version: int | None,
+    maximum_version: int | None,
+    ciphers: str | None,
+) -> ssl.SSLContext:
+    ctx = ssl.SSLContext(protocol)
+    if options is not None:
+        try:
+            ctx.options = options
+        except Exception:
+            pass
+    if verify_mode is not None:
+        try:
+            ctx.verify_mode = verify_mode
+        except Exception:
+            pass
+    if check_hostname is not None:
+        try:
+            ctx.check_hostname = check_hostname
+        except Exception:
+            pass
+    if minimum_version is not None:
+        try:
+            ctx.minimum_version = minimum_version
+        except Exception:
+            pass
+    if maximum_version is not None:
+        try:
+            ctx.maximum_version = maximum_version
+        except Exception:
+            pass
+    if ciphers:
+        try:
+            ctx.set_ciphers(ciphers)
+        except Exception:
+            pass
+    return ctx
+
+
+def _ssl_context_reducer(obj: ssl.SSLContext) -> tuple[Callable, tuple[Any, ...]]:
+    try:
+        cipher_list = obj.get_ciphers()
+        cipher_names = [item.get("name") for item in cipher_list if item.get("name")]
+        ciphers = ":".join(cipher_names) if cipher_names else None
+    except Exception:
+        ciphers = None
+
+    return (
+        _reconstruct_ssl_context,
+        (
+            obj.protocol,
+            getattr(obj, "options", None),
+            getattr(obj, "verify_mode", None),
+            getattr(obj, "check_hostname", None),
+            getattr(obj, "minimum_version", None),
+            getattr(obj, "maximum_version", None),
+            ciphers,
+        ),
+    )
+
+
+try:
+    PickleRegistry.register(ssl.SSLContext, _ssl_context_reducer)
+except Exception:
+    logger.debug("Unable to register SSLContext reducer", exc_info=True)
 
 
 def auto_register_for_pickling(obj: Any, protocol: int | None = None) -> bool:
@@ -216,6 +337,12 @@ def auto_register_for_pickling(obj: Any, protocol: int | None = None) -> bool:
 
     try:
         dill.dumps(obj, protocol=protocol)
+        obj_type = type(obj)
+        if obj_type not in PickleRegistry._reducers and obj_type.__module__ != "builtins":
+            try:
+                PickleRegistry.register(obj_type)
+            except Exception:
+                return True
         return True
     except Exception as exc:  # noqa: BLE001 - preserve context for logging
         obj_type = type(obj)
@@ -258,43 +385,90 @@ def auto_register_for_pickling(obj: Any, protocol: int | None = None) -> bool:
 
 # Reconstruction functions (module-level for pickling)
 
-def _reconstruct_with_setstate(obj_type: type, state: Any) -> Any:
-    """Reconstruct object using __setstate__."""
-    obj = object.__new__(obj_type)
-    obj.__setstate__(state)
-    return obj
+def _resolve_registered_type(type_key: str, fallback_type: type) -> type:
+    resolved = PickleRegistry._type_registry.get(type_key)
+    return resolved or fallback_type
 
 
-def _reconstruct_from_slots(obj_type: type, state: dict) -> Any:
-    """Reconstruct object from slots."""
-    obj = object.__new__(obj_type)
-
-    for slot, value in state.items():
-        try:
-            setattr(obj, slot, value)
-        except (AttributeError, TypeError):
-            continue
-
-    return obj
-
-
-def _reconstruct_from_dict(obj_type: type, init_args: dict, state: dict) -> Any:
-    """Reconstruct object from __dict__."""
-    try:
-        obj = obj_type(**init_args)
-    except Exception:
-        obj = object.__new__(obj_type)
-        for key, value in init_args.items():
-            try:
-                setattr(obj, key, value)
-            except Exception:
-                continue
-
+def _apply_state(obj: Any, state: Any) -> None:
+    if not isinstance(state, dict):
+        return
     for key, value in state.items():
         try:
             setattr(obj, key, value)
         except Exception:
             continue
+
+
+def _reconstruct_with_setstate(*args: Any) -> Any:
+    """Reconstruct object using __setstate__."""
+    if isinstance(args[0], str):
+        type_key, obj_type, state = args
+    else:
+        obj_type, state = args
+        type_key = PickleRegistry._type_key(obj_type)
+    resolved_type = _resolve_registered_type(type_key, obj_type)
+    obj = object.__new__(resolved_type)
+    if hasattr(obj, "__setstate__"):
+        obj.__setstate__(state)
+        return obj
+    if isinstance(state, dict):
+        for key, value in state.items():
+            try:
+                setattr(obj, key, value)
+            except Exception:
+                continue
+    return obj
+
+
+def _reconstruct_from_slots(*args: Any) -> Any:
+    """Reconstruct object from slots."""
+    state = None
+    if isinstance(args[0], str):
+        if len(args) == 3:
+            type_key, obj_type, state = args
+        else:
+            type_key, obj_type = args
+    else:
+        if len(args) == 2:
+            obj_type, state = args
+        else:
+            obj_type = args[0]
+            state = None
+        type_key = PickleRegistry._type_key(obj_type)
+    resolved_type = _resolve_registered_type(type_key, obj_type)
+    obj = object.__new__(resolved_type)
+    if state is not None:
+        _apply_state(obj, state)
+
+    return obj
+
+
+def _reconstruct_from_dict(*args: Any) -> Any:
+    """Reconstruct object from __dict__."""
+    state = None
+    if isinstance(args[0], str):
+        if len(args) == 4:
+            type_key, obj_type, init_args, state = args
+        else:
+            type_key, obj_type, init_args = args
+    else:
+        if len(args) == 3:
+            obj_type, init_args, state = args
+        else:
+            obj_type, init_args = args
+            state = None
+        type_key = PickleRegistry._type_key(obj_type)
+    resolved_type = _resolve_registered_type(type_key, obj_type)
+    obj = object.__new__(resolved_type)
+    for key, value in init_args.items():
+        try:
+            setattr(obj, key, value)
+        except Exception:
+            continue
+
+    if state is not None:
+        _apply_state(obj, state)
 
     return obj
 

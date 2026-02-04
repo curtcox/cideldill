@@ -18,28 +18,45 @@ def test_breakpoint_actually_pauses_execution():
 
     # Start server
     manager = BreakpointManager()
-    server = BreakpointServer(manager, port=5001)
+    server = BreakpointServer(manager, port=0)
 
     # Run server in a thread
     import threading
     server_thread = threading.Thread(target=lambda: server.start(), daemon=True)
     server_thread.start()
-    time.sleep(1)  # Wait for server to start
+    server_start_deadline = time.monotonic() + 5.0
+    port = 0
+    while time.monotonic() < server_start_deadline:
+        if server.is_running():
+            port = server.get_port()
+            if port:
+                try:
+                    response = requests.get(
+                        f"http://localhost:{port}/api/breakpoints",
+                        timeout=1,
+                    )
+                    if response.status_code == 200:
+                        break
+                except requests.RequestException:
+                    pass
+        time.sleep(0.05)
+    else:
+        pytest.fail("Breakpoint server did not start within 5 seconds")
 
     try:
         # Configure client to use the test server
-        configure_debug(server_url="http://localhost:5001")
+        configure_debug(server_url=f"http://localhost:{port}")
 
         # Set a breakpoint
         response = requests.post(
-            "http://localhost:5001/api/breakpoints",
+            f"http://localhost:{port}/api/breakpoints",
             json={"function_name": "test_function"},
             timeout=5
         )
         assert response.status_code == 200
 
         # Verify breakpoint is set
-        response = requests.get("http://localhost:5001/api/breakpoints", timeout=5)
+        response = requests.get(f"http://localhost:{port}/api/breakpoints", timeout=5)
         assert response.status_code == 200
         assert "test_function" in response.json()["breakpoints"]
 
@@ -65,7 +82,7 @@ def test_breakpoint_actually_pauses_execution():
         time.sleep(0.5)
 
         # Check that execution is paused
-        response = requests.get("http://localhost:5001/api/paused", timeout=5)
+        response = requests.get(f"http://localhost:{port}/api/paused", timeout=5)
         assert response.status_code == 200
         paused_list = response.json().get("paused", [])
 
@@ -76,7 +93,7 @@ def test_breakpoint_actually_pauses_execution():
         # Resume execution
         pause_id = paused_list[0]["id"]
         response = requests.post(
-            f"http://localhost:5001/api/paused/{pause_id}/continue",
+            f"http://localhost:{port}/api/paused/{pause_id}/continue",
             json={"action": "continue"},
             timeout=5
         )
@@ -92,6 +109,8 @@ def test_breakpoint_actually_pauses_execution():
     finally:
         # Clean up
         with_debug("OFF")
+        server.stop()
+        server_thread.join(timeout=2)
 
 
 def test_web_ui_has_toggle_breakpoint_functionality():

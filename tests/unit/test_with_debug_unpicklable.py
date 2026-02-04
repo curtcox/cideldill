@@ -4,6 +4,32 @@ from cideldill_client import configure_debug, with_debug
 from cideldill_client.debug_proxy import DebugProxy
 
 
+def _stub_debug_client(monkeypatch) -> None:
+    def noop_check(self):
+        pass
+
+    def record_call_start(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        return {"action": "continue", "call_id": "1"}
+
+    def record_call_complete(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        return None
+
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient.check_connection",
+        noop_check,
+    )
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient.record_call_start",
+        record_call_start,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient.record_call_complete",
+        record_call_complete,
+        raising=False,
+    )
+
+
 class NATLikeUnpicklable:
     """Simulates NAT's OutputArgsSchema-like unpicklable class."""
 
@@ -24,13 +50,7 @@ class NATLikeUnpicklable:
 
 
 def test_with_debug_wraps_unpicklable_object(monkeypatch):
-    def noop_check(self):
-        pass
-
-    monkeypatch.setattr(
-        "cideldill_client.debug_client.DebugClient.check_connection",
-        noop_check,
-    )
+    _stub_debug_client(monkeypatch)
 
     configure_debug(server_url="http://localhost:5000")
     with_debug("ON")
@@ -44,13 +64,7 @@ def test_with_debug_wraps_unpicklable_object(monkeypatch):
 
 
 def test_wrapped_unpicklable_methods_work(monkeypatch):
-    def noop_check(self):
-        pass
-
-    monkeypatch.setattr(
-        "cideldill_client.debug_client.DebugClient.check_connection",
-        noop_check,
-    )
+    _stub_debug_client(monkeypatch)
 
     configure_debug(server_url="http://localhost:5000")
     with_debug("ON")
@@ -73,13 +87,7 @@ def test_with_debug_off_returns_unpicklable_unchanged():
 
 
 def test_multiple_unpicklable_objects_work(monkeypatch):
-    def noop_check(self):
-        pass
-
-    monkeypatch.setattr(
-        "cideldill_client.debug_client.DebugClient.check_connection",
-        noop_check,
-    )
+    _stub_debug_client(monkeypatch)
 
     configure_debug(server_url="http://localhost:5000")
     with_debug("ON")

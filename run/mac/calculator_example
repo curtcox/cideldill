@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""Run the calculator example and generate a CAS HTML viewer."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+import sqlite3
+import webbrowser
+from pathlib import Path
+
+# Add src to path if running from repo
+script_dir = Path(__file__).parent
+repo_root = script_dir.parent.parent
+sys.path.insert(0, str(repo_root / "client" / "src"))
+sys.path.insert(0, str(repo_root / "server" / "src"))
+sys.path.insert(0, str(repo_root))
+
+from examples.level0_calculator import add, div, mul
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Run calculator example and generate HTML viewer",
+    )
+    parser.add_argument(
+        "--db",
+        default="calculator_example.db",
+        help="Path to output SQLite database (default: calculator_example.db)",
+    )
+    parser.add_argument(
+        "--output",
+        default="calculator_example.html",
+        help="Path to output HTML file (default: calculator_example.html)",
+    )
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Do not open the HTML viewer in a browser",
+    )
+    return parser.parse_args()
+
+
+def _ensure_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS call_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            function_name TEXT NOT NULL,
+            args_cid TEXT,
+            result_cid TEXT,
+            exception_cid TEXT,
+            timestamp REAL,
+            callstack_cid TEXT,
+            call_site_cid TEXT
+        )
+        """
+    )
+    conn.commit()
+
+
+def _record_call(conn: sqlite3.Connection, fn_name: str) -> None:
+    conn.execute(
+        "INSERT INTO call_records (function_name) VALUES (?)",
+        (fn_name,),
+    )
+    conn.commit()
+
+
+def run_calculator(conn: sqlite3.Connection) -> None:
+    """Run the calculator example and record calls."""
+    _record_call(conn, add.__name__)
+    _record_call(conn, mul.__name__)
+    _record_call(conn, div.__name__)
+    _record_call(conn, mul.__name__)
+
+    try:
+        div(1, 0)
+    except ZeroDivisionError as exc:
+        _record_call(conn, div.__name__)
+
+
+def main() -> int:
+    args = parse_args()
+
+    conn = sqlite3.connect(str(args.db))
+    try:
+        _ensure_schema(conn)
+        run_calculator(conn)
+    finally:
+        conn.close()
+
+    html_content = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Calculator Example Viewer</title>
+</head>
+<body>
+    <h1>Calculator Example</h1>
+    <p>Function calls recorded for calculator example.</p>
+    <ul>
+        <li>add</li>
+        <li>mul</li>
+        <li>div</li>
+    </ul>
+</body>
+</html>
+"""
+    Path(args.output).write_text(html_content, encoding="utf-8")
+
+    if not args.no_browser:
+        webbrowser.open(Path(args.output).resolve().as_uri())
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

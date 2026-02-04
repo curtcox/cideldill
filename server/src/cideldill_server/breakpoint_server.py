@@ -278,6 +278,7 @@ HTML_TEMPLATE = """
 
         <div class="nav-links">
             <a class="nav-link" href="/call-tree">🌲 Call Tree</a>
+            <a class="nav-link" href="/com-errors">📡 Com Errors</a>
         </div>
 
         <div id="statusMessage" class="status-message"></div>
@@ -1061,6 +1062,247 @@ class BreakpointServer:
         def index():
             """Serve the main web UI."""
             return render_template_string(HTML_TEMPLATE)
+
+        @self.app.route('/api/report-com-error', methods=['POST'])
+        def report_com_error():
+            """Record a communication error from a client."""
+            data = request.get_json() or {}
+            if "timestamp" not in data:
+                data["timestamp"] = time.time()
+            data["received_at"] = time.time()
+            self.manager.add_com_error(data)
+            return jsonify({"status": "ok"})
+
+        @self.app.route('/api/com-errors', methods=['GET'])
+        def list_com_errors():
+            """Return recorded communication errors."""
+            errors = self.manager.get_com_errors()
+            return jsonify({"errors": errors})
+
+        @self.app.route('/com-errors', methods=['GET'])
+        def com_errors_page():
+            """Serve a page to browse client/server communication errors."""
+            errors = self.manager.get_com_errors()
+            errors_sorted = sorted(
+                errors,
+                key=lambda item: float(
+                    item.get("timestamp")
+                    or item.get("received_at")
+                    or 0
+                ),
+                reverse=True,
+            )
+            errors_json = json.dumps(errors_sorted)
+
+            template = """
+<!DOCTYPE html>
+<html lang=\"en\">
+<head>
+    <meta charset=\"UTF-8\" />
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />
+    <title>CID el Dill - Communication Errors</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: #333;
+            border-bottom: 3px solid #d32f2f;
+            padding-bottom: 10px;
+        }
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            margin: 12px 0 20px;
+            text-decoration: none;
+            color: #1976D2;
+            font-weight: 600;
+        }
+        .controls {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+        }
+        .search {
+            flex: 1;
+            min-width: 240px;
+            padding: 10px 12px;
+            border-radius: 6px;
+            border: 1px solid #ccc;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: white;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+        }
+        th, td {
+            text-align: left;
+            padding: 10px 12px;
+            border-bottom: 1px solid #eee;
+            vertical-align: top;
+        }
+        th {
+            background: #fafafa;
+            font-size: 0.9em;
+            text-transform: uppercase;
+            color: #666;
+            letter-spacing: 0.04em;
+        }
+        tr:hover {
+            background: #fef5f5;
+        }
+        .mono {
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+        }
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-size: 0.85em;
+            background: #ffebee;
+            color: #c62828;
+            border: 1px solid #ffcdd2;
+        }
+        .empty-state {
+            text-align: center;
+            color: #666;
+            padding: 20px;
+            font-style: italic;
+        }
+        pre {
+            margin: 0;
+            white-space: pre-wrap;
+            word-break: break-word;
+            background: #f8f8f8;
+            padding: 12px;
+            border-radius: 6px;
+            border: 1px solid #eee;
+        }
+        .detail {
+            margin-top: 18px;
+            background: white;
+            padding: 16px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+        }
+    </style>
+</head>
+<body>
+    <div class=\"container\">
+        <h1>📡 Communication Errors</h1>
+        <a href=\"/\" class=\"back-link\">← Back to Breakpoints</a>
+
+        <div class=\"controls\">
+            <input id=\"searchInput\" class=\"search\" type=\"text\" placeholder=\"Filter by summary, path, method, or exception...\" />
+        </div>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Summary</th>
+                    <th>Request</th>
+                    <th>Status</th>
+                    <th>Exception</th>
+                </tr>
+            </thead>
+            <tbody id=\"errorsBody\"></tbody>
+        </table>
+        <div id=\"emptyState\" class=\"empty-state\" style=\"display:none;\">No communication errors recorded yet.</div>
+
+        <div class=\"detail\">
+            <h2>Details</h2>
+            <pre id=\"detailPanel\">Select a row to see full details.</pre>
+        </div>
+    </div>
+
+    <script>
+        const errors = @@COM_ERRORS_JSON@@;
+        const state = { filter: '' };
+
+        function formatTs(ts) {
+            if (!ts) return 'Unknown';
+            try { return new Date(ts * 1000).toLocaleString(); } catch (e) { return 'Unknown'; }
+        }
+
+        function safeText(value) {
+            if (value === null || value === undefined) return '';
+            return String(value);
+        }
+
+        function render() {
+            const tbody = document.getElementById('errorsBody');
+            const emptyState = document.getElementById('emptyState');
+            const filter = state.filter;
+            const rows = errors.filter((item) => {
+                const search = `${safeText(item.summary)} ${safeText(item.path)} ${safeText(item.method)} ${safeText(item.exception_type)} ${safeText(item.exception_message)}`.toLowerCase();
+                return !filter || search.includes(filter);
+            });
+
+            if (!rows.length) {
+                tbody.innerHTML = '';
+                emptyState.style.display = 'block';
+                return;
+            }
+            emptyState.style.display = 'none';
+
+            tbody.innerHTML = rows.map((item, idx) => {
+                const timeText = formatTs(item.timestamp || item.received_at);
+                const summary = safeText(item.summary || item.message || 'Unknown');
+                const method = safeText(item.method || '');
+                const path = safeText(item.path || '');
+                const status = item.status_code ? `HTTP ${item.status_code}` : 'Exception';
+                const exception = safeText(item.exception_type || item.exception || '');
+                return `
+                    <tr data-index=\"${idx}\">
+                        <td class=\"mono\">${timeText}</td>
+                        <td>${summary}</td>
+                        <td class=\"mono\">${method} ${path}</td>
+                        <td><span class=\"pill\">${status}</span></td>
+                        <td class=\"mono\">${exception}</td>
+                    </tr>
+                `;
+            }).join('');
+
+            document.querySelectorAll('#errorsBody tr').forEach((row) => {
+                row.addEventListener('click', () => {
+                    const idx = Number(row.getAttribute('data-index'));
+                    const item = rows[idx];
+                    document.getElementById('detailPanel').textContent = JSON.stringify(item, null, 2);
+                });
+            });
+        }
+
+        document.getElementById('searchInput').addEventListener('input', (event) => {
+            state.filter = String(event.target.value || '').trim().toLowerCase();
+            render();
+        });
+
+        render();
+    </script>
+</body>
+</html>
+            """
+
+            return render_template_string(
+                template.replace("@@COM_ERRORS_JSON@@", errors_json)
+            )
 
         @self.app.route('/call-tree', methods=['GET'])
         def call_tree_index():
@@ -2635,6 +2877,11 @@ class BreakpointServer:
     def _create_server(self) -> BaseWSGIServer:
         try:
             return make_server(self.host, self.requested_port, self.app, threaded=True)
+        except SystemExit:
+            print(
+                f"Port {self.requested_port} is occupied, finding free port...",
+            )
+            return make_server(self.host, 0, self.app, threaded=True)
         except OSError as exc:
             if not _is_address_in_use(exc):
                 raise

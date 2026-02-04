@@ -39,6 +39,8 @@ class BreakpointManager:
         self._call_to_pause: dict[str, str] = {}  # Maps call_id -> pause_id
         self._execution_history: dict[str, list[dict[str, Any]]] = {}
         self._call_records: list[dict[str, Any]] = []
+        self._com_errors: list[dict[str, Any]] = []
+        self._com_error_limit = 500
         self._lock = threading.Lock()
         # Default behavior when a breakpoint is hit: "stop" or "go"
         self._default_behavior: str = "stop"
@@ -307,12 +309,9 @@ class BreakpointManager:
             if function_name not in self._breakpoints:
                 return False
             selected_behavior = self._after_breakpoint_behaviors.get(function_name, "yield")
-            behavior = (
-                self._default_behavior
-                if selected_behavior == "yield"
-                else selected_behavior
-            )
-            return behavior == "stop"
+            if selected_behavior == "yield":
+                return False
+            return selected_behavior == "stop"
 
     def register_call(self, call_id: str, call_data: dict[str, Any]) -> None:
         """Register call data for later lookup during call completion."""
@@ -367,6 +366,24 @@ class BreakpointManager:
         """Get all recorded calls."""
         with self._lock:
             return [dict(record) for record in self._call_records]
+
+    def add_com_error(self, com_error: dict[str, Any]) -> None:
+        """Record a client/server communication error.
+
+        Args:
+            com_error: Communication error payload.
+        """
+        with self._lock:
+            self._com_errors.append(dict(com_error))
+            if len(self._com_errors) > self._com_error_limit:
+                overflow = len(self._com_errors) - self._com_error_limit
+                if overflow > 0:
+                    del self._com_errors[:overflow]
+
+    def get_com_errors(self) -> list[dict[str, Any]]:
+        """Get recorded communication errors (most recent last)."""
+        with self._lock:
+            return [dict(record) for record in self._com_errors]
 
     def get_execution_record(
         self, function_name: str, record_id: str

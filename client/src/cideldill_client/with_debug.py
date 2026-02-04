@@ -47,7 +47,6 @@ def with_debug(target: Any) -> Any:
         isinstance(target, tuple)
         and len(target) == 2
         and isinstance(target[0], str)
-        and callable(target[1])
     ):
         alias_name = target[0]
         target = target[1]

@@ -7,8 +7,11 @@ from pathlib import Path
 
 import pytest
 
+import importlib
+
 from cideldill_client import configure_debug
-from cideldill_client import with_debug as with_debug_module
+
+with_debug_module = importlib.import_module("cideldill_client.with_debug")
 from cideldill_client.with_debug import _resolve_server_url
 
 

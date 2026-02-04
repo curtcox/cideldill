@@ -60,7 +60,7 @@ class NestedSlotsClass(SlotsClass):
 class ComplexClass:
     """Class with mixed state."""
 
-    __slots__ = ["_private"]
+    __slots__ = ["_private", "__dict__"]
 
     def __init__(self, public_val: int, private_val: str):
         self.public_val = public_val
@@ -334,7 +334,8 @@ def test_create_auto_reducer_uses_slots():
     reducer = PickleRegistry._create_auto_reducer(SlotsClass)
 
     obj = SlotsClass(1, 2, 3)
-    reconstructor, args = reducer(obj)
+    reduced = reducer(obj)
+    reconstructor, args = reduced[0], reduced[1]
 
     assert reconstructor is _reconstruct_from_slots
 
@@ -343,7 +344,8 @@ def test_create_auto_reducer_uses_dict():
     reducer = PickleRegistry._create_auto_reducer(SimpleClass)
 
     obj = SimpleClass("test", 42)
-    reconstructor, args = reducer(obj)
+    reduced = reducer(obj)
+    reconstructor, args = reduced[0], reduced[1]
 
     assert reconstructor is _reconstruct_from_dict
 

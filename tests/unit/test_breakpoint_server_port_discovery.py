@@ -36,6 +36,14 @@ def _stop_server(server: BreakpointServer, thread: threading.Thread) -> None:
     thread.join(timeout=2)
 
 
+def _find_free_port() -> int:
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
 def test_server_writes_port_to_discovery_file() -> None:
     """Test that server writes its port to the discovery file."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -59,13 +67,14 @@ def test_server_uses_specified_port_if_available() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         port_file = Path(tmpdir) / "port"
         manager = BreakpointManager()
-        server = BreakpointServer(manager, port=5174, port_file=port_file)
+        requested_port = _find_free_port()
+        server = BreakpointServer(manager, port=requested_port, port_file=port_file)
 
         thread = _start_server(server)
         try:
-            port = _wait_for_port_file(port_file)
+            actual_port = _wait_for_port_file(port_file)
 
-            assert port == 5174
+            assert actual_port == requested_port
         finally:
             _stop_server(server, thread)
 
@@ -78,16 +87,17 @@ def test_server_falls_back_if_port_occupied() -> None:
         manager1 = BreakpointManager()
         manager2 = BreakpointManager()
 
-        server1 = BreakpointServer(manager1, port=5174, port_file=port_file)
+        requested_port = _find_free_port()
+        server1 = BreakpointServer(manager1, port=requested_port, port_file=port_file)
         thread1 = _start_server(server1)
-        server2 = BreakpointServer(manager2, port=5174, port_file=port_file2)
+        server2 = BreakpointServer(manager2, port=requested_port, port_file=port_file2)
         thread2 = _start_server(server2)
         try:
             port1 = _wait_for_port_file(port_file)
             port2 = _wait_for_port_file(port_file2)
 
-            assert port1 == 5174
-            assert port2 != 5174
+            assert port1 == requested_port
+            assert port2 != requested_port
             assert port2 > 1024
         finally:
             _stop_server(server1, thread1)

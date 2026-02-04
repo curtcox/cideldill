@@ -145,3 +145,19 @@ def test_concurrent_auto_registration():
 
     assert all(results)
     assert ConcurrentClass in PickleRegistry._reducers
+
+
+def test_handles_ssl_context():
+    import ssl
+
+    class SSLHolder:
+        def __init__(self):
+            self.context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+
+    obj = SSLHolder()
+    assert auto_register_for_pickling(obj) is True
+
+    pickled = dill.dumps(obj)
+    restored = dill.loads(pickled)
+
+    assert isinstance(restored.context, ssl.SSLContext)

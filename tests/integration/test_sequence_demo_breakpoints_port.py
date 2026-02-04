@@ -49,9 +49,15 @@ def _drain_pauses_until_exit(proc: subprocess.Popen[str], port: int, timeout_s: 
         if proc.poll() is not None:
             return
 
-        resp = requests.get(f"http://localhost:{port}/api/paused", timeout=1)
-        resp.raise_for_status()
-        paused = resp.json().get("paused", [])
+        try:
+            resp = requests.get(f"http://localhost:{port}/api/paused", timeout=1)
+            resp.raise_for_status()
+            paused = resp.json().get("paused", [])
+        except requests.RequestException:
+            if proc.poll() is not None:
+                return
+            time.sleep(0.1)
+            continue
         if not paused:
             time.sleep(0.1)
             continue
@@ -127,7 +133,7 @@ def test_sequence_demo_direct_env_custom_port_honors_breakpoints() -> None:
 
         resp = requests.post(
             f"http://localhost:{port}/api/breakpoints",
-            json={"function_name": "delay_1s"},
+            json={"function_name": "delay_fn"},
             timeout=2,
         )
         resp.raise_for_status()
