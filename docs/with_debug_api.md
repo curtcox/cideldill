@@ -37,6 +37,61 @@ calculator.add(1, 2)
 - **When debug is ON**: Returns a proxy object that intercepts calls for debugging.
 - **When debug is OFF**: Returns the original object unchanged (true NOP with zero overhead).
 
+## Handling Unpicklable Objects
+
+CID el Dill automatically handles objects that can't be pickled using dill's default
+mechanisms. This includes objects with metaclass registries, dynamically generated
+classes, or complex internal state.
+
+### Automatic Registration
+
+```python
+from cideldill_client import with_debug
+
+with_debug("ON")
+
+# Works even if NAT's OutputArgsSchema isn't normally picklable
+from nat.utils.type_utils import OutputArgsSchema
+
+schema = OutputArgsSchema(...)
+wrapped_schema = with_debug(schema)  # Auto-registers custom pickler
+
+result = wrapped_schema.validate(data)
+```
+
+### Manual Registration for Complex Cases
+
+```python
+from cideldill_client.custom_picklers import PickleRegistry
+
+def custom_reducer(obj):
+    state = {"field1": obj.field1, "field2": obj.field2}
+
+    def reconstruct(state):
+        obj = MyComplexClass.__new__(MyComplexClass)
+        obj.field1 = state["field1"]
+        obj.field2 = state["field2"]
+        return obj
+
+    return (reconstruct, (state,))
+
+PickleRegistry.register(MyComplexClass, custom_reducer)
+```
+
+### Logging
+
+```python
+import logging
+
+logging.basicConfig(level=logging.INFO)
+```
+
+You'll see messages like:
+
+```
+INFO: Auto-registered custom pickler for nat.utils.type_utils.OutputArgsSchema
+```
+
 ## Configure Server URL
 
 ### Automatic Discovery (Recommended)

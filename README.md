@@ -9,6 +9,7 @@ CID el Dill is a Python library for debugging and inspecting applications throug
 - **with_debug API**: Single entry point for enabling debugging and wrapping objects
 - **Request-response control**: Server decides whether to continue, pause, skip, modify, or raise
 - **Dill serialization + CID deduplication**: Efficient, content-addressed payloads
+- **Automatic unpicklable object handling**: Works with complex objects from third-party libraries
 - **Breakpoint web UI**: Pause and resume calls through the debug server
 
 ## Client and Server Packages

@@ -11,6 +11,7 @@ from typing import Any, Optional
 
 import dill
 
+from .custom_picklers import auto_register_for_pickling
 from .exceptions import DebugSerializationError
 
 DILL_PROTOCOL = 4
@@ -22,6 +23,11 @@ def _safe_dumps(obj: Any) -> bytes:
     try:
         return dill.dumps(obj, protocol=DILL_PROTOCOL)
     except Exception as exc:  # noqa: BLE001 - preserve original error context
+        if auto_register_for_pickling(obj, protocol=DILL_PROTOCOL):
+            try:
+                return dill.dumps(obj, protocol=DILL_PROTOCOL)
+            except Exception as second_exc:  # noqa: BLE001
+                raise DebugSerializationError(obj, second_exc) from second_exc
         raise DebugSerializationError(obj, exc) from exc
 
 
