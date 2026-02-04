@@ -476,16 +476,16 @@ def _reconstruct_from_dict(*args: Any) -> Any:
 def _reconstruct_placeholder(info: dict) -> UnpicklablePlaceholder:
     """Reconstruct a placeholder for an unpicklable object."""
     return UnpicklablePlaceholder(
-        type_name=str(info.get("type_name", info.get("type", "Unknown"))),
+        type_name=str(info.get("type_name", "Unknown")),
         module=info.get("module", "unknown"),
         qualname=info.get("qualname", "Unknown"),
-        object_id=info.get("object_id", info.get("id", "unknown")),
-        repr_text=info.get("repr_text", info.get("repr", "")),
+        object_id=info.get("object_id", "unknown"),
+        repr_text=info.get("repr_text", ""),
         str_text=info.get("str_text"),
         attributes=info.get("attributes", {}),
         failed_attributes=info.get("failed_attributes", {}),
-        pickle_error=info.get("pickle_error", info.get("error", "")),
-        pickle_attempts=info.get("pickle_attempts", info.get("attempts", [])),
+        pickle_error=info.get("pickle_error", ""),
+        pickle_attempts=info.get("pickle_attempts", []),
         capture_timestamp=info.get("capture_timestamp", 0.0),
         depth=info.get("depth", 0),
     )

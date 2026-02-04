@@ -10,6 +10,14 @@ import pytest
 import requests
 
 
+def _skip_if_socket_unavailable() -> None:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+    except PermissionError:
+        pytest.skip("Socket bind not permitted in this environment")
+
+
 def _find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
@@ -76,10 +84,17 @@ def _drain_pauses_until_exit(proc: subprocess.Popen[str], port: int, timeout_s: 
 
 @pytest.mark.integration
 def test_sequence_demo_breakpoints_custom_port_honors_breakpoints() -> None:
+    _skip_if_socket_unavailable()
     repo_root = Path(__file__).resolve().parents[2]
     runner = repo_root / "run" / "mac" / "sequence_demo_breakpoints"
 
-    port = _find_free_port()
+    try:
+        port = _find_free_port()
+    except PermissionError:
+        pytest.skip("Socket bind not permitted in this environment")
+    port_file = Path(repo_root) / "tmp_port_file"
+    env = os.environ.copy()
+    env["CIDELDILL_PORT_FILE"] = str(port_file)
 
     proc = subprocess.Popen(
         [
@@ -94,6 +109,7 @@ def test_sequence_demo_breakpoints_custom_port_honors_breakpoints() -> None:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        env=env,
     )
 
     try:
@@ -111,21 +127,30 @@ def test_sequence_demo_breakpoints_custom_port_honors_breakpoints() -> None:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+        port_file.unlink(missing_ok=True)
 
 
 @pytest.mark.integration
 def test_sequence_demo_direct_env_custom_port_honors_breakpoints() -> None:
+    _skip_if_socket_unavailable()
     repo_root = Path(__file__).resolve().parents[2]
     server_script = repo_root / "run" / "mac" / "breakpoint_server"
     demo_script = repo_root / "examples" / "sequence_demo.py"
 
-    port = _find_free_port()
+    try:
+        port = _find_free_port()
+    except PermissionError:
+        pytest.skip("Socket bind not permitted in this environment")
+    port_file = Path(repo_root) / "tmp_port_file"
+    env = os.environ.copy()
+    env["CIDELDILL_PORT_FILE"] = str(port_file)
 
     server_proc = subprocess.Popen(
         [sys.executable, str(server_script), "--port", str(port)],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        env=env,
     )
 
     try:
@@ -140,6 +165,7 @@ def test_sequence_demo_direct_env_custom_port_honors_breakpoints() -> None:
 
         demo_env = os.environ.copy()
         demo_env["CIDELDILL_SERVER_URL"] = f"http://localhost:{port}"
+        demo_env["CIDELDILL_PORT_FILE"] = str(port_file)
 
         demo_proc = subprocess.Popen(
             [
@@ -175,3 +201,4 @@ def test_sequence_demo_direct_env_custom_port_honors_breakpoints() -> None:
                 server_proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 server_proc.kill()
+        port_file.unlink(missing_ok=True)

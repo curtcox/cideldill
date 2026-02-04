@@ -25,7 +25,18 @@ class ExplodingGetState:
 
 
 @pytest.mark.integration
-def test_debug_proxy_sends_placeholder_payloads(monkeypatch):
+def test_debug_proxy_sends_placeholder_payloads(monkeypatch, tmp_path):
+    import socket
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+    except PermissionError:
+        pytest.skip("Socket bind not permitted in this environment")
+
+    port_file = tmp_path / "port"
+    monkeypatch.setenv("CIDELDILL_PORT_FILE", str(port_file))
+
     manager = BreakpointManager()
     server = BreakpointServer(manager, port=0)
     server_thread = threading.Thread(target=server.start, daemon=True)
@@ -120,3 +131,4 @@ def test_debug_proxy_sends_placeholder_payloads(monkeypatch):
     finally:
         with_debug("OFF")
         server.stop()
+        monkeypatch.delenv("CIDELDILL_PORT_FILE", raising=False)

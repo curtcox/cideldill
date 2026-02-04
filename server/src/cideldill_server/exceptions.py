@@ -42,10 +42,3 @@ class DebugCIDNotFoundError(DebugError):
 class DebugCIDMismatchError(DebugError):
     """Raised when CID data does not match its claimed hash."""
 
-
-class CIDMismatchError(DebugCIDMismatchError):
-    """Backward-compatible alias for CID mismatch errors."""
-
-
-class CIDNotFoundError(DebugCIDNotFoundError):
-    """Backward-compatible alias for CID not found errors."""

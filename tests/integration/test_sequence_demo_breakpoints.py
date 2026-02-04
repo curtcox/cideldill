@@ -1,5 +1,6 @@
 """Test to reproduce breakpoint stopping issue in sequence_demo."""
 
+import os
 import sys
 import threading
 import time
@@ -13,12 +14,26 @@ from cideldill_server.breakpoint_manager import BreakpointManager
 from cideldill_server.breakpoint_server import BreakpointServer
 
 
-def test_sequence_demo_actually_stops_at_breakpoints():
+def _skip_if_socket_unavailable() -> None:
+    import socket
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+    except PermissionError:
+        pytest.skip("Socket bind not permitted in this environment")
+
+
+def test_sequence_demo_actually_stops_at_breakpoints(tmp_path: Path, monkeypatch):
     """Test that running sequence_demo with breakpoints actually pauses execution.
 
     This simulates what the sequence_demo_breakpoints script does and verifies
     that execution stops at breakpoints.
     """
+    _skip_if_socket_unavailable()
+    port_file = tmp_path / "port"
+    monkeypatch.setenv("CIDELDILL_PORT_FILE", str(port_file))
+
     # Start server
     manager = BreakpointManager()
     server = BreakpointServer(manager, port=5002)
@@ -98,6 +113,7 @@ def test_sequence_demo_actually_stops_at_breakpoints():
 
     finally:
         with_debug("OFF")
+        monkeypatch.delenv("CIDELDILL_PORT_FILE", raising=False)
 
 
 def test_breakpoint_behavior_defaults():
@@ -136,8 +152,12 @@ def test_behavior_affects_pausing():
     assert manager.should_pause_at_breakpoint("other_function") is False
 
 
-def test_behavior_api_endpoints():
+def test_behavior_api_endpoints(tmp_path: Path, monkeypatch):
     """Test the behavior API endpoints."""
+    _skip_if_socket_unavailable()
+    port_file = tmp_path / "port"
+    monkeypatch.setenv("CIDELDILL_PORT_FILE", str(port_file))
+
     manager = BreakpointManager()
     server = BreakpointServer(manager, port=5003)
 
@@ -154,8 +174,8 @@ def test_behavior_api_endpoints():
         # Set to go
         response = requests.post(
             "http://localhost:5003/api/behavior",
-            json={"behavior": "continue"},
-            timeout=5
+            json={"behavior": "go"},
+            timeout=5,
         )
         assert response.status_code == 200
         assert response.json()["behavior"] == "go"
@@ -173,7 +193,7 @@ def test_behavior_api_endpoints():
         assert response.status_code == 400
 
     finally:
-        pass
+        monkeypatch.delenv("CIDELDILL_PORT_FILE", raising=False)
 
 
 if __name__ == "__main__":

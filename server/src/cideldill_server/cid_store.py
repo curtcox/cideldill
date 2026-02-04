@@ -84,6 +84,8 @@ class CIDStore:
 
     def get_many(self, cids: List[str]) -> Dict[str, bytes]:
         """Retrieve multiple CIDs. Returns dict of found CIDs."""
+        if not cids:
+            return {}
         with self._lock:
             placeholders = ",".join("?" * len(cids))
             cursor = self._conn.execute(

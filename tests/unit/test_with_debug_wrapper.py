@@ -1,4 +1,4 @@
-"""Compatibility tests for with_debug object wrapping."""
+"""Tests for with_debug object wrapping behavior."""
 
 from __future__ import annotations
 

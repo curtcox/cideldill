@@ -5,12 +5,26 @@ These tests validate that breakpoints work correctly end-to-end.
 
 import time
 from unittest.mock import patch, MagicMock
+
 import pytest
 import requests
 
 
-def test_breakpoint_actually_pauses_execution():
+def _skip_if_socket_unavailable() -> None:
+    import socket
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+    except PermissionError:
+        pytest.skip("Socket bind not permitted in this environment")
+
+
+def test_breakpoint_actually_pauses_execution(tmp_path, monkeypatch):
     """Test that setting a breakpoint causes execution to pause."""
+    _skip_if_socket_unavailable()
+    port_file = tmp_path / "port"
+    monkeypatch.setenv("CIDELDILL_PORT_FILE", str(port_file))
     # This test should fail initially - breakpoints aren't working
     from cideldill_server.breakpoint_manager import BreakpointManager
     from cideldill_server.breakpoint_server import BreakpointServer
@@ -111,6 +125,7 @@ def test_breakpoint_actually_pauses_execution():
         with_debug("OFF")
         server.stop()
         server_thread.join(timeout=2)
+        monkeypatch.delenv("CIDELDILL_PORT_FILE", raising=False)
 
 
 def test_web_ui_has_toggle_breakpoint_functionality():

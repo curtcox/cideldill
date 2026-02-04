@@ -6,6 +6,8 @@ import socket
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from cideldill_server.port_discovery import (
     find_free_port,
     get_discovery_file_path,
@@ -16,16 +18,21 @@ from cideldill_server.port_discovery import (
 
 def test_find_free_port_returns_valid_port() -> None:
     """Test that find_free_port returns a port in valid range."""
-    port = find_free_port()
+    try:
+        port = find_free_port()
+    except PermissionError:
+        pytest.skip("Socket bind not permitted in this environment")
     assert 1024 <= port <= 65535
 
 
 def test_find_free_port_is_actually_free() -> None:
     """Test that the port returned is actually available."""
-    port = find_free_port()
-
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", port))
+    try:
+        port = find_free_port()
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", port))
+    except PermissionError:
+        pytest.skip("Socket bind not permitted in this environment")
 
 
 def test_write_port_file_creates_directory() -> None:
@@ -80,9 +87,15 @@ def test_read_port_file_returns_none_if_invalid() -> None:
         assert read_port_file(port_file) is None
 
 
-def test_get_discovery_file_path_returns_path_in_home() -> None:
-    """Test that discovery file path is in user's home directory."""
+def test_get_discovery_file_path_uses_env_override(tmp_path: Path, monkeypatch) -> None:
+    """Test that discovery file path honors environment overrides."""
+    port_file = tmp_path / "override" / "port"
+    monkeypatch.setenv("CIDELDILL_PORT_FILE", str(port_file))
     path = get_discovery_file_path()
-    assert path.parent.name == ".cideldill"
-    assert path.name == "port"
-    assert str(Path.home()) in str(path)
+    assert path == port_file
+    monkeypatch.delenv("CIDELDILL_PORT_FILE", raising=False)
+
+    monkeypatch.setenv("CIDELDILL_HOME", str(tmp_path))
+    path = get_discovery_file_path()
+    assert path == tmp_path / "port"
+    monkeypatch.delenv("CIDELDILL_HOME", raising=False)

@@ -4,12 +4,27 @@ This module provides utilities to generate HTML views of CAS Store database cont
 particularly for visualizing function call records from the calculator examples.
 """
 
+import html
 import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from .port_discovery import get_discovery_file_path, read_port_file
+
+TEMPLATES_DIR = Path(__file__).with_name("templates")
+
+
+def _escape_text(value: object) -> str:
+    return html.escape(str(value), quote=True)
+
+
+def _render_template(name: str, replacements: dict[str, str]) -> str:
+    template_path = TEMPLATES_DIR / name
+    template = template_path.read_text(encoding="utf-8")
+    for key, value in replacements.items():
+        template = template.replace(f"__{key}__", value)
+    return template
 
 
 def generate_html_viewer(db_path: str, output_path: str, title: str = "CAS Store Viewer") -> None:
@@ -57,117 +72,16 @@ def _generate_html(title: str, db_path: str, records: list[dict[str, Any]]) -> s
 
     nav_header = _generate_navigation_header("")
 
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{title}</title>
-    <style>
-        body {{
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px;
-            background-color: #f5f5f5;
-        }}
-        h1 {{
-            color: #333;
-            border-bottom: 3px solid #4CAF50;
-            padding-bottom: 10px;
-        }}
-        .info {{
-            background-color: #e3f2fd;
-            padding: 15px;
-            border-radius: 5px;
-            margin-bottom: 20px;
-        }}
-        .record {{
-            background-color: white;
-            border: 1px solid #ddd;
-            border-radius: 5px;
-            padding: 15px;
-            margin-bottom: 15px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }}
-        .record-header {{
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 10px;
-            padding-bottom: 10px;
-            border-bottom: 1px solid #eee;
-        }}
-        .function-name {{
-            font-size: 1.2em;
-            font-weight: bold;
-            color: #1976D2;
-        }}
-        .record-id {{
-            color: #666;
-            font-size: 0.9em;
-        }}
-        .section {{
-            margin: 10px 0;
-        }}
-        .section-title {{
-            font-weight: bold;
-            color: #555;
-            margin-bottom: 5px;
-        }}
-        .code-block {{
-            background-color: #f8f8f8;
-            border: 1px solid #e0e0e0;
-            border-radius: 3px;
-            padding: 10px;
-            overflow-x: auto;
-            font-family: 'Courier New', monospace;
-            font-size: 0.9em;
-        }}
-        .result {{
-            color: #2E7D32;
-        }}
-        .exception {{
-            color: #C62828;
-        }}
-        .timestamp {{
-            color: #777;
-            font-size: 0.85em;
-        }}
-        .summary {{
-            background-color: #fff3cd;
-            padding: 15px;
-            border-radius: 5px;
-            margin-bottom: 20px;
-            border-left: 4px solid #ffc107;
-        }}
-    </style>
-</head>
-<body>
-    {nav_header}
-
-    <h1>{title}</h1>
-
-    <div class="info">
-        <strong>Database:</strong> {db_path}
-    </div>
-
-    <div class="summary">
-        <strong>Total Function Calls:</strong> {len(records)}
-    </div>
-
-    <h2>Function Call Records</h2>
-
-    {records_html}
-
-    <div style="margin-top: 30px; padding: 20px; background-color: #e8f5e9; \
-border-radius: 5px; text-align: center;">
-        <strong>✓ All records loaded successfully!</strong>
-    </div>
-</body>
-</html>
-"""
-    return html
+    return _render_template(
+        "viewer.html",
+        {
+            "TITLE": _escape_text(title),
+            "NAV_HEADER": nav_header,
+            "DB_PATH": _escape_text(db_path),
+            "TOTAL_CALLS": _escape_text(len(records)),
+            "RECORDS_HTML": records_html,
+        },
+    )
 
 
 def _format_record(record: dict[str, Any], db_path: str = "") -> str:
@@ -183,8 +97,8 @@ def _format_record(record: dict[str, Any], db_path: str = "") -> str:
     html = f"""
     <div class="record">
         <div class="record-header">
-            <span class="function-name">{record['function_name']}()</span>
-            <span class="record-id">Record #{record['id']}</span>
+            <span class="function-name">{_escape_text(record['function_name'])}()</span>
+            <span class="record-id">Record #{_escape_text(record['id'])}</span>
         </div>
 """
 
@@ -198,7 +112,7 @@ def _format_record(record: dict[str, Any], db_path: str = "") -> str:
         html += f"""
         <div class="section">
             <div class="section-title">Timestamp:</div>
-            <div class="timestamp">{timestamp_str} (Unix: {timestamp})</div>
+            <div class="timestamp">{_escape_text(timestamp_str)} (Unix: {_escape_text(timestamp)})</div>
         </div>
 """
 
@@ -209,18 +123,20 @@ def _format_record(record: dict[str, Any], db_path: str = "") -> str:
         if db_path and "id" in record:
             link_url = f"source_{record['id']}.html"
             link_style = "color: #2196F3; text-decoration: none; font-weight: bold;"
-            source_link = f' <a href="{link_url}" style="{link_style}">[View Source]</a>'
+            source_link = (
+                f' <a href="{_escape_text(link_url)}" style="{link_style}">[View Source]</a>'
+            )
         html += f"""
         <div class="section">
             <div class="section-title">Call Site:{source_link}</div>
             <div class="code-block">
-                <strong>File:</strong> {call_site.get('filename', 'N/A')}<br>
-                <strong>Line:</strong> {call_site.get('lineno', 'N/A')}<br>
-                <strong>Function:</strong> {call_site.get('function', 'N/A')}<br>
+                <strong>File:</strong> {_escape_text(call_site.get('filename', 'N/A'))}<br>
+                <strong>Line:</strong> {_escape_text(call_site.get('lineno', 'N/A'))}<br>
+                <strong>Function:</strong> {_escape_text(call_site.get('function', 'N/A'))}<br>
 """
         if call_site.get('code_context'):
             code_ctx = call_site['code_context']
-            html += f"                <strong>Code:</strong> <code>{code_ctx}</code><br>\n"
+            html += f"                <strong>Code:</strong> <code>{_escape_text(code_ctx)}</code><br>\n"
         html += """            </div>
         </div>
 """
@@ -231,7 +147,7 @@ def _format_record(record: dict[str, Any], db_path: str = "") -> str:
         html += f"""
         <div class="section">
             <div class="section-title">Arguments:</div>
-            <div class="code-block">{args_str}</div>
+            <div class="code-block">{_escape_text(args_str)}</div>
         </div>
 """
 
@@ -241,7 +157,7 @@ def _format_record(record: dict[str, Any], db_path: str = "") -> str:
         html += f"""
         <div class="section">
             <div class="section-title result">Result:</div>
-            <div class="code-block result">{result_str}</div>
+            <div class="code-block result">{_escape_text(result_str)}</div>
         </div>
 """
 
@@ -251,7 +167,7 @@ def _format_record(record: dict[str, Any], db_path: str = "") -> str:
         html += f"""
         <div class="section">
             <div class="section-title exception">Exception:</div>
-            <div class="code-block exception">{exception_str}</div>
+            <div class="code-block exception">{_escape_text(exception_str)}</div>
         </div>
 """
 
@@ -272,15 +188,17 @@ def _format_record(record: dict[str, Any], db_path: str = "") -> str:
             if db_path and frame.get('filename') and frame.get('lineno'):
                 link_url = f"frame_{record['id']}_{i}.html"
                 link_style = "color: #2196F3; text-decoration: none; font-size: 0.9em;"
-                frame_link = f' <a href="{link_url}" style="{link_style}">[view]</a>'
+                frame_link = (
+                    f' <a href="{_escape_text(link_url)}" style="{link_style}">[view]</a>'
+                )
             html += f"""                <div style="{frame_style}">
-                    <strong>Frame {i}:</strong> {frame.get('function', 'N/A')}{frame_link}<br>
-                    <strong>File:</strong> {frame.get('filename', 'N/A')}<br>
-                    <strong>Line:</strong> {frame.get('lineno', 'N/A')}<br>
+                    <strong>Frame {i}:</strong> {_escape_text(frame.get('function', 'N/A'))}{frame_link}<br>
+                    <strong>File:</strong> {_escape_text(frame.get('filename', 'N/A'))}<br>
+                    <strong>Line:</strong> {_escape_text(frame.get('lineno', 'N/A'))}<br>
 """
             if frame.get('code_context'):
                 code_ctx = frame['code_context']
-                html += f"                    <strong>Code:</strong> <code>{code_ctx}</code><br>\n"
+                html += f"                    <strong>Code:</strong> <code>{_escape_text(code_ctx)}</code><br>\n"
             html += "                </div>\n"
         html += """            </div>
         </div>
@@ -469,145 +387,16 @@ def _generate_home_page(output_dir: Path, db_path: str, records: list[dict[str, 
         if r.get('call_site', {}).get('filename')
     })
 
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CID el Dill Viewer - Home</title>
-    <style>
-        body {{
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            margin: 0;
-            padding: 20px;
-            background-color: #f5f5f5;
-        }}
-        .container {{
-            max-width: 1200px;
-            margin: 0 auto;
-        }}
-        h1 {{
-            color: #333;
-            border-bottom: 3px solid #4CAF50;
-            padding-bottom: 10px;
-        }}
-        .stats-grid {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 20px;
-            margin: 30px 0;
-        }}
-        .stat-card {{
-            background-color: white;
-            border: 1px solid #ddd;
-            border-radius: 8px;
-            padding: 20px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            text-align: center;
-        }}
-        .stat-value {{
-            font-size: 3em;
-            font-weight: bold;
-            color: #2196F3;
-            margin: 10px 0;
-        }}
-        .stat-label {{
-            font-size: 1.1em;
-            color: #666;
-        }}
-        .quick-links {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 20px;
-            margin: 30px 0;
-        }}
-        .quick-link-card {{
-            background-color: white;
-            border: 1px solid #ddd;
-            border-radius: 8px;
-            padding: 30px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            text-align: center;
-            text-decoration: none;
-            color: inherit;
-            transition: transform 0.2s, box-shadow 0.2s;
-        }}
-        .quick-link-card:hover {{
-            transform: translateY(-4px);
-            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
-        }}
-        .quick-link-icon {{
-            font-size: 3em;
-            margin-bottom: 15px;
-        }}
-        .quick-link-title {{
-            font-size: 1.3em;
-            font-weight: bold;
-            color: #333;
-            margin-bottom: 10px;
-        }}
-        .quick-link-desc {{
-            color: #666;
-            font-size: 0.95em;
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        {nav_header}
-
-        <h1>Welcome to CID el Dill Viewer</h1>
-
-        <div class="stats-grid">
-            <div class="stat-card">
-                <div class="stat-value">{total_calls}</div>
-                <div class="stat-label">Total Function Calls</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-value">{unique_functions}</div>
-                <div class="stat-label">Unique Functions</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-value">{unique_files}</div>
-                <div class="stat-label">Source Files</div>
-            </div>
-        </div>
-
-        <h2>Quick Access</h2>
-        <div class="quick-links">
-            <a href="timeline.html" class="quick-link-card">
-                <div class="quick-link-icon">📊</div>
-                <div class="quick-link-title">Timeline View</div>
-                <div class="quick-link-desc">View all function calls chronologically</div>
-            </a>
-
-            <a href="sources.html" class="quick-link-card">
-                <div class="quick-link-icon">📄</div>
-                <div class="quick-link-title">Source Files</div>
-                <div class="quick-link-desc">Browse all source files with calls</div>
-            </a>
-
-            <a href="callstacks.html" class="quick-link-card">
-                <div class="quick-link-icon">📚</div>
-                <div class="quick-link-title">Call Stacks</div>
-                <div class="quick-link-desc">Explore function call stacks</div>
-            </a>
-
-            <a href="breakpoints.html" class="quick-link-card">
-                <div class="quick-link-icon">🔴</div>
-                <div class="quick-link-title">Breakpoints</div>
-                <div class="quick-link-desc">View and manage breakpoints</div>
-            </a>
-        </div>
-
-        <div style="margin-top: 40px; padding: 20px; background-color: #e8f5e9;
-                    border-radius: 5px; border-left: 4px solid #4CAF50;">
-            <strong>Database:</strong> {db_path}
-        </div>
-    </div>
-</body>
-</html>
-"""
+    html = _render_template(
+        "home.html",
+        {
+            "NAV_HEADER": nav_header,
+            "TOTAL_CALLS": _escape_text(total_calls),
+            "UNIQUE_FUNCTIONS": _escape_text(unique_functions),
+            "UNIQUE_FILES": _escape_text(unique_files),
+            "DB_PATH": _escape_text(db_path),
+        },
+    )
 
     index_path = output_dir / "index.html"
     index_path.write_text(html, encoding="utf-8")
@@ -624,97 +413,36 @@ def _generate_timeline_page(output_dir: Path, db_path: str, records: list[dict[s
     nav_header = _generate_navigation_header("timeline.html")
 
     # Sort records by timestamp
-    sorted_records = sorted(records, key=lambda r: r.get('timestamp', 0))
+    sorted_records = sorted(records, key=lambda r: r.get("timestamp", 0))
 
     timeline_html = ""
     for record in sorted_records:
-        timestamp = record.get('timestamp', 0)
+        timestamp = record.get("timestamp", 0)
         dt = datetime.fromtimestamp(timestamp)
         timestamp_str = dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
         # Check if the record has an exception
-        has_exception = 'exception' in record and record['exception'] is not None
-        result_str = "Exception" if has_exception else str(record.get('result', 'N/A'))
+        has_exception = "exception" in record and record["exception"] is not None
+        result_str = "Exception" if has_exception else str(record.get("result", "N/A"))
         link_url = f"source_{record['id']}.html"
 
         timeline_html += f"""
         <div class="timeline-item">
-            <div class="timeline-time">{timestamp_str}</div>
+            <div class="timeline-time">{_escape_text(timestamp_str)}</div>
             <div class="timeline-content">
-                <div class="timeline-function">{record.get('function_name', 'Unknown')}()</div>
-                <div class="timeline-result">Result: {result_str}</div>
-                <a href="{link_url}" class="timeline-link">View Details →</a>
+                <div class="timeline-function">{_escape_text(record.get('function_name', 'Unknown'))}()</div>
+                <div class="timeline-result">Result: {_escape_text(result_str)}</div>
+                <a href="{_escape_text(link_url)}" class="timeline-link">View Details →</a>
             </div>
         </div>
 """
-
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Timeline View</title>
-    <style>
-        body {{
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            margin: 0;
-            padding: 20px;
-            background-color: #f5f5f5;
-        }}
-        .container {{
-            max-width: 1200px;
-            margin: 0 auto;
-        }}
-        h1 {{
-            color: #333;
-            border-bottom: 3px solid #4CAF50;
-            padding-bottom: 10px;
-        }}
-        .timeline-item {{
-            background-color: white;
-            border-left: 4px solid #2196F3;
-            padding: 20px;
-            margin-bottom: 15px;
-            border-radius: 4px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }}
-        .timeline-time {{
-            color: #666;
-            font-size: 0.9em;
-            margin-bottom: 8px;
-        }}
-        .timeline-function {{
-            font-size: 1.3em;
-            font-weight: bold;
-            color: #1976D2;
-            margin-bottom: 5px;
-        }}
-        .timeline-result {{
-            color: #555;
-            margin-bottom: 10px;
-        }}
-        .timeline-link {{
-            color: #2196F3;
-            text-decoration: none;
-            font-weight: bold;
-        }}
-        .timeline-link:hover {{
-            text-decoration: underline;
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        {nav_header}
-
-        <h1>Timeline View</h1>
-        <p>All function calls ordered by time</p>
-
-        {timeline_html}
-    </div>
-</body>
-</html>
-"""
+    html = _render_template(
+        "timeline.html",
+        {
+            "NAV_HEADER": nav_header,
+            "TIMELINE_HTML": timeline_html,
+        },
+    )
 
     timeline_path = output_dir / "timeline.html"
     timeline_path.write_text(html, encoding="utf-8")
@@ -733,7 +461,7 @@ def _generate_sources_page(output_dir: Path, db_path: str, records: list[dict[st
     # Group records by source file
     files_dict: dict[str, list[dict[str, Any]]] = {}
     for record in records:
-        filename = record.get('call_site', {}).get('filename')
+        filename = record.get("call_site", {}).get("filename")
         if filename:
             if filename not in files_dict:
                 files_dict[filename] = []
@@ -743,102 +471,35 @@ def _generate_sources_page(output_dir: Path, db_path: str, records: list[dict[st
     for filename, file_records in sorted(files_dict.items()):
         files_html += f"""
         <div class="file-card">
-            <div class="file-name">{filename}</div>
-            <div class="file-stats">{len(file_records)} call(s)</div>
+            <div class="file-name">{_escape_text(filename)}</div>
+            <div class="file-stats">{_escape_text(len(file_records))} call(s)</div>
             <div class="file-calls">
 """
         for record in file_records[:5]:  # Show first 5 calls
             link_url = f"source_{record['id']}.html"
             files_html += f"""
-                <a href="{link_url}" class="call-link">
-                    {record.get('function_name', 'Unknown')}()
-                    [Line {record.get('call_site', {}).get('lineno', '?')}]
+                <a href="{_escape_text(link_url)}" class="call-link">
+                    {_escape_text(record.get('function_name', 'Unknown'))}()
+                    [Line {_escape_text(record.get('call_site', {}).get('lineno', '?'))}]
                 </a>
 """
         if len(file_records) > 5:
-            files_html += f'<div class="more">... and {len(file_records) - 5} more</div>'
+            files_html += (
+                f'<div class="more">... and {_escape_text(len(file_records) - 5)} more</div>'
+            )
 
         files_html += """
             </div>
         </div>
 """
 
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Source Files</title>
-    <style>
-        body {{
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            margin: 0;
-            padding: 20px;
-            background-color: #f5f5f5;
-        }}
-        .container {{
-            max-width: 1200px;
-            margin: 0 auto;
-        }}
-        h1 {{
-            color: #333;
-            border-bottom: 3px solid #4CAF50;
-            padding-bottom: 10px;
-        }}
-        .file-card {{
-            background-color: white;
-            border: 1px solid #ddd;
-            border-radius: 8px;
-            padding: 20px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }}
-        .file-name {{
-            font-size: 1.2em;
-            font-weight: bold;
-            color: #1976D2;
-            margin-bottom: 10px;
-            word-break: break-all;
-        }}
-        .file-stats {{
-            color: #666;
-            margin-bottom: 15px;
-        }}
-        .file-calls {{
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }}
-        .call-link {{
-            color: #2196F3;
-            text-decoration: none;
-            padding: 8px;
-            background-color: #f8f8f8;
-            border-radius: 4px;
-            transition: background-color 0.2s;
-        }}
-        .call-link:hover {{
-            background-color: #e3f2fd;
-        }}
-        .more {{
-            color: #666;
-            font-style: italic;
-            padding: 8px;
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        {nav_header}
-
-        <h1>Source Files</h1>
-        <p>All source files with recorded function calls</p>
-
-        {files_html if files_html else '<p>No source files found.</p>'}
-    </div>
-</body>
-</html>
-"""
+    html = _render_template(
+        "sources.html",
+        {
+            "NAV_HEADER": nav_header,
+            "FILES_HTML": files_html if files_html else "<p>No source files found.</p>",
+        },
+    )
 
     sources_path = output_dir / "sources.html"
     sources_path.write_text(html, encoding="utf-8")
@@ -858,123 +519,44 @@ def _generate_callstacks_page(
 
     stacks_html = ""
     for record in records:
-        if not record.get('callstack'):
+        if not record.get("callstack"):
             continue
 
-        callstack = record.get('callstack', [])
+        callstack = record.get("callstack", [])
         link_url = f"source_{record['id']}.html"
 
         stacks_html += f"""
         <div class="stack-card">
             <div class="stack-header">
-                <span class="stack-function">{record.get('function_name', 'Unknown')}()</span>
-                <span class="stack-depth">Depth: {len(callstack)}</span>
+                <span class="stack-function">{_escape_text(record.get('function_name', 'Unknown'))}()</span>
+                <span class="stack-depth">Depth: {_escape_text(len(callstack))}</span>
             </div>
             <div class="stack-frames">
 """
         for i, frame in enumerate(callstack[:5]):  # Show first 5 frames
             stacks_html += f"""
                 <div class="stack-frame">
-                    Frame {i}: {frame.get('function', 'Unknown')}
-                    [{frame.get('filename', 'Unknown')}:{frame.get('lineno', '?')}]
+                    Frame {i}: {_escape_text(frame.get('function', 'Unknown'))}
+                    [{_escape_text(frame.get('filename', 'Unknown'))}:{_escape_text(frame.get('lineno', '?'))}]
                 </div>
 """
         if len(callstack) > 5:
-            stacks_html += f"<div class='more'>... and {len(callstack) - 5} more frames</div>"
+            stacks_html += (
+                f"<div class='more'>... and {_escape_text(len(callstack) - 5)} more frames</div>"
+            )
 
         stacks_html += f"""
             </div>
-            <a href="{link_url}" class="view-link">View Full Stack →</a>
+            <a href="{_escape_text(link_url)}" class="view-link">View Full Stack →</a>
         </div>
 """
-
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Call Stacks</title>
-    <style>
-        body {{
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            margin: 0;
-            padding: 20px;
-            background-color: #f5f5f5;
-        }}
-        .container {{
-            max-width: 1200px;
-            margin: 0 auto;
-        }}
-        h1 {{
-            color: #333;
-            border-bottom: 3px solid #4CAF50;
-            padding-bottom: 10px;
-        }}
-        .stack-card {{
-            background-color: white;
-            border: 1px solid #ddd;
-            border-radius: 8px;
-            padding: 20px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }}
-        .stack-header {{
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 15px;
-            padding-bottom: 10px;
-            border-bottom: 1px solid #eee;
-        }}
-        .stack-function {{
-            font-size: 1.2em;
-            font-weight: bold;
-            color: #1976D2;
-        }}
-        .stack-depth {{
-            color: #666;
-            font-size: 0.9em;
-        }}
-        .stack-frames {{
-            background-color: #f8f8f8;
-            padding: 15px;
-            border-radius: 4px;
-            margin-bottom: 15px;
-        }}
-        .stack-frame {{
-            padding: 8px;
-            margin-bottom: 5px;
-            font-family: 'Courier New', monospace;
-            font-size: 0.9em;
-            color: #333;
-        }}
-        .view-link {{
-            color: #2196F3;
-            text-decoration: none;
-            font-weight: bold;
-        }}
-        .view-link:hover {{
-            text-decoration: underline;
-        }}
-        .more {{
-            color: #666;
-            font-style: italic;
-            padding: 8px;
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        {nav_header}
-
-        <h1>Call Stacks</h1>
-        <p>All recorded function call stacks</p>
-
-        {stacks_html if stacks_html else '<p>No call stacks found.</p>'}
-    </div>
-</body>
-</html>
-"""
+    html = _render_template(
+        "callstacks.html",
+        {
+            "NAV_HEADER": nav_header,
+            "STACKS_HTML": stacks_html if stacks_html else "<p>No call stacks found.</p>",
+        },
+    )
 
     stacks_path = output_dir / "callstacks.html"
     stacks_path.write_text(html, encoding="utf-8")
@@ -995,22 +577,22 @@ def _generate_breakpoints_page(
     nav_header = _generate_navigation_header("breakpoints.html")
 
     # Get unique functions
-    functions = sorted({r.get('function_name', '') for r in records if r.get('function_name')})
+    functions = sorted({r.get("function_name", "") for r in records if r.get("function_name")})
 
     functions_html = ""
     for func_name in functions:
-        func_records = [r for r in records if r.get('function_name') == func_name]
+        func_records = [r for r in records if r.get("function_name") == func_name]
         functions_html += f"""
-        <div class="function-card" data-function="{func_name}">
+        <div class="function-card" data-function="{_escape_text(func_name)}">
             <div class="function-header">
-                <span class="function-name">{func_name}()</span>
-                <span class="function-calls">{len(func_records)} call(s)</span>
+                <span class="function-name">{_escape_text(func_name)}()</span>
+                <span class="function-calls">{_escape_text(len(func_records))} call(s)</span>
             </div>
             <div class="breakpoint-controls">
-                <button class="btn btn-set" onclick="setBreakpoint('{func_name}')">
+                <button class="btn btn-set" onclick="setBreakpoint('{_escape_text(func_name)}')">
                     ➕ Set Breakpoint
                 </button>
-                <button class="btn btn-remove" onclick="removeBreakpoint('{func_name}')" style="display:none;">
+                <button class="btn btn-remove" onclick="removeBreakpoint('{_escape_text(func_name)}')" style="display:none;">
                     ❌ Remove Breakpoint
                 </button>
                 <span class="breakpoint-status-indicator" style="display:none;">
@@ -1020,383 +602,14 @@ def _generate_breakpoints_page(
         </div>
 """
 
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Breakpoints - Interactive Management</title>
-    <style>
-        body {{
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            margin: 0;
-            padding: 20px;
-            background-color: #f5f5f5;
-        }}
-        .container {{
-            max-width: 1200px;
-            margin: 0 auto;
-        }}
-        h1 {{
-            color: #333;
-            border-bottom: 3px solid #4CAF50;
-            padding-bottom: 10px;
-        }}
-        h2 {{
-            color: #555;
-            margin-top: 30px;
-        }}
-        .info-box {{
-            background-color: #e3f2fd;
-            border-left: 4px solid #2196F3;
-            padding: 15px;
-            margin-bottom: 20px;
-            border-radius: 4px;
-        }}
-        .function-card {{
-            background-color: white;
-            border: 1px solid #ddd;
-            border-radius: 8px;
-            padding: 20px;
-            margin-bottom: 15px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }}
-        .function-card.active-breakpoint {{
-            border-left: 4px solid #f44336;
-        }}
-        .function-header {{
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 10px;
-        }}
-        .function-name {{
-            font-size: 1.2em;
-            font-weight: bold;
-            color: #1976D2;
-        }}
-        .function-calls {{
-            color: #666;
-            font-size: 0.9em;
-        }}
-        .breakpoint-controls {{
-            display: flex;
-            gap: 10px;
-            align-items: center;
-            margin-top: 10px;
-        }}
-        .btn {{
-            padding: 8px 16px;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 0.9em;
-            transition: all 0.2s;
-        }}
-        .btn-set {{
-            background-color: #4CAF50;
-            color: white;
-        }}
-        .btn-set:hover {{
-            background-color: #45a049;
-        }}
-        .btn-remove {{
-            background-color: #f44336;
-            color: white;
-        }}
-        .btn-remove:hover {{
-            background-color: #da190b;
-        }}
-        .btn-continue {{
-            background-color: #2196F3;
-            color: white;
-        }}
-        .btn-continue:hover {{
-            background-color: #0b7dda;
-        }}
-        .btn-skip {{
-            background-color: #ff9800;
-            color: white;
-        }}
-        .btn-skip:hover {{
-            background-color: #e68900;
-        }}
-        .breakpoint-status-indicator {{
-            color: #f44336;
-            font-weight: bold;
-        }}
-        .paused-card {{
-            background-color: #fff3cd;
-            border: 2px solid #ff9800;
-            border-radius: 8px;
-            padding: 20px;
-            margin-bottom: 15px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }}
-        .paused-header {{
-            font-size: 1.1em;
-            font-weight: bold;
-            color: #f57c00;
-            margin-bottom: 10px;
-        }}
-        .call-data {{
-            background-color: #f8f8f8;
-            padding: 10px;
-            border-radius: 4px;
-            margin: 10px 0;
-            font-family: 'Courier New', monospace;
-            font-size: 0.9em;
-        }}
-        .actions {{
-            display: flex;
-            gap: 10px;
-            margin-top: 15px;
-        }}
-        .status-message {{
-            padding: 10px;
-            border-radius: 4px;
-            margin-bottom: 15px;
-            display: none;
-        }}
-        .status-success {{
-            background-color: #d4edda;
-            border: 1px solid #c3e6cb;
-            color: #155724;
-        }}
-        .status-error {{
-            background-color: #f8d7da;
-            border: 1px solid #f5c6cb;
-            color: #721c24;
-        }}
-        .server-status {{
-            padding: 10px;
-            border-radius: 4px;
-            margin-bottom: 15px;
-            background-color: #fff3cd;
-            border: 1px solid #ffc107;
-        }}
-        .server-status.connected {{
-            background-color: #d4edda;
-            border: 1px solid #c3e6cb;
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        {nav_header}
-
-        <h1>🔴 Interactive Breakpoints</h1>
-
-        <div id="statusMessage" class="status-message"></div>
-
-        <div class="server-status" id="serverStatus">
-            <strong>Server Status:</strong> <span id="serverStatusText">Checking...</span>
-            <div style="margin-top: 5px; font-size: 0.9em;">
-                To enable interactive breakpoints, start the server with:
-                <code style="background: #f0f0f0; padding: 2px 6px; border-radius: 3px;">
-                    python -m cideldill_server
-                </code>
-            </div>
-        </div>
-
-        <h2>⏸️ Paused Executions</h2>
-        <div id="pausedExecutions">
-            <p style="color: #666;">No executions currently paused. Set breakpoints and run your code.</p>
-        </div>
-
-        <h2>Available Functions</h2>
-        <div id="functionsContainer">
-            {functions_html if functions_html else '<p>No functions found.</p>'}
-        </div>
-    </div>
-
-    <script>
-        const API_BASE = '{api_base}';
-        let updateInterval = null;
-
-        // Check server status
-        async function checkServerStatus() {{
-            try {{
-                const response = await fetch(`${{API_BASE}}/breakpoints`);
-                if (response.ok) {{
-                    document.getElementById('serverStatus').classList.add('connected');
-                    document.getElementById('serverStatusText').textContent = '🟢 Connected';
-                    loadBreakpoints();
-                    startPolling();
-                    return true;
-                }}
-            }} catch (e) {{
-                document.getElementById('serverStatus').classList.remove('connected');
-                document.getElementById('serverStatusText').textContent = '🔴 Not Connected';
-            }}
-            return false;
-        }}
-
-        // Load active breakpoints from server
-        async function loadBreakpoints() {{
-            try {{
-                const response = await fetch(`${{API_BASE}}/breakpoints`);
-                const data = await response.json();
-                
-                // Update UI to reflect active breakpoints
-                data.breakpoints.forEach(funcName => {{
-                    const card = document.querySelector(`[data-function="${{funcName}}"]`);
-                    if (card) {{
-                        card.classList.add('active-breakpoint');
-                        card.querySelector('.btn-set').style.display = 'none';
-                        card.querySelector('.btn-remove').style.display = 'inline-block';
-                        card.querySelector('.breakpoint-status-indicator').style.display = 'inline';
-                    }}
-                }});
-            }} catch (e) {{
-                console.error('Failed to load breakpoints:', e);
-            }}
-        }}
-
-        // Load paused executions
-        async function loadPausedExecutions() {{
-            try {{
-                const response = await fetch(`${{API_BASE}}/paused`);
-                const data = await response.json();
-                
-                const container = document.getElementById('pausedExecutions');
-                if (data.paused && data.paused.length > 0) {{
-                    container.innerHTML = data.paused.map(p => createPausedCard(p)).join('');
-                }} else {{
-                    container.innerHTML = '<p style="color: #666;">No executions currently paused.</p>';
-                }}
-            }} catch (e) {{
-                console.error('Failed to load paused executions:', e);
-            }}
-        }}
-
-        // Create HTML for a paused execution
-        function createPausedCard(paused) {{
-            const callData = paused.call_data;
-            const pausedAt = new Date(paused.paused_at * 1000).toLocaleTimeString();
-            
-            return `
-                <div class="paused-card">
-                    <div class="paused-header">
-                        ⏸️ ${{callData.function_name}}() - Paused at ${{pausedAt}}
-                    </div>
-                    <div class="call-data">
-                        <strong>Arguments:</strong>
-                        <pre>${{JSON.stringify(callData.args, null, 2)}}</pre>
-                    </div>
-                    <div class="actions">
-                        <button class="btn btn-continue" onclick="continueExecution('${{paused.id}}', 'continue')">
-                            ▶️ Continue
-                        </button>
-                        <button class="btn btn-skip" onclick="continueExecution('${{paused.id}}', 'skip')">
-                            ⏭️ Skip
-                        </button>
-                    </div>
-                </div>
-            `;
-        }}
-
-        // Set a breakpoint
-        async function setBreakpoint(funcName) {{
-            try {{
-                const response = await fetch(`${{API_BASE}}/breakpoints`, {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ function_name: funcName }})
-                }});
-                
-                if (response.ok) {{
-                    showMessage('Breakpoint set on ' + funcName, 'success');
-                    const card = document.querySelector(`[data-function="${{funcName}}"]`);
-                    card.classList.add('active-breakpoint');
-                    card.querySelector('.btn-set').style.display = 'none';
-                    card.querySelector('.btn-remove').style.display = 'inline-block';
-                    card.querySelector('.breakpoint-status-indicator').style.display = 'inline';
-                }}
-            }} catch (e) {{
-                showMessage('Failed to set breakpoint: ' + e.message, 'error');
-            }}
-        }}
-
-        // Remove a breakpoint
-        async function removeBreakpoint(funcName) {{
-            try {{
-                const response = await fetch(`${{API_BASE}}/breakpoints/${{funcName}}`, {{
-                    method: 'DELETE'
-                }});
-                
-                if (response.ok) {{
-                    showMessage('Breakpoint removed from ' + funcName, 'success');
-                    const card = document.querySelector(`[data-function="${{funcName}}"]`);
-                    card.classList.remove('active-breakpoint');
-                    card.querySelector('.btn-set').style.display = 'inline-block';
-                    card.querySelector('.btn-remove').style.display = 'none';
-                    card.querySelector('.breakpoint-status-indicator').style.display = 'none';
-                }}
-            }} catch (e) {{
-                showMessage('Failed to remove breakpoint: ' + e.message, 'error');
-            }}
-        }}
-
-        // Continue execution
-        async function continueExecution(pauseId, action) {{
-            try {{
-                const response = await fetch(`${{API_BASE}}/paused/${{pauseId}}/continue`, {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ action: action }})
-                }});
-                
-                if (response.ok) {{
-                    showMessage('Execution resumed', 'success');
-                    loadPausedExecutions();
-                }}
-            }} catch (e) {{
-                showMessage('Failed to continue execution: ' + e.message, 'error');
-            }}
-        }}
-
-        // Show status message
-        function showMessage(message, type) {{
-            const msgEl = document.getElementById('statusMessage');
-            msgEl.textContent = message;
-            msgEl.className = `status-message status-${{type}}`;
-            msgEl.style.display = 'block';
-            setTimeout(() => {{
-                msgEl.style.display = 'none';
-            }}, 3000);
-        }}
-
-        // Start polling for updates
-        function startPolling() {{
-            if (!updateInterval) {{
-                updateInterval = setInterval(() => {{
-                    loadPausedExecutions();
-                }}, 1000);  // Poll every second
-            }}
-        }}
-
-        // Stop polling
-        function stopPolling() {{
-            if (updateInterval) {{
-                clearInterval(updateInterval);
-                updateInterval = null;
-            }}
-        }}
-
-        // Initialize on page load
-        window.addEventListener('load', () => {{
-            checkServerStatus();
-        }});
-
-        // Clean up on page unload
-        window.addEventListener('beforeunload', () => {{
-            stopPolling();
-        }});
-    </script>
-</body>
-</html>
-"""
+    html = _render_template(
+        "breakpoints.html",
+        {
+            "NAV_HEADER": nav_header,
+            "API_BASE": json.dumps(api_base),
+            "FUNCTIONS_HTML": functions_html if functions_html else "<p>No functions found.</p>",
+        },
+    )
 
     breakpoints_path = output_dir / "breakpoints.html"
     breakpoints_path.write_text(html, encoding="utf-8")

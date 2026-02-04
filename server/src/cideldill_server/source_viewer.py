@@ -4,6 +4,7 @@ This module provides utilities to generate HTML views of source code files
 with syntax highlighting and navigation capabilities.
 """
 
+import html
 import json
 import os
 from datetime import datetime
@@ -13,6 +14,20 @@ from typing import Any, Optional
 from pygments import highlight
 from pygments.formatters import HtmlFormatter
 from pygments.lexers import get_lexer_by_name
+
+TEMPLATES_DIR = Path(__file__).with_name("templates")
+
+
+def _escape_text(value: object) -> str:
+    return html.escape(str(value), quote=True)
+
+
+def _render_template(name: str, replacements: dict[str, str]) -> str:
+    template_path = TEMPLATES_DIR / name
+    template = template_path.read_text(encoding="utf-8")
+    for key, value in replacements.items():
+        template = template.replace(f"__{key}__", value)
+    return template
 
 
 def generate_source_view(
@@ -130,117 +145,15 @@ def _generate_source_html(
     if highlight_line:
         title += f" (Line {highlight_line})"
 
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{title}</title>
-    <style>
-        body {{
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            margin: 0;
-            padding: 20px;
-            background-color: #f5f5f5;
-        }}
-        .container {{
-            max-width: 1400px;
-            margin: 0 auto;
-        }}
-        h1 {{
-            color: #333;
-            border-bottom: 3px solid #4CAF50;
-            padding-bottom: 10px;
-        }}
-        .source-container {{
-            background-color: white;
-            border: 1px solid #ddd;
-            border-radius: 5px;
-            padding: 20px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            overflow-x: auto;
-        }}
-        .context-section {{
-            background-color: white;
-            border: 1px solid #ddd;
-            border-radius: 5px;
-            padding: 20px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }}
-        .section {{
-            margin: 15px 0;
-        }}
-        .section-title {{
-            font-weight: bold;
-            color: #555;
-            margin-bottom: 8px;
-            font-size: 1.1em;
-        }}
-        .info-block {{
-            background-color: #f8f8f8;
-            border: 1px solid #e0e0e0;
-            border-radius: 3px;
-            padding: 12px;
-            font-family: 'Courier New', monospace;
-            font-size: 0.9em;
-        }}
-        .navigation {{
-            background-color: #e3f2fd;
-            padding: 15px;
-            border-radius: 5px;
-            margin-bottom: 20px;
-        }}
-        .nav-links {{
-            display: flex;
-            flex-wrap: wrap;
-            gap: 15px;
-            margin-top: 10px;
-        }}
-        .nav-link {{
-            padding: 8px 16px;
-            background-color: #2196F3;
-            color: white;
-            text-decoration: none;
-            border-radius: 4px;
-            font-size: 0.9em;
-        }}
-        .nav-link:hover {{
-            background-color: #1976D2;
-        }}
-        .nav-link:disabled {{
-            background-color: #ccc;
-            cursor: not-allowed;
-        }}
-        .callstack-frame {{
-            margin: 10px 0;
-            padding: 10px;
-            background-color: #f9f9f9;
-            border-left: 3px solid #ddd;
-        }}
-        /* Pygments syntax highlighting styles */
-        {css_styles}
-        .source .hll {{
-            background-color: #ffffcc;
-            display: block;
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>{title}</h1>
-
-        {context_html}
-
-        <div class="source-container">
-            {highlighted_code}
-        </div>
-    </div>
-</body>
-</html>
-"""
-    return html
+    return _render_template(
+        "source_view.html",
+        {
+            "TITLE": _escape_text(title),
+            "CONTEXT_HTML": context_html,
+            "HIGHLIGHTED_CODE": highlighted_code,
+            "CSS_STYLES": css_styles,
+        },
+    )
 
 
 def _generate_context_section(
@@ -256,8 +169,8 @@ def _generate_context_section(
     Returns:
         HTML string for the context section.
     """
-    html = '<div class="context-section">\n'
-    html += '    <div class="section-title">Call Context</div>\n'
+    html_out = '<div class="context-section">\n'
+    html_out += '    <div class="section-title">Call Context</div>\n'
 
     # Timestamp and Parameters
     if "timestamp" in call_record:
@@ -265,47 +178,50 @@ def _generate_context_section(
         dt = datetime.fromtimestamp(timestamp)
         timestamp_str = dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
-        html += f"""
+        html_out += f"""
     <div class="section">
         <div class="section-title">Timestamp:</div>
-        <div class="info-block">{timestamp_str}</div>
+        <div class="info-block">{_escape_text(timestamp_str)}</div>
     </div>
 """
 
     if "args" in call_record:
         args_str = json.dumps(call_record["args"], indent=2)
-        html += f"""
+        html_out += f"""
     <div class="section">
         <div class="section-title">Parameters:</div>
-        <div class="info-block">{args_str}</div>
+        <div class="info-block">{_escape_text(args_str)}</div>
     </div>
 """
 
     # Callstack
     if "callstack" in call_record and call_record["callstack"]:
-        html += """
+        html_out += """
     <div class="section">
         <div class="section-title">Call Stack:</div>
 """
         for i, frame in enumerate(call_record["callstack"]):
-            html += f"""
+            html_out += f"""
         <div class="callstack-frame">
-            <strong>Frame {i}:</strong> {frame.get('function', 'N/A')}<br>
-            <strong>File:</strong> {frame.get('filename', 'N/A')}<br>
-            <strong>Line:</strong> {frame.get('lineno', 'N/A')}<br>
+            <strong>Frame {i}:</strong> {_escape_text(frame.get('function', 'N/A'))}<br>
+            <strong>File:</strong> {_escape_text(frame.get('filename', 'N/A'))}<br>
+            <strong>Line:</strong> {_escape_text(frame.get('lineno', 'N/A'))}<br>
 """
-            if frame.get('code_context'):
-                code_ctx = frame['code_context']
-                html += f"            <strong>Code:</strong> <code>{code_ctx}</code><br>\n"
-            html += "        </div>\n"
-        html += "    </div>\n"
+            if frame.get("code_context"):
+                code_ctx = frame["code_context"]
+                html_out += (
+                    "            <strong>Code:</strong> <code>"
+                    f"{_escape_text(code_ctx)}</code><br>\n"
+                )
+            html_out += "        </div>\n"
+        html_out += "    </div>\n"
 
     # Navigation
     if db_path and "id" in call_record:
-        html += _generate_navigation_section(call_record["id"], db_path)
+        html_out += _generate_navigation_section(call_record["id"], db_path)
 
-    html += "</div>\n"
-    return html
+    html_out += "</div>\n"
+    return html_out
 
 
 def _generate_navigation_section(call_id: int, db_path: str) -> str:
@@ -327,7 +243,7 @@ def _generate_navigation_section(call_id: int, db_path: str) -> str:
         store.close()
         return ""
 
-    html = """
+    html_out = """
     <div class="navigation">
         <div class="section-title">Navigation</div>
         <div class="nav-links">
@@ -337,9 +253,12 @@ def _generate_navigation_section(call_id: int, db_path: str) -> str:
     prev_time = store.get_previous_call_by_timestamp(call_id)
     if prev_time:
         link = _create_source_link(prev_time, db_path)
-        html += f'            <a href="{link}" class="nav-link">← Previous (Timestamp)</a>\n'
+        html_out += (
+            f'            <a href="{_escape_text(link)}" '
+            'class="nav-link">← Previous (Timestamp)</a>\n'
+        )
     else:
-        html += (
+        html_out += (
             '            <span class="nav-link" style="background-color: #ccc;">'
             "← Previous (Timestamp)</span>\n"
         )
@@ -348,9 +267,12 @@ def _generate_navigation_section(call_id: int, db_path: str) -> str:
     next_time = store.get_next_call_by_timestamp(call_id)
     if next_time:
         link = _create_source_link(next_time, db_path)
-        html += f'            <a href="{link}" class="nav-link">Next (Timestamp) →</a>\n'
+        html_out += (
+            f'            <a href="{_escape_text(link)}" '
+            'class="nav-link">Next (Timestamp) →</a>\n'
+        )
     else:
-        html += (
+        html_out += (
             '            <span class="nav-link" style="background-color: #ccc;">'
             "Next (Timestamp) →</span>\n"
         )
@@ -359,35 +281,41 @@ def _generate_navigation_section(call_id: int, db_path: str) -> str:
     prev_func = store.get_previous_call_of_same_function(call_id)
     if prev_func:
         link = _create_source_link(prev_func, db_path)
-        func_name = current_record.get('function_name', 'function')
-        html += f'            <a href="{link}" class="nav-link">← Previous {func_name}()</a>\n'
+        func_name = current_record.get("function_name", "function")
+        html_out += (
+            f'            <a href="{_escape_text(link)}" class="nav-link">'
+            f"← Previous {_escape_text(func_name)}()</a>\n"
+        )
     else:
-        func_name = current_record.get('function_name', 'function')
-        html += (
+        func_name = current_record.get("function_name", "function")
+        html_out += (
             f'            <span class="nav-link" style="background-color: #ccc;">'
-            f"← Previous {func_name}()</span>\n"
+            f"← Previous {_escape_text(func_name)}()</span>\n"
         )
 
     # Next same function
     next_func = store.get_next_call_of_same_function(call_id)
     if next_func:
         link = _create_source_link(next_func, db_path)
-        func_name = current_record.get('function_name', 'function')
-        html += f'            <a href="{link}" class="nav-link">Next {func_name}() →</a>\n'
+        func_name = current_record.get("function_name", "function")
+        html_out += (
+            f'            <a href="{_escape_text(link)}" class="nav-link">'
+            f"Next {_escape_text(func_name)}() →</a>\n"
+        )
     else:
-        func_name = current_record.get('function_name', 'function')
-        html += (
+        func_name = current_record.get("function_name", "function")
+        html_out += (
             f'            <span class="nav-link" style="background-color: #ccc;">'
-            f"Next {func_name}() →</span>\n"
+            f"Next {_escape_text(func_name)}() →</span>\n"
         )
 
-    html += """
+    html_out += """
         </div>
     </div>
 """
 
     store.close()
-    return html
+    return html_out
 
 
 def _create_source_link(call_record: dict[str, Any], db_path: str) -> str:
@@ -426,7 +354,11 @@ def generate_source_link_html(
         HTML anchor tag as a string.
     """
     link_url = _create_source_link(call_record, db_path)
-    return f'<a href="{link_url}" style="color: #2196F3; text-decoration: none;">{link_text}</a>'
+    return (
+        f'<a href="{_escape_text(link_url)}" '
+        'style="color: #2196F3; text-decoration: none;">'
+        f"{_escape_text(link_text)}</a>"
+    )
 
 
 def _generate_frame_html(
@@ -479,194 +411,52 @@ def _generate_frame_html(
     if highlight_line:
         title += f" (Line {highlight_line})"
 
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{title}</title>
-    <style>
-        body {{
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            margin: 0;
-            padding: 20px;
-            background-color: #f5f5f5;
-        }}
-        .container {{
-            max-width: 1400px;
-            margin: 0 auto;
-        }}
-        h1 {{
-            color: #333;
-            border-bottom: 3px solid #4CAF50;
-            padding-bottom: 10px;
-        }}
-        .source-container {{
-            background-color: white;
-            border: 1px solid #ddd;
-            border-radius: 5px;
-            padding: 20px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            overflow-x: auto;
-        }}
-        .context-section {{
-            background-color: white;
-            border: 1px solid #ddd;
-            border-radius: 5px;
-            padding: 20px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }}
-        .section {{
-            margin: 15px 0;
-        }}
-        .section-title {{
-            font-weight: bold;
-            color: #555;
-            margin-bottom: 8px;
-            font-size: 1.1em;
-        }}
-        .info-block {{
-            background-color: #f8f8f8;
-            border: 1px solid #e0e0e0;
-            border-radius: 3px;
-            padding: 12px;
-            font-family: 'Courier New', monospace;
-            font-size: 0.9em;
-        }}
-        .navigation {{
-            background-color: #e3f2fd;
-            padding: 15px;
-            border-radius: 5px;
-            margin-bottom: 20px;
-        }}
-        .nav-links {{
-            display: flex;
-            flex-wrap: wrap;
-            gap: 15px;
-            margin-top: 10px;
-        }}
-        .nav-link {{
-            padding: 8px 16px;
-            background-color: #2196F3;
-            color: white;
-            text-decoration: none;
-            border-radius: 4px;
-            font-size: 0.9em;
-        }}
-        .nav-link:hover {{
-            background-color: #1976D2;
-        }}
-        .nav-link:disabled {{
-            background-color: #ccc;
-            cursor: not-allowed;
-        }}
-        .frame-info {{
-            margin: 10px 0;
-            padding: 10px;
-            background-color: #fff3cd;
-            border-left: 3px solid #ffc107;
-        }}
-        /* Pygments syntax highlighting styles */
-        {css_styles}
-        .source .hll {{
-            background-color: #ffffcc;
-            display: block;
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>{title}</h1>
-
-        {context_html}
-
-        <div class="source-container">
-            {highlighted_code}
-        </div>
-    </div>
-</body>
-</html>
-"""
-    return html
+    return _render_template(
+        "frame_view.html",
+        {
+            "TITLE": _escape_text(title),
+            "CONTEXT_HTML": context_html,
+            "HIGHLIGHTED_CODE": highlighted_code,
+            "CSS_STYLES": css_styles,
+        },
+    )
 
 
 def _generate_frame_context_section(
-    call_record: dict[str, Any],
-    frame_index: int,
-    db_path: Optional[str] = None,
+    call_record: dict[str, Any], frame_index: int, db_path: Optional[str] = None
 ) -> str:
-    """Generate the context section showing frame information.
-
-    Args:
-        call_record: Call record containing context information.
-        frame_index: Index of the frame in the callstack.
-        db_path: Optional database path for generating navigation links.
-
-    Returns:
-        HTML string for the frame context section.
-    """
-    html = '<div class="context-section">\n'
-    html += f'    <div class="section-title">Frame {frame_index} Context</div>\n'
+    """Generate context section for frame view."""
+    html_out = '<div class="context-section">\n'
+    html_out += f'    <div class="section-title">Frame {frame_index} Context</div>\n'
 
     callstack = call_record.get("callstack", [])
-    if frame_index >= len(callstack):
-        html += "</div>\n"
-        return html
-
-    frame = callstack[frame_index]
-
-    # Frame details
-    html += f"""
-    <div class="frame-info">
-        <strong>Function:</strong> {frame.get('function', 'N/A')}<br>
-        <strong>File:</strong> {frame.get('filename', 'N/A')}<br>
-        <strong>Line:</strong> {frame.get('lineno', 'N/A')}<br>
-"""
-    if frame.get('code_context'):
-        code_ctx = frame['code_context']
-        html += f"        <strong>Code:</strong> <code>{code_ctx}</code><br>\n"
-    html += "    </div>\n"
-
-    # Parent frame (caller)
-    if frame_index + 1 < len(callstack):
-        parent_frame = callstack[frame_index + 1]
-        html += """
+    if frame_index < len(callstack):
+        frame = callstack[frame_index]
+        html_out += f"""
     <div class="section">
-        <div class="section-title">Parent Frame (Caller):</div>
-        <div class="info-block">
+        <div class="section-title">Function:</div>
+        <div class="info-block">{_escape_text(frame.get('function', 'N/A'))}</div>
+    </div>
+    <div class="section">
+        <div class="section-title">File:</div>
+        <div class="info-block">{_escape_text(frame.get('filename', 'N/A'))}</div>
+    </div>
+    <div class="section">
+        <div class="section-title">Line:</div>
+        <div class="info-block">{_escape_text(frame.get('lineno', 'N/A'))}</div>
+    </div>
 """
-        func_name = parent_frame.get('function', 'N/A')
-        html += f"            <strong>Function:</strong> {func_name}<br>\n"
-        file_name = parent_frame.get('filename', 'N/A')
-        html += f"            <strong>File:</strong> {file_name}<br>\n"
-        line_no = parent_frame.get('lineno', 'N/A')
-        html += f"            <strong>Line:</strong> {line_no}<br>\n"
-        if parent_frame.get('code_context'):
-            parent_code_ctx = parent_frame['code_context']
-            html += f"            <strong>Code:</strong> <code>{parent_code_ctx}</code><br>\n"
-        # Add link to parent frame
-        if db_path and call_record.get('id'):
-            parent_link = f"frame_{call_record['id']}_{frame_index + 1}.html"
-            link_style = "color: #2196F3; text-decoration: none;"
-            html += (
-                f'            <a href="{parent_link}" '
-                f'style="{link_style}">[View Parent Frame]</a><br>\n'
-            )
-        html += """        </div>
+        if frame.get("code_context"):
+            html_out += f"""
+    <div class="section">
+        <div class="section-title">Code Context:</div>
+        <div class="info-block">{_escape_text(frame.get('code_context'))}</div>
     </div>
 """
 
-    # Arguments (if this is the first frame - the actual function call)
-    if frame_index == 0 and "args" in call_record:
-        args_str = json.dumps(call_record["args"], indent=2)
-        html += f"""
-    <div class="section">
-        <div class="section-title">Function Arguments:</div>
-        <div class="info-block">{args_str}</div>
-    </div>
-"""
+    # Navigation
+    if db_path and "id" in call_record:
+        html_out += _generate_navigation_section(call_record["id"], db_path)
 
-    html += "</div>\n"
-    return html
+    html_out += "</div>\n"
+    return html_out

@@ -41,6 +41,7 @@ from pathlib import Path
 # Add src to path if running from repo
 script_dir = Path(__file__).parent
 repo_root = script_dir.parent.parent
+sys.path.insert(0, str(repo_root))
 sys.path.insert(0, str(repo_root / "client" / "src"))
 sys.path.insert(0, str(repo_root / "server" / "src"))
 
@@ -113,9 +114,9 @@ def wait_for_server(port, max_attempts=30, delay=0.5):
     Returns:
         Actual port number if server is ready, None otherwise
     """
-    from cideldill_server.port_discovery import read_port_file
+    from cideldill_server.port_discovery import get_discovery_file_path, read_port_file
 
-    port_file = Path.home() / ".cideldill" / "port"
+    port_file = get_discovery_file_path()
 
     for _ in range(max_attempts):
         actual_port = read_port_file(port_file)
@@ -239,7 +240,9 @@ def main():
         return 1
 
     # Remove any stale port discovery file to avoid connecting to an old server.
-    port_file = Path.home() / ".cideldill" / "port"
+    from cideldill_server.port_discovery import get_discovery_file_path
+
+    port_file = get_discovery_file_path()
     try:
         port_file.unlink(missing_ok=True)
     except OSError as exc:

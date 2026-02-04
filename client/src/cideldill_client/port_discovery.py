@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -12,6 +13,12 @@ def get_discovery_file_path() -> Path:
     Returns:
         Path to ~/.cideldill/port
     """
+    env_file = os.getenv("CIDELDILL_PORT_FILE")
+    if env_file:
+        return Path(env_file).expanduser()
+    env_dir = os.getenv("CIDELDILL_HOME")
+    if env_dir:
+        return Path(env_dir).expanduser() / "port"
     return Path.home() / ".cideldill" / "port"
 
 

@@ -44,8 +44,19 @@ def _find_free_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def _skip_if_socket_unavailable() -> None:
+    import socket
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+    except PermissionError:
+        pytest.skip("Socket bind not permitted in this environment")
+
+
 def test_server_writes_port_to_discovery_file() -> None:
     """Test that server writes its port to the discovery file."""
+    _skip_if_socket_unavailable()
     with tempfile.TemporaryDirectory() as tmpdir:
         port_file = Path(tmpdir) / "port"
         manager = BreakpointManager()
@@ -64,10 +75,14 @@ def test_server_writes_port_to_discovery_file() -> None:
 
 def test_server_uses_specified_port_if_available() -> None:
     """Test that server uses specified port if available."""
+    _skip_if_socket_unavailable()
     with tempfile.TemporaryDirectory() as tmpdir:
         port_file = Path(tmpdir) / "port"
         manager = BreakpointManager()
-        requested_port = _find_free_port()
+        try:
+            requested_port = _find_free_port()
+        except PermissionError:
+            pytest.skip("Socket bind not permitted in this environment")
         server = BreakpointServer(manager, port=requested_port, port_file=port_file)
 
         thread = _start_server(server)
@@ -81,13 +96,17 @@ def test_server_uses_specified_port_if_available() -> None:
 
 def test_server_falls_back_if_port_occupied() -> None:
     """Test that server falls back to free port if requested port is occupied."""
+    _skip_if_socket_unavailable()
     with tempfile.TemporaryDirectory() as tmpdir:
         port_file = Path(tmpdir) / "port"
         port_file2 = Path(tmpdir) / "port2"
         manager1 = BreakpointManager()
         manager2 = BreakpointManager()
 
-        requested_port = _find_free_port()
+        try:
+            requested_port = _find_free_port()
+        except PermissionError:
+            pytest.skip("Socket bind not permitted in this environment")
         server1 = BreakpointServer(manager1, port=requested_port, port_file=port_file)
         thread1 = _start_server(server1)
         server2 = BreakpointServer(manager2, port=requested_port, port_file=port_file2)

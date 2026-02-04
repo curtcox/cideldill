@@ -138,8 +138,6 @@ class BreakpointManager:
             return self._breakpoint_replacements.get(function_name)
 
     def set_breakpoint_behavior(self, function_name: str, behavior: str) -> None:
-        if behavior == "continue":
-            behavior = "go"
         if behavior not in {"stop", "go", "yield"}:
             raise ValueError("Behavior must be 'stop', 'go', or 'yield'")
         with self._lock:
@@ -151,8 +149,6 @@ class BreakpointManager:
                 self._breakpoint_behaviors[function_name] = behavior
 
     def set_after_breakpoint_behavior(self, function_name: str, behavior: str) -> None:
-        if behavior == "continue":
-            behavior = "go"
         if behavior not in {"stop", "go", "yield"}:
             raise ValueError("Behavior must be 'stop', 'go', or 'yield'")
         with self._lock:
@@ -265,8 +261,6 @@ class BreakpointManager:
         Args:
             behavior: Either "stop" (pause execution) or "go" (log only).
         """
-        if behavior == "continue":
-            behavior = "go"
         if behavior not in {"stop", "go"}:
             raise ValueError("Behavior must be 'stop' or 'go'")
         with self._lock:
