@@ -1,11 +1,11 @@
 """Unit tests for with_debug API."""
 
 import pytest
+import requests
 
 pytest.importorskip("requests")
 
 from cideldill_client.debug_proxy import AsyncDebugProxy, DebugProxy
-from cideldill_client.exceptions import DebugServerError
 from cideldill_client.with_debug import configure_debug, with_debug
 
 
@@ -61,18 +61,25 @@ def test_with_debug_invalid_string_raises_when_on(monkeypatch) -> None:
         with_debug("maybe")
 
 
-def test_with_debug_on_raises_when_unverified(monkeypatch) -> None:
-    def fail_check(self) -> None:
-        raise DebugServerError("unreachable")
+def test_with_debug_on_exits_with_help_when_unverified(monkeypatch, capsys) -> None:
+    def raise_connection_error(*_args, **_kwargs) -> None:
+        raise requests.exceptions.ConnectionError("connection refused")
 
     monkeypatch.setattr(
-        "cideldill_client.debug_client.DebugClient.check_connection",
-        fail_check,
+        "cideldill_client.debug_client.requests.get",
+        raise_connection_error,
     )
     configure_debug(server_url="http://localhost:5000")
 
-    with pytest.raises(DebugServerError, match="unreachable"):
+    with pytest.raises(SystemExit) as excinfo:
         with_debug("ON")
+
+    assert excinfo.value.code == 1
+    output = capsys.readouterr().err
+    assert "Failed to contact breakpoint server" in output
+    assert "Most likely causes" in output
+    assert "Potential fixes" in output
+    assert "connection refused" in output
 
 
 def test_with_debug_wraps_object_when_on(monkeypatch) -> None:

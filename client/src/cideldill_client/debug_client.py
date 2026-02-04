@@ -15,8 +15,8 @@ import requests
 from .exceptions import (
     DebugCIDNotFoundError,
     DebugProtocolError,
-    DebugServerError,
 )
+from .server_failure import exit_with_server_failure
 from .serialization import Serializer
 
 logger = logging.getLogger(__name__)
@@ -53,14 +53,15 @@ class DebugClient:
                 f"{self._server_url}/api/breakpoints", timeout=self._timeout_s
             )
         except requests.RequestException as exc:
-            raise DebugServerError(
-                self._server_error_message("Debug server is unreachable")
-            ) from exc
+            exit_with_server_failure(
+                "Debug server is unreachable",
+                self._server_url,
+                exc,
+            )
         if response.status_code >= 400:
-            raise DebugServerError(
-                self._server_error_message(
-                    f"Debug server error: {response.status_code} {response.text}"
-                )
+            exit_with_server_failure(
+                f"Debug server error: {response.status_code} {response.text}",
+                self._server_url,
             )
 
 
@@ -74,8 +75,9 @@ class DebugClient:
             payload["signature"] = signature
         response = self._post_json("/api/breakpoints", payload)
         if response.get("status") != "ok":
-            raise DebugServerError(
-                self._server_error_message("Debug server failed to register breakpoint")
+            exit_with_server_failure(
+                "Debug server failed to register breakpoint",
+                self._server_url,
             )
 
     def register_function(self, function_name: str, signature: str | None = None) -> None:
@@ -85,8 +87,9 @@ class DebugClient:
             payload["signature"] = signature
         response = self._post_json("/api/functions", payload)
         if response.get("status") != "ok":
-            raise DebugServerError(
-                self._server_error_message("Debug server failed to register function")
+            exit_with_server_failure(
+                "Debug server failed to register function",
+                self._server_url,
             )
 
     def record_call_start(
@@ -146,10 +149,9 @@ class DebugClient:
         if response.get("action"):
             return self._require_action(response)
         if response.get("status") != "ok":
-            raise DebugServerError(
-                self._server_error_message(
-                    "Debug server failed to acknowledge completion"
-                )
+            exit_with_server_failure(
+                "Debug server failed to acknowledge completion",
+                self._server_url,
             )
         return None
 
@@ -162,19 +164,7 @@ class DebugClient:
 
         deadline = time.time() + (timeout_ms / 1000.0)
         while time.time() < deadline:
-            try:
-                response = self._get_json(poll_url)
-            except DebugServerError as exc:
-                if isinstance(exc.__cause__, requests.exceptions.Timeout):
-                    logger.warning(
-                        "Debug server poll timed out (poll_url=%s timeout_s=%.1f). "
-                        "Continuing to wait...",
-                        poll_url,
-                        self._timeout_s,
-                    )
-                    time.sleep(interval_ms / 1000.0)
-                    continue
-                raise
+            response = self._get_json(poll_url)
             status = response.get("status")
             if status == "waiting":
                 time.sleep(interval_ms / 1000.0)
@@ -198,19 +188,7 @@ class DebugClient:
 
         deadline = time.time() + (timeout_ms / 1000.0)
         while time.time() < deadline:
-            try:
-                response = self._get_json(poll_url)
-            except DebugServerError as exc:
-                if isinstance(exc.__cause__, requests.exceptions.Timeout):
-                    logger.warning(
-                        "Debug server poll timed out (poll_url=%s timeout_s=%.1f). "
-                        "Continuing to wait...",
-                        poll_url,
-                        self._timeout_s,
-                    )
-                    await asyncio.sleep(interval_ms / 1000.0)
-                    continue
-                raise
+            response = self._get_json(poll_url)
             status = response.get("status")
             if status == "waiting":
                 await asyncio.sleep(interval_ms / 1000.0)
@@ -343,19 +321,22 @@ class DebugClient:
                 )
                 time.sleep(self._retry_sleep_s)
             except requests.RequestException as exc:
-                raise DebugServerError(
-                    self._server_error_message("Debug server request failed")
-                ) from exc
+                exit_with_server_failure(
+                    "Debug server request failed",
+                    self._server_url,
+                    exc,
+                )
         else:
-            raise DebugServerError(
-                self._server_error_message("Debug server request failed")
-            ) from last_exc
+            exit_with_server_failure(
+                "Debug server request failed",
+                self._server_url,
+                last_exc,
+            )
 
         if response.status_code >= 400:
-            raise DebugServerError(
-                self._server_error_message(
-                    f"Debug server error: {response.status_code} {response.text}"
-                )
+            exit_with_server_failure(
+                f"Debug server error: {response.status_code} {response.text}",
+                self._server_url,
             )
         try:
             return response.json()
@@ -385,13 +366,17 @@ class DebugClient:
                 )
                 time.sleep(self._retry_sleep_s)
             except requests.RequestException as exc:
-                raise DebugServerError(
-                    self._server_error_message("Debug server request failed")
-                ) from exc
+                exit_with_server_failure(
+                    "Debug server request failed",
+                    self._server_url,
+                    exc,
+                )
         else:
-            raise DebugServerError(
-                self._server_error_message("Debug server request failed")
-            ) from last_exc
+            exit_with_server_failure(
+                "Debug server request failed",
+                self._server_url,
+                last_exc,
+            )
 
         try:
             data = response.json()
@@ -399,10 +384,9 @@ class DebugClient:
             raise DebugProtocolError("Malformed JSON response") from exc
 
         if response.status_code >= 400 and data.get("error") != "cid_not_found":
-            raise DebugServerError(
-                self._server_error_message(
-                    f"Debug server error: {response.status_code} {response.text}"
-                )
+            exit_with_server_failure(
+                f"Debug server error: {response.status_code} {response.text}",
+                self._server_url,
             )
         return data
 
@@ -428,18 +412,21 @@ class DebugClient:
                 )
                 time.sleep(self._retry_sleep_s)
             except requests.RequestException as exc:
-                raise DebugServerError(
-                    self._server_error_message("Debug server request failed")
-                ) from exc
-        else:
-            raise DebugServerError(
-                self._server_error_message("Debug server request failed")
-            ) from last_exc
-        if response.status_code >= 400:
-            raise DebugServerError(
-                self._server_error_message(
-                    f"Debug server error: {response.status_code} {response.text}"
+                exit_with_server_failure(
+                    "Debug server request failed",
+                    self._server_url,
+                    exc,
                 )
+        else:
+            exit_with_server_failure(
+                "Debug server request failed",
+                self._server_url,
+                last_exc,
+            )
+        if response.status_code >= 400:
+            exit_with_server_failure(
+                f"Debug server error: {response.status_code} {response.text}",
+                self._server_url,
             )
         try:
             return response.json()
@@ -458,6 +445,3 @@ class DebugClient:
             self._object_cache[cid] = obj
             if len(self._object_cache) > self._object_cache_limit:
                 self._object_cache.popitem(last=False)
-
-    def _server_error_message(self, message: str) -> str:
-        return f"{message} (server_url={self._server_url})"

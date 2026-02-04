@@ -17,6 +17,7 @@ from .exceptions import DebugServerError
 from .function_registry import compute_signature
 from .function_registry import register_function as register_local_function
 from .port_discovery import read_port_from_discovery_file
+from .server_failure import exit_with_server_failure
 
 
 @dataclass
@@ -115,11 +116,11 @@ def _set_debug_mode(enabled: bool) -> DebugInfo:
     client = DebugClient(server_url)
     try:
         client.check_connection()
-    except DebugServerError:
+    except DebugServerError as exc:
         with _state_lock:
             _state.enabled = False
             _state.client = None
-        raise
+        exit_with_server_failure(str(exc), server_url, exc)
 
     with _state_lock:
         _state.client = client
