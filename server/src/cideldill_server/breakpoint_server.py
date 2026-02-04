@@ -249,11 +249,36 @@ HTML_TEMPLATE = """
             padding: 20px;
             text-align: center;
         }
+        .nav-links {
+            display: flex;
+            gap: 12px;
+            margin: 10px 0 16px;
+        }
+        .nav-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 12px;
+            border-radius: 999px;
+            border: 1px solid #d0d7de;
+            background: white;
+            color: #1976D2;
+            font-weight: 600;
+            text-decoration: none;
+        }
+        .nav-link:hover {
+            border-color: #1976D2;
+            text-decoration: none;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>🛑 Interactive Breakpoints</h1>
+
+        <div class="nav-links">
+            <a class="nav-link" href="/call-tree">🌲 Call Tree</a>
+        </div>
 
         <div id="statusMessage" class="status-message"></div>
 
@@ -913,10 +938,573 @@ class BreakpointServer:
                 return f"<unavailable: {type(exc).__name__}>"
             return _safe_repr(value)
 
+        def _normalize_stack_trace(call_site: object) -> list[dict[str, object]]:
+            if not isinstance(call_site, dict):
+                return []
+            stack_trace = call_site.get("stack_trace") or []
+            if not isinstance(stack_trace, list):
+                return []
+            return [
+                frame for frame in stack_trace
+                if isinstance(frame, dict)
+            ]
+
+        def _stack_signature(stack_trace: list[dict[str, object]]) -> tuple[tuple[object, object, object], ...]:
+            signature: list[tuple[object, object, object]] = []
+            for frame in stack_trace:
+                signature.append(
+                    (
+                        frame.get("filename"),
+                        frame.get("lineno"),
+                        frame.get("function"),
+                    )
+                )
+            return tuple(signature)
+
+        def _format_ts(ts: float | int | None) -> str:
+            if not ts:
+                return "Unknown"
+            try:
+                return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(ts)))
+            except Exception:
+                return "Unknown"
+
+        def _process_key(process_pid: object, process_start_time: object) -> str | None:
+            if process_pid is None or process_start_time is None:
+                return None
+            try:
+                pid = int(process_pid)
+                start = float(process_start_time)
+            except (TypeError, ValueError):
+                return None
+            return f"{start:.6f}+{pid}"
+
         @self.app.route('/')
         def index():
             """Serve the main web UI."""
             return render_template_string(HTML_TEMPLATE)
+
+        @self.app.route('/call-tree', methods=['GET'])
+        def call_tree_index():
+            """List processes with recorded calls."""
+            records = self.manager.get_call_records()
+            summaries: dict[str, dict[str, object]] = {}
+            for record in records:
+                process_key = record["process_key"]
+                process_pid = record["process_pid"]
+                process_start_time = record["process_start_time"]
+                started_at = record.get("started_at") or 0
+                completed_at = record.get("completed_at") or started_at
+
+                summary = summaries.get(process_key)
+                if summary is None:
+                    summary = {
+                        "process_key": process_key,
+                        "process_pid": process_pid,
+                        "process_start_time": process_start_time,
+                        "call_count": 0,
+                        "first_call": started_at,
+                        "last_call": completed_at,
+                    }
+                    summaries[process_key] = summary
+
+                summary["call_count"] = int(summary.get("call_count", 0)) + 1
+                summary["first_call"] = min(
+                    float(summary.get("first_call", started_at) or started_at),
+                    float(started_at or 0),
+                )
+                summary["last_call"] = max(
+                    float(summary.get("last_call", completed_at) or completed_at),
+                    float(completed_at or 0),
+                )
+
+            processes = sorted(
+                summaries.values(),
+                key=lambda item: float(item.get("process_start_time") or 0),
+            )
+
+            rows: list[str] = []
+            for item in processes:
+                process_key = str(item.get("process_key"))
+                pid = item.get("process_pid", "unknown")
+                start_time = item.get("process_start_time")
+                start_text = _format_ts(start_time)
+                first_call = _format_ts(item.get("first_call"))
+                last_call = _format_ts(item.get("last_call"))
+                call_count = item.get("call_count", 0)
+                link = f"/call-tree/{quote(process_key, safe='')}"
+                rows.append(
+                    "<tr>"
+                    f"<td class='mono'>{html.escape(start_text)}</td>"
+                    f"<td class='mono'>{html.escape(str(pid))}</td>"
+                    f"<td class='mono'>{call_count}</td>"
+                    f"<td class='mono'>{html.escape(first_call)}</td>"
+                    f"<td class='mono'>{html.escape(last_call)}</td>"
+                    f"<td><a class='row-link' href='{link}'>View call tree</a></td>"
+                    "</tr>"
+                )
+
+            empty_state = "<div class='empty-state'>No processes recorded yet.</div>"
+            table_html = (
+                "<table>"
+                "<thead><tr>"
+                "<th>Process Start</th>"
+                "<th>PID</th>"
+                "<th>Calls</th>"
+                "<th>First Call</th>"
+                "<th>Last Call</th>"
+                "<th></th>"
+                "</tr></thead>"
+                "<tbody>"
+                + "".join(rows)
+                + "</tbody></table>"
+            ) if rows else empty_state
+
+            template = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Call Trees</title>
+  <style>
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; background-color: #f5f5f5; }
+    .container { max-width: 1200px; margin: 0 auto; }
+    h1 { color: #333; border-bottom: 3px solid #4CAF50; padding-bottom: 10px; }
+    .back-link { display: inline-block; margin-bottom: 20px; color: #1976D2; text-decoration: none; }
+    .back-link:hover { text-decoration: underline; }
+    table { width: 100%; border-collapse: collapse; background: white; border: 1px solid #ddd; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.06); }
+    thead th { text-align: left; background: #fafafa; border-bottom: 1px solid #eee; padding: 12px 10px; font-size: 0.9em; color: #444; }
+    tbody td { padding: 10px; border-bottom: 1px solid #f0f0f0; vertical-align: top; font-size: 0.92em; color: #222; }
+    tbody tr:hover { background: #f7fbff; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.92em; white-space: pre-wrap; word-break: break-word; }
+    .row-link { color: #1976D2; text-decoration: none; font-weight: 600; }
+    .row-link:hover { text-decoration: underline; }
+    .empty-state { text-align: center; padding: 40px; color: #666; font-style: italic; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <a href="/" class="back-link">← Back to Breakpoints</a>
+    <h1>Call Trees</h1>
+    <p>Recorded processes ordered by start time.</p>
+    @@TABLE_HTML@@
+  </div>
+</body>
+</html>"""
+
+            return template.replace("@@TABLE_HTML@@", table_html)
+
+        @self.app.route('/call-tree/<process_key>', methods=['GET'])
+        def call_tree_detail(process_key: str):
+            """Show call tree for a specific process."""
+            records = [
+                record for record in self.manager.get_call_records()
+                if record.get("process_key") == process_key
+            ]
+            if not records:
+                return (
+                    "<h1>Call tree not found.</h1>"
+                    "<p>No calls recorded for this process.</p>"
+                ), 404
+
+            nodes: list[dict[str, object]] = []
+            stack_signatures: dict[str, tuple[tuple[object, object, object], ...]] = {}
+
+            for idx, record in enumerate(records):
+                call_id = record.get("call_id") or f"call-{idx}"
+                call_site = record.get("call_site") or {}
+                stack_trace = _normalize_stack_trace(call_site)
+                started_at = call_site.get("timestamp") or record.get("started_at") or 0
+                completed_at = record.get("completed_at") or started_at or 0
+                duration = None
+                if started_at and completed_at:
+                    try:
+                        duration = max(0.0, float(completed_at) - float(started_at))
+                    except Exception:
+                        duration = None
+
+                node = {
+                    "id": str(call_id),
+                    "method_name": record.get("method_name"),
+                    "started_at": started_at,
+                    "completed_at": completed_at,
+                    "duration": duration,
+                    "status": record.get("status"),
+                    "pretty_args": record.get("pretty_args", []),
+                    "pretty_kwargs": record.get("pretty_kwargs", {}),
+                    "pretty_result": record.get("pretty_result"),
+                    "exception": record.get("exception"),
+                    "signature": record.get("signature"),
+                    "call_site": call_site,
+                    "stack_trace": stack_trace,
+                }
+                nodes.append(node)
+                stack_signatures[str(call_id)] = _stack_signature(stack_trace)
+
+            nodes_by_id = {node["id"]: node for node in nodes}  # type: ignore[index]
+            parent_by_id: dict[str, str | None] = {node["id"]: None for node in nodes}  # type: ignore[index]
+            for node in nodes:
+                node_id = node["id"]  # type: ignore[index]
+                signature = stack_signatures.get(node_id, ())
+                if not signature:
+                    continue
+                parent_id = None
+                parent_len = -1
+                for other in nodes:
+                    other_id = other["id"]  # type: ignore[index]
+                    if other_id == node_id:
+                        continue
+                    other_sig = stack_signatures.get(other_id, ())
+                    if not other_sig:
+                        continue
+                    if len(other_sig) >= len(signature):
+                        continue
+                    if signature[-len(other_sig):] == other_sig and len(other_sig) > parent_len:
+                        parent_id = other_id
+                        parent_len = len(other_sig)
+                parent_by_id[node_id] = parent_id
+
+            children_by_id: dict[str, list[str]] = {node["id"]: [] for node in nodes}  # type: ignore[index]
+            for child_id, parent_id in parent_by_id.items():
+                if parent_id:
+                    children_by_id.setdefault(parent_id, []).append(child_id)
+
+            def _node_time(node_id: str) -> float:
+                node = nodes_by_id.get(node_id)
+                if not node:
+                    return 0
+                started = node.get("started_at") or 0
+                completed = node.get("completed_at") or 0
+                try:
+                    return float(started) or float(completed) or 0
+                except Exception:
+                    return 0
+
+            for key, children in children_by_id.items():
+                children.sort(key=_node_time)
+
+            roots = [node_id for node_id, parent_id in parent_by_id.items() if parent_id is None]
+            roots.sort(key=_node_time)
+
+            timeline = [node["id"] for node in sorted(nodes, key=lambda n: _node_time(n["id"]))]  # type: ignore[index]
+
+            process_info = {
+                "process_key": process_key,
+                "process_pid": records[0].get("process_pid"),
+                "process_start_time": records[0].get("process_start_time"),
+                "call_count": len(records),
+            }
+
+            data = {
+                "process": process_info,
+                "nodes": nodes,
+                "children": children_by_id,
+                "roots": roots,
+                "timeline": timeline,
+                "parent_by_id": parent_by_id,
+            }
+
+            template = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Call Tree</title>
+  <style>
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; background-color: #f5f5f5; }
+    .container { max-width: 1400px; margin: 0 auto; }
+    h1 { color: #333; border-bottom: 3px solid #4CAF50; padding-bottom: 10px; }
+    .back-link { display: inline-block; margin-bottom: 20px; color: #1976D2; text-decoration: none; }
+    .back-link:hover { text-decoration: underline; }
+    .toolbar { display: flex; align-items: center; gap: 12px; margin: 12px 0 20px; flex-wrap: wrap; }
+    .timeline-btn { border: 1px solid #ccc; background: white; border-radius: 8px; padding: 6px 10px; cursor: pointer; font-weight: 600; }
+    .timeline-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .timeline { flex: 1; min-width: 240px; }
+    .timeline-info { font-size: 0.9em; color: #555; }
+    .layout { display: grid; grid-template-columns: minmax(260px, 1.1fr) minmax(320px, 1.5fr); gap: 16px; }
+    .panel { background: white; border: 1px solid #ddd; border-radius: 10px; padding: 16px; box-shadow: 0 2px 4px rgba(0,0,0,0.06); }
+    .panel h2 { margin-top: 0; font-size: 1.05em; color: #333; }
+    .tree-node { margin: 6px 0; }
+    .tree-row { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 6px; }
+    .tree-row.selected { background: #e3f2fd; }
+    .tree-row:hover { background: #f5f9ff; }
+    .tree-toggle { border: none; background: transparent; cursor: pointer; font-size: 14px; width: 18px; }
+    .tree-toggle.empty { visibility: hidden; }
+    .tree-label { font-weight: 600; color: #1976D2; cursor: pointer; background: none; border: none; padding: 0; }
+    .tree-time { margin-left: auto; font-size: 0.85em; color: #666; }
+    .tree-children { margin-left: 18px; border-left: 1px dashed #e0e0e0; padding-left: 10px; }
+    .tree-collapsed > .tree-children { display: none; }
+    .detail-item { margin: 10px 0; }
+    .detail-label { font-weight: 700; color: #444; margin-bottom: 4px; }
+    .detail-value { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; white-space: pre-wrap; word-break: break-word; color: #222; background: #f8f8f8; padding: 8px; border-radius: 8px; }
+    .stack-frame { padding: 6px 8px; border-radius: 6px; margin-bottom: 6px; background: #f9fafb; border: 1px solid #eee; }
+    .empty-state { text-align: center; padding: 40px; color: #666; font-style: italic; }
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <a href="/call-tree" class="back-link">← Back to Call Trees</a>
+    <h1>Call Tree</h1>
+    <div class="toolbar">
+      <button id="prevNode" class="timeline-btn" type="button">←</button>
+      <input id="timeline" class="timeline" type="range" min="0" max="0" value="0" step="1">
+      <button id="nextNode" class="timeline-btn" type="button">→</button>
+      <div id="timelineInfo" class="timeline-info"></div>
+    </div>
+    <div class="layout">
+      <div class="panel">
+        <h2>Call Navigation</h2>
+        <div id="tree" class="tree"></div>
+      </div>
+      <div class="panel">
+        <h2>Selected Call Details</h2>
+        <div id="details"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const data = @@DATA_JSON@@;
+    const nodesById = new Map();
+    const childrenById = data.children || {};
+    const roots = data.roots || [];
+    const timeline = data.timeline || [];
+    const parentById = data.parent_by_id || {};
+    const timelineIndexById = new Map();
+    const nodeRowById = new Map();
+    const nodeContainerById = new Map();
+    const state = { selectedId: timeline[0] || roots[0] || null, collapsed: new Set() };
+
+    data.nodes.forEach((node) => { nodesById.set(node.id, node); });
+    timeline.forEach((id, idx) => timelineIndexById.set(id, idx));
+
+    function formatTs(ts) {
+      if (!ts) return 'Unknown';
+      try { return new Date(ts * 1000).toLocaleString(); } catch (e) { return 'Unknown'; }
+    }
+
+    function formatDuration(seconds) {
+      if (seconds === null || seconds === undefined) return 'Unknown';
+      return `${seconds.toFixed(3)}s`;
+    }
+
+    function updateTimelineControls() {
+      const slider = document.getElementById('timeline');
+      slider.max = Math.max(0, timeline.length - 1);
+      const idx = timelineIndexById.get(state.selectedId) || 0;
+      slider.value = String(idx);
+      const hasTimeline = timeline.length > 0;
+      slider.disabled = !hasTimeline;
+      document.getElementById('prevNode').disabled = !hasTimeline || idx <= 0;
+      document.getElementById('nextNode').disabled = !hasTimeline || idx >= timeline.length - 1;
+
+      const node = nodesById.get(state.selectedId);
+      const info = document.getElementById('timelineInfo');
+      if (!node) {
+        info.textContent = '';
+        return;
+      }
+      info.textContent = `${formatTs(node.started_at)} → ${formatTs(node.completed_at)}`;
+    }
+
+    function isAncestor(ancestorId, nodeId) {
+      let current = parentById[nodeId];
+      while (current) {
+        if (current === ancestorId) return true;
+        current = parentById[current];
+      }
+      return false;
+    }
+
+    function expandAncestors(nodeId) {
+      let current = parentById[nodeId];
+      while (current) {
+        state.collapsed.delete(current);
+        current = parentById[current];
+      }
+    }
+
+    function setSelected(nodeId, opts = {}) {
+      if (!nodeId) return;
+      state.selectedId = nodeId;
+      expandAncestors(nodeId);
+      updateTreeSelection();
+      updateDetails();
+      updateTimelineControls();
+      if (!opts.skipScroll) {
+        const row = nodeRowById.get(nodeId);
+        if (row) row.scrollIntoView({ block: 'nearest' });
+      }
+    }
+
+    function updateTreeSelection() {
+      nodeRowById.forEach((row, id) => {
+        row.classList.toggle('selected', id === state.selectedId);
+      });
+      nodeContainerById.forEach((container, id) => {
+        const isCollapsed = state.collapsed.has(id);
+        container.parentElement.classList.toggle('tree-collapsed', isCollapsed);
+      });
+    }
+
+    function updateDetails() {
+      const node = nodesById.get(state.selectedId);
+      const details = document.getElementById('details');
+      if (!node) {
+        details.innerHTML = '<div class="empty-state">No call selected.</div>';
+        return;
+      }
+
+      const args = JSON.stringify({ args: node.pretty_args || [], kwargs: node.pretty_kwargs || {} }, null, 2);
+      const stackTrace = node.stack_trace || [];
+      const stackHtml = stackTrace.length
+        ? stackTrace.map((frame) => `
+            <div class="stack-frame">
+              <div>${frame.function || 'unknown'} (${frame.filename || 'unknown'}:${frame.lineno || '?'})</div>
+              ${frame.code_context ? `<div>${frame.code_context}</div>` : ''}
+            </div>
+          `).join('')
+        : '<div class="empty-state">No stack trace recorded.</div>';
+
+      details.innerHTML = `
+        <div class="detail-item">
+          <div class="detail-label">Call</div>
+          <div class="detail-value">${node.method_name || 'unknown'}()</div>
+        </div>
+        <div class="detail-item">
+          <div class="detail-label">Status</div>
+          <div class="detail-value">${node.status || 'unknown'}</div>
+        </div>
+        <div class="detail-item">
+          <div class="detail-label">Started</div>
+          <div class="detail-value">${formatTs(node.started_at)}</div>
+        </div>
+        <div class="detail-item">
+          <div class="detail-label">Completed</div>
+          <div class="detail-value">${formatTs(node.completed_at)}</div>
+        </div>
+        <div class="detail-item">
+          <div class="detail-label">Duration</div>
+          <div class="detail-value">${formatDuration(node.duration)}</div>
+        </div>
+        <div class="detail-item">
+          <div class="detail-label">Arguments</div>
+          <div class="detail-value">${args}</div>
+        </div>
+        ${node.pretty_result !== undefined && node.pretty_result !== null ? `
+          <div class="detail-item">
+            <div class="detail-label">Result</div>
+            <div class="detail-value">${String(node.pretty_result)}</div>
+          </div>
+        ` : ''}
+        ${node.exception ? `
+          <div class="detail-item">
+            <div class="detail-label">Exception</div>
+            <div class="detail-value">${String(node.exception)}</div>
+          </div>
+        ` : ''}
+        <div class="detail-item">
+          <div class="detail-label">Stack Trace</div>
+          ${stackHtml}
+        </div>
+      `;
+    }
+
+    function renderNode(id) {
+      const node = nodesById.get(id);
+      const children = childrenById[id] || [];
+      const wrapper = document.createElement('div');
+      wrapper.className = 'tree-node';
+
+      const row = document.createElement('div');
+      row.className = 'tree-row';
+      row.dataset.id = id;
+
+      const toggle = document.createElement('button');
+      toggle.className = 'tree-toggle' + (children.length ? '' : ' empty');
+      toggle.textContent = children.length ? '▾' : '';
+      toggle.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (!children.length) return;
+        if (isAncestor(id, state.selectedId)) return;
+        if (state.collapsed.has(id)) {
+          state.collapsed.delete(id);
+        } else {
+          state.collapsed.add(id);
+        }
+        updateTreeSelection();
+      });
+
+      const label = document.createElement('button');
+      label.className = 'tree-label';
+      label.textContent = node ? `${node.method_name || 'unknown'}()` : id;
+      label.addEventListener('click', () => setSelected(id));
+
+      const time = document.createElement('div');
+      time.className = 'tree-time';
+      time.textContent = node ? formatTs(node.started_at) : '';
+
+      row.appendChild(toggle);
+      row.appendChild(label);
+      row.appendChild(time);
+
+      const childrenContainer = document.createElement('div');
+      childrenContainer.className = 'tree-children';
+      children.forEach((childId) => {
+        childrenContainer.appendChild(renderNode(childId));
+      });
+
+      wrapper.appendChild(row);
+      wrapper.appendChild(childrenContainer);
+
+      nodeRowById.set(id, row);
+      nodeContainerById.set(id, childrenContainer);
+      return wrapper;
+    }
+
+    function renderTree() {
+      const tree = document.getElementById('tree');
+      tree.innerHTML = '';
+      if (!roots.length) {
+        tree.innerHTML = '<div class="empty-state">No calls recorded.</div>';
+        return;
+      }
+      roots.forEach((id) => {
+        tree.appendChild(renderNode(id));
+      });
+      updateTreeSelection();
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      renderTree();
+      updateTimelineControls();
+      updateDetails();
+
+      const slider = document.getElementById('timeline');
+      slider.addEventListener('input', () => {
+        const idx = Number(slider.value);
+        const id = timeline[idx];
+        if (id) setSelected(id, { skipScroll: true });
+      });
+
+      document.getElementById('prevNode').addEventListener('click', () => {
+        const idx = timelineIndexById.get(state.selectedId) || 0;
+        if (idx > 0) setSelected(timeline[idx - 1]);
+      });
+
+      document.getElementById('nextNode').addEventListener('click', () => {
+        const idx = timelineIndexById.get(state.selectedId) || 0;
+        if (idx < timeline.length - 1) setSelected(timeline[idx + 1]);
+      });
+    });
+  </script>
+</body>
+</html>"""
+
+            return template.replace("@@DATA_JSON@@", json.dumps(data))
 
         @self.app.route('/frame/<pause_id>/<int:frame_index>', methods=['GET'])
         def frame_view(pause_id: str, frame_index: int):
@@ -1707,6 +2295,14 @@ class BreakpointServer:
             target = data.get("target", {})
             args = data.get("args", [])
             kwargs = data.get("kwargs", {})
+            process_pid = data.get("process_pid")
+            process_start_time = data.get("process_start_time")
+            process_key = _process_key(process_pid, process_start_time)
+            if process_key is None:
+                return jsonify({
+                    "error": "missing_process_identity",
+                    "message": "process_pid and process_start_time are required",
+                }), 400
 
             missing = []
             missing.extend(collect_missing_cids([target] if target else []))
@@ -1745,6 +2341,9 @@ class BreakpointServer:
                 "pretty_kwargs": pretty_kwargs,
                 "signature": data.get("signature"),
                 "call_site": data.get("call_site"),
+                "process_pid": int(process_pid),
+                "process_start_time": float(process_start_time),
+                "process_key": process_key,
             }
             self.manager.register_call(call_id, call_data)
             if self.manager.should_pause_at_breakpoint(method_name):
@@ -1793,6 +2392,7 @@ class BreakpointServer:
             result_cid = data.get("result_cid")
             exception_data = data.get("exception_data")
             exception_cid = data.get("exception_cid")
+            completed_at = data.get("timestamp") or time.time()
 
             if result_data and result_cid:
                 self._cid_store.store(result_cid, base64.b64decode(result_data))
@@ -1804,18 +2404,31 @@ class BreakpointServer:
             # Record execution history for breakpoints
             if call_data:
                 method_name = call_data.get("method_name", "")
+                pretty_result = None
+                if result_cid:
+                    pretty_result = _format_payload_value({"cid": result_cid})
+                pretty_exception = None
+                if exception_cid:
+                    pretty_exception = _format_payload_value({"cid": exception_cid})
+
+                call_record = dict(call_data)
+                call_record["call_id"] = call_id
+                call_record["status"] = status
+                call_record["completed_at"] = completed_at
+                call_record["pretty_result"] = pretty_result
+                if pretty_exception is not None:
+                    call_record["exception"] = pretty_exception
+                call_site = call_data.get("call_site") or {}
+                call_record["started_at"] = call_site.get("timestamp")
+                self.manager.record_call(call_record)
+
                 if self.manager.has_breakpoint(method_name):
-                    pretty_result = None
-                    if result_cid:
-                        pretty_result = _format_payload_value({"cid": result_cid})
                     history_data = dict(call_data)
                     history_data["status"] = status
                     history_data["pretty_result"] = pretty_result
-                    if exception_cid:
-                        history_data["exception"] = _format_payload_value(
-                            {"cid": exception_cid}
-                        )
-                    self.manager.record_execution(method_name, history_data)
+                    if pretty_exception is not None:
+                        history_data["exception"] = pretty_exception
+                    self.manager.record_execution(method_name, history_data, completed_at=completed_at)
 
             if (
                 status == "success"

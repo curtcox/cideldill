@@ -38,6 +38,7 @@ class BreakpointManager:
         self._call_data: dict[str, dict[str, Any]] = {}
         self._call_to_pause: dict[str, str] = {}  # Maps call_id -> pause_id
         self._execution_history: dict[str, list[dict[str, Any]]] = {}
+        self._call_records: list[dict[str, Any]] = []
         self._lock = threading.Lock()
         # Default behavior when a breakpoint is hit: "stop" or "go"
         self._default_behavior: str = "stop"
@@ -356,6 +357,16 @@ class BreakpointManager:
             if function_name not in self._execution_history:
                 self._execution_history[function_name] = []
             self._execution_history[function_name].append(record)
+
+    def record_call(self, call_record: dict[str, Any]) -> None:
+        """Record a completed call for call tree views."""
+        with self._lock:
+            self._call_records.append(call_record)
+
+    def get_call_records(self) -> list[dict[str, Any]]:
+        """Get all recorded calls."""
+        with self._lock:
+            return [dict(record) for record in self._call_records]
 
     def get_execution_record(
         self, function_name: str, record_id: str

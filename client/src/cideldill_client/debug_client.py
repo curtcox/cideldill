@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from collections import OrderedDict
 from collections.abc import Iterable
@@ -38,6 +39,8 @@ class DebugClient:
         self._serializer = Serializer()
         self._object_cache: OrderedDict[str, Any] = OrderedDict()
         self._object_cache_limit = 10_000
+        self._process_pid = os.getpid()
+        self._process_start_time = time.time()
 
     @property
     def server_url(self) -> str:
@@ -121,6 +124,8 @@ class DebugClient:
             "call_id": call_id,
             "timestamp": time.time(),
             "status": status,
+            "process_pid": self._process_pid,
+            "process_start_time": self._process_start_time,
         }
         if status == "success":
             serialized = self._serializer.serialize(result)
@@ -282,6 +287,8 @@ class DebugClient:
             "args": args_payload,
             "kwargs": kwargs_payload,
             "call_site": call_site,
+            "process_pid": self._process_pid,
+            "process_start_time": self._process_start_time,
         }
         if signature is not None:
             payload["signature"] = signature
