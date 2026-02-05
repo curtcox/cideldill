@@ -483,6 +483,10 @@ class DebugClient:
         signature: str | None = None,
         result: Any | None = None,
         exception: Any | None = None,
+        result_cid: str | None = None,
+        result_data: str | None = None,
+        exception_cid: str | None = None,
+        exception_data: str | None = None,
     ) -> None:
         if not self._events_enabled:
             return
@@ -500,8 +504,14 @@ class DebugClient:
             payload["signature"] = signature
         if result is not None:
             payload["pretty_result"] = self._sanitize_for_json(result)
+        if result_cid is not None and result_data is not None:
+            payload["result_cid"] = result_cid
+            payload["result_data"] = result_data
         if exception is not None:
             payload["exception"] = self._sanitize_for_json(exception)
+        if exception_cid is not None and exception_data is not None:
+            payload["exception_cid"] = exception_cid
+            payload["exception_data"] = exception_data
 
         response = self._post_json("/api/call/event", payload)
         if response.get("status") != "ok":
@@ -514,6 +524,8 @@ class DebugClient:
         if not self._events_enabled:
             return
         info = dict(payload)
+        placeholder_cid = info.pop("placeholder_cid", None)
+        placeholder_data = info.pop("placeholder_data", None)
         call_site = info.pop("call_site", None) or {"timestamp": time.time(), "stack_trace": []}
         pretty_kwargs = {
             "object_type": info.get("object_type"),
@@ -525,6 +537,8 @@ class DebugClient:
             call_site=call_site,
             pretty_kwargs=pretty_kwargs,
             exception=info,
+            exception_cid=placeholder_cid,
+            exception_data=placeholder_data,
         )
 
     def _get_json(self, path: str) -> dict[str, Any]:

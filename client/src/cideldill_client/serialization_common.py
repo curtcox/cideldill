@@ -157,6 +157,8 @@ def _report_serialization_error(
     attempts: list[str],
     *,
     depth: int,
+    placeholder_bytes: bytes | None = None,
+    placeholder_obj: Any | None = None,
 ) -> None:
     reporter = ReportSerializationError
     if reporter is None:
@@ -182,6 +184,14 @@ def _report_serialization_error(
                 "stack_trace": stack_trace,
             },
         }
+        if placeholder_bytes is not None:
+            report_payload["placeholder_cid"] = hashlib.sha256(placeholder_bytes).hexdigest()
+            report_payload["placeholder_data"] = base64.b64encode(placeholder_bytes).decode("ascii")
+        if placeholder_obj is not None and hasattr(placeholder_obj, "to_dict"):
+            try:
+                report_payload["placeholder_summary"] = placeholder_obj.to_dict()
+            except Exception:
+                pass
         reporter(report_payload)
     except Exception:
         return
@@ -381,8 +391,6 @@ def _safe_dumps(
     if strict:
         raise DebugSerializationError(obj, last_error) from last_error
 
-    _report_serialization_error(obj, last_error, attempts, depth=depth)
-
     if depth >= max_depth:
         placeholder = _minimal_placeholder(obj, last_error, attempts, depth)
     else:
@@ -396,6 +404,39 @@ def _safe_dumps(
             _visited,
         )
 
+    pickled: bytes | None = None
+    placeholder_obj: Any | None = None
+    try:
+        pickled = dill.dumps(placeholder, protocol=DILL_PROTOCOL)
+        placeholder_obj = placeholder
+    except Exception as exc:  # noqa: BLE001 - extremely defensive
+        attempts.append(f"placeholder.dumps: {type(exc).__name__}: {exc}")
+        minimal = _minimal_placeholder(obj, last_error, attempts, depth)
+        try:
+            pickled = dill.dumps(minimal, protocol=DILL_PROTOCOL)
+            placeholder_obj = minimal
+        except Exception as minimal_exc:  # noqa: BLE001 - final fallback
+            attempts.append(f"minimal_placeholder.dumps: {type(minimal_exc).__name__}: {minimal_exc}")
+            fallback_payload = {
+                "type": type(obj).__qualname__,
+                _module_key: type(obj).__module__,
+                "repr": _safe_repr(obj),
+                "error": str(last_error),
+                "attempts": list(attempts),
+                "timestamp": time.time(),
+            }
+            pickled = dill.dumps(fallback_payload, protocol=DILL_PROTOCOL)
+            placeholder_obj = None
+
+    _report_serialization_error(
+        obj,
+        last_error,
+        attempts,
+        depth=depth,
+        placeholder_bytes=pickled,
+        placeholder_obj=placeholder_obj,
+    )
+
     logger.info(
         "Serialization degraded to placeholder",
         extra={
@@ -407,24 +448,7 @@ def _safe_dumps(
         },
     )
 
-    try:
-        return dill.dumps(placeholder, protocol=DILL_PROTOCOL)
-    except Exception as exc:  # noqa: BLE001 - extremely defensive
-        attempts.append(f"placeholder.dumps: {type(exc).__name__}: {exc}")
-        minimal = _minimal_placeholder(obj, last_error, attempts, depth)
-        try:
-            return dill.dumps(minimal, protocol=DILL_PROTOCOL)
-        except Exception as minimal_exc:  # noqa: BLE001 - final fallback
-            attempts.append(f"minimal_placeholder.dumps: {type(minimal_exc).__name__}: {minimal_exc}")
-            fallback_payload = {
-                "type": type(obj).__qualname__,
-                _module_key: type(obj).__module__,
-                "repr": _safe_repr(obj),
-                "error": str(last_error),
-                "attempts": list(attempts),
-                "timestamp": time.time(),
-            }
-            return dill.dumps(fallback_payload, protocol=DILL_PROTOCOL)
+    return pickled
 
 
 def serialize(obj: Any, *, strict: bool = False) -> bytes:
