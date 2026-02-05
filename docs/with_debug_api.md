@@ -37,6 +37,42 @@ calculator.add(1, 2)
 - **When debug is ON**: Returns a proxy object that intercepts calls for debugging.
 - **When debug is OFF**: Returns the original object unchanged (true NOP with zero overhead).
 
+## Wrap Callables With Aliases
+
+Callable objects and functions can be wrapped with a stable alias for breakpoint matching.
+
+```python
+from cideldill_client import with_debug
+
+class Worker:
+    def __call__(self, value: int) -> int:
+        return value * 2
+
+with_debug("ON")
+
+task = Worker()
+wrapped = with_debug(("run_task", task))
+wrapped(3)
+```
+
+- The alias (`run_task`) is registered for breakpoints.
+- Calls are reported under the alias name so server breakpoints can always stop the callable.
+
+## Limitations and Failure Behavior
+
+Some callables are executable when debug is OFF but cannot be reliably registered or
+breakpointed with debug ON (for example: unstable names, failing `__signature__`,
+or other runtime errors during registration).
+
+When this happens:
+- `with_debug` records a `breakpoint_unavailable` event on the server (if possible).
+- The client halts with a detailed error message to avoid silently missing breakpoints.
+
+If you see this error, try:
+- Wrapping the callable with an explicit alias: `with_debug(("name", callable))`
+- Ensuring the callable has a stable name and import path
+- Removing custom `__signature__`/`__reduce__` implementations that raise
+
 ## Handling Unpicklable Objects
 
 CID el Dill automatically handles objects that can't be pickled using dill's default

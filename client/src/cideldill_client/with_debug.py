@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import inspect
 import os
 import threading
@@ -18,7 +19,7 @@ from .exceptions import DebugServerError
 from .function_registry import compute_signature
 from .function_registry import register_function as register_local_function
 from .port_discovery import read_port_from_discovery_file
-from .server_failure import exit_with_server_failure
+from .server_failure import exit_with_breakpoint_unavailable, exit_with_server_failure
 from .serialization import set_serialization_error_reporter
 
 
@@ -77,15 +78,21 @@ def with_debug(target: Any) -> Any:
 
     if isinstance(target, (DebugProxy, AsyncDebugProxy)):
         underlying = object.__getattribute__(target, "_target")
-        if callable(underlying) and hasattr(underlying, "__name__"):
+        if callable(underlying):
+            proxy_alias = getattr(target, "_cideldill_alias_name", None)
+            callable_name = _resolve_callable_name(underlying, proxy_alias)
             signature = compute_signature(underlying)
-            client.register_function(underlying.__name__, signature=signature)
-            register_local_function(underlying, signature=signature)
+            _register_callable_or_halt(
+                client,
+                target=underlying,
+                name=callable_name,
+                signature=signature,
+            )
             _record_registration(
                 client,
-                name=underlying.__name__,
+                name=callable_name,
                 signature=signature,
-                alias_name=getattr(target, "_cideldill_alias_name", None),
+                alias_name=proxy_alias,
                 target=underlying,
             )
         else:
@@ -98,19 +105,24 @@ def with_debug(target: Any) -> Any:
             )
         return target
 
-    if callable(target) and hasattr(target, "__name__"):
-        if alias_name is not None:
-            signature = compute_signature(target)
-            client.register_function(alias_name, signature=signature)
-            register_local_function(target, name=alias_name, signature=signature)
-            _record_registration(
-                client,
-                name=alias_name,
-                signature=signature,
-                alias_name=alias_name,
-                target=target,
-            )
+    if callable(target):
+        callable_name = _resolve_callable_name(target, alias_name)
+        signature = compute_signature(target)
+        _register_callable_or_halt(
+            client,
+            target=target,
+            name=callable_name,
+            signature=signature,
+        )
+        _record_registration(
+            client,
+            name=callable_name,
+            signature=signature,
+            alias_name=alias_name,
+            target=target,
+        )
 
+        if alias_name is not None and hasattr(target, "__name__"):
             original = target
 
             @wraps(target)
@@ -120,17 +132,6 @@ def with_debug(target: Any) -> Any:
             _aliased.__name__ = alias_name
             setattr(_aliased, "_cideldill_alias_name", alias_name)
             target = _aliased
-        else:
-            signature = compute_signature(target)
-            client.register_function(target.__name__, signature=signature)
-            register_local_function(target, signature=signature)
-            _record_registration(
-                client,
-                name=target.__name__,
-                signature=signature,
-                alias_name=None,
-                target=target,
-            )
     elif alias_name is not None:
         _record_registration(
             client,
@@ -153,6 +154,11 @@ def with_debug(target: Any) -> Any:
     if alias_name is not None:
         # Keep an alias on the proxy itself in case the target drops attributes.
         object.__setattr__(proxy, "_cideldill_alias_name", alias_name)
+    elif callable(target):
+        # Ensure callable objects without __name__ still have a breakpoint name.
+        callable_name = _resolve_callable_name(target, None)
+        if callable_name != getattr(target, "__name__", None):
+            object.__setattr__(proxy, "_cideldill_alias_name", callable_name)
     return proxy
 
 
@@ -237,6 +243,80 @@ def _validate_localhost(server_url: str) -> None:
 def _is_coroutine_target(target: Any) -> bool:
     if inspect.iscoroutine(target) or inspect.iscoroutinefunction(target):
         return True
+    if isinstance(target, functools.partial):
+        if inspect.iscoroutinefunction(target.func):
+            return True
+        if callable(target.func) and inspect.iscoroutinefunction(getattr(target.func, "__call__", None)):
+            return True
     if callable(target) and inspect.iscoroutinefunction(target.__call__):
         return True
     return False
+
+
+def _resolve_callable_name(target: Any, alias_name: str | None) -> str:
+    if alias_name:
+        return alias_name
+    if isinstance(target, functools.partial):
+        return _resolve_callable_name(target.func, None)
+    target_name = getattr(target, "__name__", None)
+    if target_name:
+        return target_name
+    return f"{type(target).__qualname__}.__call__"
+
+
+def _register_callable_or_halt(
+    client: DebugClient,
+    *,
+    target: Any,
+    name: str,
+    signature: str | None,
+) -> None:
+    try:
+        client.register_function(name, signature=signature)
+        register_local_function(target, name=name, signature=signature)
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001 - must halt when breakpointing fails
+        _record_breakpoint_unavailable(
+            client,
+            name=name,
+            target=target,
+            error=exc,
+        )
+        exit_with_breakpoint_unavailable(
+            name=name,
+            target=target,
+            server_url=client.server_url,
+            error=exc,
+        )
+
+
+def _record_breakpoint_unavailable(
+    client: DebugClient,
+    *,
+    name: str,
+    target: Any,
+    error: BaseException,
+) -> None:
+    if not hasattr(client, "record_event"):
+        return
+    call_site = {
+        "timestamp": time.time(),
+        "stack_trace": _build_stack_trace(skip=2),
+    }
+    result_payload = {
+        "event": "breakpoint_unavailable",
+        "function_name": name,
+        "target_type": f"{type(target).__module__}.{type(target).__qualname__}",
+        "error": f"{type(error).__name__}: {error}",
+    }
+    try:
+        client.record_event(
+            method_name="breakpoint_unavailable",
+            status="failed",
+            call_site=call_site,
+            result=result_payload,
+            exception=result_payload,
+        )
+    except Exception:
+        return

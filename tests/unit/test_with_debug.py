@@ -1,7 +1,10 @@
 """Unit tests for with_debug API."""
 
+import functools
 import pytest
 import requests
+import threading
+import types
 
 pytest.importorskip("requests")
 
@@ -17,6 +20,44 @@ class Sample:
 class AsyncCallable:
     async def __call__(self) -> str:
         return "ok"
+
+
+class CallableObject:
+    def __call__(self, value: int = 1) -> int:
+        return value + 1
+
+
+class AsyncCallableObject:
+    async def __call__(self, value: int = 1) -> int:
+        return value + 1
+
+
+class SignatureBomb:
+    @property
+    def __signature__(self):
+        raise RuntimeError("signature boom")
+
+    def __call__(self, value: int = 1) -> int:
+        return value
+
+
+class UnpicklableCallable:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+
+    def __reduce_ex__(self, protocol):
+        raise TypeError("Not picklable")
+
+    def __call__(self, value: int = 1) -> int:
+        return value
+
+
+class UnpicklableInstance:
+    def __reduce_ex__(self, protocol):
+        raise TypeError("Not picklable")
+
+    def add(self, x: int, y: int) -> int:
+        return x + y
 
 
 def _mock_server_ok(monkeypatch) -> None:
@@ -286,6 +327,505 @@ def test_with_debug_registers_alias_name_for_callable(monkeypatch) -> None:
     _wrapped = with_debug(("sequence_fn", primes))
 
     assert "sequence_fn" in register_calls
+
+
+def test_with_debug_registers_callable_object_for_breakpoints(monkeypatch) -> None:
+    def noop_check(self) -> None:
+        return None
+
+    register_calls: list[str] = []
+
+    def record_register(self, function_name: str, signature: str | None = None) -> None:
+        register_calls.append(function_name)
+
+    monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
+    _mock_server_ok(monkeypatch)
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient.register_function",
+        record_register,
+        raising=False,
+    )
+
+    configure_debug(server_url="http://localhost:5000")
+    with_debug("ON")
+
+    _wrapped = with_debug(CallableObject())
+
+    assert "CallableObject.__call__" in register_calls
+
+
+def test_with_debug_callable_object_uses_breakpoint_name(monkeypatch) -> None:
+    def noop_check(self) -> None:
+        return None
+
+    call_names: list[str] = []
+
+    def record_call_start(
+        self,
+        method_name: str,
+        target,
+        target_cid: str,
+        args,
+        kwargs,
+        call_site,
+        signature: str | None = None,
+    ):
+        call_names.append(method_name)
+        return {"action": "continue", "call_id": "1"}
+
+    def record_call_complete(self, *args, **kwargs):
+        return None
+
+    monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
+    _mock_server_ok(monkeypatch)
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient.record_call_start",
+        record_call_start,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient.record_call_complete",
+        record_call_complete,
+        raising=False,
+    )
+
+    configure_debug(server_url="http://localhost:5000")
+    with_debug("ON")
+
+    proxy = with_debug(CallableObject())
+    assert proxy(3) == 4
+    assert call_names == ["CallableObject.__call__"]
+
+
+def test_with_debug_alias_callable_object_registers_alias(monkeypatch) -> None:
+    def noop_check(self) -> None:
+        return None
+
+    register_calls: list[str] = []
+
+    def record_register(self, function_name: str, signature: str | None = None) -> None:
+        register_calls.append(function_name)
+
+    monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
+    _mock_server_ok(monkeypatch)
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient.register_function",
+        record_register,
+        raising=False,
+    )
+
+    configure_debug(server_url="http://localhost:5000")
+    with_debug("ON")
+
+    _wrapped = with_debug(("aliased_callable", CallableObject()))
+
+    assert "aliased_callable" in register_calls
+
+
+def test_with_debug_alias_callable_object_uses_alias_on_call(monkeypatch) -> None:
+    def noop_check(self) -> None:
+        return None
+
+    call_names: list[str] = []
+
+    def record_call_start(
+        self,
+        method_name: str,
+        target,
+        target_cid: str,
+        args,
+        kwargs,
+        call_site,
+        signature: str | None = None,
+    ):
+        call_names.append(method_name)
+        return {"action": "continue", "call_id": "1"}
+
+    def record_call_complete(self, *args, **kwargs):
+        return None
+
+    monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
+    _mock_server_ok(monkeypatch)
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient.record_call_start",
+        record_call_start,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient.record_call_complete",
+        record_call_complete,
+        raising=False,
+    )
+
+    configure_debug(server_url="http://localhost:5000")
+    with_debug("ON")
+
+    proxy = with_debug(("aliased_callable", CallableObject()))
+    assert proxy(5) == 6
+    assert call_names == ["aliased_callable"]
+
+
+def test_with_debug_partial_callable_object_registers_callable_name(monkeypatch) -> None:
+    def noop_check(self) -> None:
+        return None
+
+    register_calls: list[str] = []
+
+    def record_register(self, function_name: str, signature: str | None = None) -> None:
+        register_calls.append(function_name)
+
+    monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
+    _mock_server_ok(monkeypatch)
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient.register_function",
+        record_register,
+        raising=False,
+    )
+
+    configure_debug(server_url="http://localhost:5000")
+    with_debug("ON")
+
+    target = CallableObject()
+    _wrapped = with_debug(functools.partial(target, 2))
+
+    assert "CallableObject.__call__" in register_calls
+
+
+def test_with_debug_partial_callable_object_uses_callable_name(monkeypatch) -> None:
+    def noop_check(self) -> None:
+        return None
+
+    call_names: list[str] = []
+
+    def record_call_start(
+        self,
+        method_name: str,
+        target,
+        target_cid: str,
+        args,
+        kwargs,
+        call_site,
+        signature: str | None = None,
+    ):
+        call_names.append(method_name)
+        return {"action": "continue", "call_id": "1"}
+
+    def record_call_complete(self, *args, **kwargs):
+        return None
+
+    monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
+    _mock_server_ok(monkeypatch)
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient.record_call_start",
+        record_call_start,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient.record_call_complete",
+        record_call_complete,
+        raising=False,
+    )
+
+    configure_debug(server_url="http://localhost:5000")
+    with_debug("ON")
+
+    proxy = with_debug(functools.partial(CallableObject(), 3))
+    assert proxy() == 4
+    assert call_names == ["CallableObject.__call__"]
+
+
+def test_with_debug_signature_failure_does_not_block_registration(monkeypatch) -> None:
+    def noop_check(self) -> None:
+        return None
+
+    register_calls: list[str] = []
+
+    def record_register(self, function_name: str, signature: str | None = None) -> None:
+        register_calls.append(function_name)
+        assert signature in (None, "")
+
+    monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
+    _mock_server_ok(monkeypatch)
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient.register_function",
+        record_register,
+        raising=False,
+    )
+
+    configure_debug(server_url="http://localhost:5000")
+    with_debug("ON")
+
+    _wrapped = with_debug(SignatureBomb())
+
+    assert "SignatureBomb.__call__" in register_calls
+
+
+def test_with_debug_unpicklable_callable_records_pickle_error(monkeypatch) -> None:
+    def noop_check(self) -> None:
+        return None
+
+    events: list[dict[str, object]] = []
+
+    def post_ok(self, path, payload):
+        events.append({"path": path, "payload": payload})
+        return {"status": "ok"}
+
+    def post_call_start(self, path, payload):
+        events.append({"path": path, "payload": payload})
+        return {"action": "continue", "call_id": "1"}
+
+    def record_call_complete(self, *args, **kwargs):
+        return None
+
+    monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient._post_json",
+        post_ok,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient._post_json_allowing_cid_errors",
+        post_call_start,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient.record_call_complete",
+        record_call_complete,
+        raising=False,
+    )
+
+    import cideldill_client.serialization_common as serialization_common
+
+    original_dumps = serialization_common.dill.dumps
+
+    def failing_dumps(obj, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if isinstance(obj, UnpicklableCallable):
+            raise TypeError("forced pickle failure")
+        return original_dumps(obj, *args, **kwargs)
+
+    monkeypatch.setattr(serialization_common.dill, "dumps", failing_dumps)
+
+    configure_debug(server_url="http://localhost:5000")
+    with_debug("ON")
+
+    proxy = with_debug(UnpicklableCallable())
+    assert proxy(5) == 5
+
+    method_names = [entry["payload"].get("method_name") for entry in events]
+    assert "pickle_error" in method_names
+
+
+def test_with_debug_bound_method_of_unpicklable_instance(monkeypatch) -> None:
+    def noop_check(self) -> None:
+        return None
+
+    call_names: list[str] = []
+
+    def record_call_start(
+        self,
+        method_name: str,
+        target,
+        target_cid: str,
+        args,
+        kwargs,
+        call_site,
+        signature: str | None = None,
+    ):
+        call_names.append(method_name)
+        return {"action": "continue", "call_id": "1"}
+
+    def record_call_complete(self, *args, **kwargs):
+        return None
+
+    monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
+    _mock_server_ok(monkeypatch)
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient.record_call_start",
+        record_call_start,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient.record_call_complete",
+        record_call_complete,
+        raising=False,
+    )
+
+    configure_debug(server_url="http://localhost:5000")
+    with_debug("ON")
+
+    obj = UnpicklableInstance()
+    proxy = with_debug(obj.add)
+    assert proxy(2, 3) == 5
+    assert call_names == ["add"]
+
+
+def test_with_debug_dynamic_function_registers(monkeypatch) -> None:
+    def noop_check(self) -> None:
+        return None
+
+    register_calls: list[str] = []
+
+    def record_register(self, function_name: str, signature: str | None = None) -> None:
+        register_calls.append(function_name)
+
+    monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
+    _mock_server_ok(monkeypatch)
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient.register_function",
+        record_register,
+        raising=False,
+    )
+
+    configure_debug(server_url="http://localhost:5000")
+    with_debug("ON")
+
+    namespace: dict[str, object] = {}
+    exec("def dyn_func(x):\n    return x + 1", namespace)
+    dyn_func = namespace["dyn_func"]
+    assert isinstance(dyn_func, types.FunctionType)
+
+    _wrapped = with_debug(dyn_func)
+
+    assert "dyn_func" in register_calls
+
+
+def test_with_debug_lambda_with_unpicklable_capture(monkeypatch) -> None:
+    def noop_check(self) -> None:
+        return None
+
+    call_names: list[str] = []
+
+    def record_call_start(
+        self,
+        method_name: str,
+        target,
+        target_cid: str,
+        args,
+        kwargs,
+        call_site,
+        signature: str | None = None,
+    ):
+        call_names.append(method_name)
+        return {"action": "continue", "call_id": "1"}
+
+    def record_call_complete(self, *args, **kwargs):
+        return None
+
+    monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
+    _mock_server_ok(monkeypatch)
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient.record_call_start",
+        record_call_start,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient.record_call_complete",
+        record_call_complete,
+        raising=False,
+    )
+
+    configure_debug(server_url="http://localhost:5000")
+    with_debug("ON")
+
+    lock = threading.Lock()
+    fn = lambda: lock.locked()  # noqa: E731
+    proxy = with_debug(fn)
+    assert proxy() is False
+    assert call_names == ["<lambda>"]
+
+
+def test_with_debug_async_callable_object_uses_alias(monkeypatch) -> None:
+    def noop_check(self) -> None:
+        return None
+
+    call_names: list[str] = []
+
+    def record_call_start(
+        self,
+        method_name: str,
+        target,
+        target_cid: str,
+        args,
+        kwargs,
+        call_site,
+        signature: str | None = None,
+    ):
+        call_names.append(method_name)
+        return {"action": "continue", "call_id": "1"}
+
+    def record_call_complete(self, *args, **kwargs):
+        return None
+
+    monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
+    _mock_server_ok(monkeypatch)
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient.record_call_start",
+        record_call_start,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient.record_call_complete",
+        record_call_complete,
+        raising=False,
+    )
+
+    configure_debug(server_url="http://localhost:5000")
+    with_debug("ON")
+
+    proxy = with_debug(("async_alias", AsyncCallableObject()))
+    assert isinstance(proxy, AsyncDebugProxy)
+    import asyncio
+    assert asyncio.run(proxy(3)) == 4
+    assert call_names == ["async_alias"]
+
+
+def test_with_debug_breakpoint_unavailable_halts(monkeypatch) -> None:
+    def noop_check(self) -> None:
+        return None
+
+    events: list[dict[str, object]] = []
+
+    def record_register(self, function_name: str, signature: str | None = None) -> None:
+        raise RuntimeError("registration failed")
+
+    def record_event(
+        self,
+        *,
+        method_name: str,
+        status: str,
+        call_site: dict[str, object],
+        pretty_args=None,
+        pretty_kwargs=None,
+        signature: str | None = None,
+        result=None,
+        exception=None,
+    ) -> None:
+        events.append({
+            "method_name": method_name,
+            "status": status,
+            "exception": exception,
+        })
+
+    monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
+    _mock_server_ok(monkeypatch)
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient.register_function",
+        record_register,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient.record_event",
+        record_event,
+        raising=False,
+    )
+
+    configure_debug(server_url="http://localhost:5000")
+    with_debug("ON")
+
+    with pytest.raises(SystemExit):
+        with_debug(CallableObject())
+
+    assert any(event["method_name"] == "breakpoint_unavailable" for event in events)
 
 
 def test_with_debug_alias_callable_is_serializable(monkeypatch) -> None:

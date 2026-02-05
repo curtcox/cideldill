@@ -297,17 +297,21 @@ class DebugProxy:
         return self._intercept_dunder("__contains__", item)
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        # For wrapped functions, use the actual function name for breakpoint matching
-        # instead of "__call__"
-        if callable(self._target) and hasattr(self._target, '__name__'):
+        # For wrapped callables, use a stable name for breakpoint matching
+        # instead of "__call__".
+        if callable(self._target):
             alias_name = getattr(self, "_cideldill_alias_name", None)
             if not alias_name:
                 alias_name = getattr(self._target, "_cideldill_alias_name", None)
-            method_name = alias_name or self._target.__name__
-            # Call the target function directly with the correct name for breakpoint matching
-            if self._is_enabled():
-                return self._wrap_method(self._target, method_name)(*args, **kwargs)
-            return self._target(*args, **kwargs)
+            if alias_name:
+                if self._is_enabled():
+                    return self._wrap_method(self._target, alias_name)(*args, **kwargs)
+                return self._target(*args, **kwargs)
+            if hasattr(self._target, "__name__"):
+                method_name = self._target.__name__
+                if self._is_enabled():
+                    return self._wrap_method(self._target, method_name)(*args, **kwargs)
+                return self._target(*args, **kwargs)
         return self._intercept_dunder("__call__", *args, **kwargs)
 
     def __enter__(self) -> Any:
@@ -394,7 +398,25 @@ class AsyncDebugProxy(DebugProxy):
     """Alias for a debug proxy with async-compatible methods."""
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        attr = getattr(self._target, "__call__", None)
-        if attr is not None and inspect.iscoroutinefunction(attr):
-            return self._wrap_async_method(attr, "__call__")(*args, **kwargs)
+        if callable(self._target):
+            alias_name = getattr(self, "_cideldill_alias_name", None)
+            if not alias_name:
+                alias_name = getattr(self._target, "_cideldill_alias_name", None)
+            method_name = alias_name
+            if not method_name and hasattr(self._target, "__name__"):
+                method_name = self._target.__name__
+
+            async def _call_target(*call_args: Any, **call_kwargs: Any) -> Any:
+                result = self._target(*call_args, **call_kwargs)
+                if inspect.isawaitable(result):
+                    return await result
+                return result
+
+            if method_name:
+                if self._is_enabled():
+                    return self._wrap_async_method(_call_target, method_name)(*args, **kwargs)
+                result = self._target(*args, **kwargs)
+                if inspect.isawaitable(result):
+                    return result
+                return result
         return self._intercept_dunder("__call__", *args, **kwargs)

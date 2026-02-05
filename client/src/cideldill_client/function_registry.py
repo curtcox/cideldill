@@ -15,7 +15,7 @@ _signatures: dict[str, str] = {}
 def compute_signature(func: Callable[..., object]) -> str:
     try:
         return str(inspect.signature(func))
-    except (TypeError, ValueError):
+    except Exception:  # noqa: BLE001 - signature can fail for many callables
         return ""
 
 
