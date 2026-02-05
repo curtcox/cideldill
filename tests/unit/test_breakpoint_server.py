@@ -4,6 +4,7 @@ This test suite validates the web server API endpoints for breakpoint management
 """
 
 import json
+import re
 import threading
 import time
 
@@ -534,6 +535,58 @@ def test_call_start_returns_continue_when_no_breakpoint(server) -> None:
     assert response.status_code == 200
     data = json.loads(response.data)
     assert data["action"] == "continue"
+
+
+def test_call_tree_builds_from_outer_to_inner_stack_traces(server) -> None:
+    """Call tree should nest nodes when stack traces are outer-to-inner ordered."""
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    process_key = "process-1"
+    process_pid = 123
+    process_start_time = 1000.0
+
+    def frame(filename: str, lineno: int, function: str) -> dict[str, object]:
+        return {"filename": filename, "lineno": lineno, "function": function}
+
+    stack_root = [
+        frame("app.py", 1, "<module>"),
+        frame("app.py", 10, "main"),
+    ]
+    stack_child = stack_root + [frame("app.py", 20, "run_a")]
+    stack_grandchild = stack_child + [frame("app.py", 30, "run_b")]
+
+    def record(call_id: str, method_name: str, stack_trace: list[dict[str, object]], ts: float) -> dict[str, object]:
+        return {
+            "call_id": call_id,
+            "method_name": method_name,
+            "status": "success",
+            "pretty_args": [],
+            "pretty_kwargs": {},
+            "signature": None,
+            "call_site": {"timestamp": ts, "stack_trace": stack_trace},
+            "process_pid": process_pid,
+            "process_start_time": process_start_time,
+            "process_key": process_key,
+            "started_at": ts,
+            "completed_at": ts + 0.05,
+        }
+
+    server.manager.record_call(record("call-a", "run_a", stack_root, 1.0))
+    server.manager.record_call(record("call-b", "run_b", stack_child, 2.0))
+    server.manager.record_call(record("call-c", "run_c", stack_grandchild, 3.0))
+
+    response = server.test_client().get(f"/call-tree/{process_key}")
+    assert response.status_code == 200
+    html = response.data.decode("utf-8")
+    match = re.search(r"const data = ({.*?});", html, re.S)
+    assert match, "Expected call tree data to be embedded in HTML."
+    payload = json.loads(match.group(1))
+
+    assert payload["roots"] == ["call-a"]
+    assert payload["children"]["call-a"] == ["call-b"]
+    assert payload["children"]["call-b"] == ["call-c"]
 
 
 def test_poll_waits_until_resume_action(server) -> None:

@@ -1572,27 +1572,44 @@ class BreakpointServer:
                 stack_signatures[str(call_id)] = _stack_signature(stack_trace)
 
             nodes_by_id = {node["id"]: node for node in nodes}  # type: ignore[index]
-            parent_by_id: dict[str, str | None] = {node["id"]: None for node in nodes}  # type: ignore[index]
-            for node in nodes:
-                node_id = node["id"]  # type: ignore[index]
-                signature = stack_signatures.get(node_id, ())
-                if not signature:
-                    continue
-                parent_id = None
-                parent_len = -1
-                for other in nodes:
-                    other_id = other["id"]  # type: ignore[index]
-                    if other_id == node_id:
+            def _compute_parent_by_id(match_fn) -> dict[str, str | None]:
+                parent_by_id: dict[str, str | None] = {node["id"]: None for node in nodes}  # type: ignore[index]
+                for node in nodes:
+                    node_id = node["id"]  # type: ignore[index]
+                    signature = stack_signatures.get(node_id, ())
+                    if not signature:
                         continue
-                    other_sig = stack_signatures.get(other_id, ())
-                    if not other_sig:
-                        continue
-                    if len(other_sig) >= len(signature):
-                        continue
-                    if signature[-len(other_sig):] == other_sig and len(other_sig) > parent_len:
-                        parent_id = other_id
-                        parent_len = len(other_sig)
-                parent_by_id[node_id] = parent_id
+                    parent_id = None
+                    parent_len = -1
+                    for other in nodes:
+                        other_id = other["id"]  # type: ignore[index]
+                        if other_id == node_id:
+                            continue
+                        other_sig = stack_signatures.get(other_id, ())
+                        if not other_sig:
+                            continue
+                        if len(other_sig) >= len(signature):
+                            continue
+                        if match_fn(signature, other_sig) and len(other_sig) > parent_len:
+                            parent_id = other_id
+                            parent_len = len(other_sig)
+                    parent_by_id[node_id] = parent_id
+                return parent_by_id
+
+            def _count_parents(parent_by_id: dict[str, str | None]) -> int:
+                return sum(1 for parent_id in parent_by_id.values() if parent_id)
+
+            parent_by_suffix = _compute_parent_by_id(
+                lambda signature, other_sig: signature[-len(other_sig):] == other_sig
+            )
+            parent_by_prefix = _compute_parent_by_id(
+                lambda signature, other_sig: signature[:len(other_sig)] == other_sig
+            )
+            parent_by_id = (
+                parent_by_prefix
+                if _count_parents(parent_by_prefix) > _count_parents(parent_by_suffix)
+                else parent_by_suffix
+            )
 
             children_by_id: dict[str, list[str]] = {node["id"]: [] for node in nodes}  # type: ignore[index]
             for child_id, parent_id in parent_by_id.items():
