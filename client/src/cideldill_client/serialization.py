@@ -4,15 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from cideldill_shared import serialization_common as _common
-
+from . import serialization_common as _common
 from .exceptions import DebugSerializationError
 
 try:
     from .custom_picklers import UnpicklablePlaceholder, auto_register_for_pickling
 except Exception:  # pragma: no cover - fallback for environments without custom_picklers
 
-    from cideldill_shared.serialization_common import UnpicklablePlaceholder
+    from .serialization_common import UnpicklablePlaceholder
 
     def auto_register_for_pickling(obj: Any, protocol: int | None = None) -> bool:
         return False
@@ -23,7 +22,7 @@ def _configure() -> None:
         auto_register_for_pickling,
         UnpicklablePlaceholder,
         DebugSerializationError,
-        logger_name="cideldill_client.serialization",
+        logger_name=__name__,
         module_key="object_module",
     )
 
@@ -88,6 +87,7 @@ class Serializer(_common.Serializer):
     def verify_cid(data_base64: str, expected_cid: str) -> bool:
         _configure()
         return _common.Serializer.verify_cid(data_base64, expected_cid)
+
 
 __all__ = [
     "CIDCache",

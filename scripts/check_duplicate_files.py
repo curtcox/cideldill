@@ -12,6 +12,10 @@ DUPLICATES = [
         Path("server/src/cideldill_server/serialization.py"),
     ),
     (
+        Path("client/src/cideldill_client/serialization_common.py"),
+        Path("server/src/cideldill_server/serialization_common.py"),
+    ),
+    (
         Path("client/src/cideldill_client/exceptions.py"),
         Path("server/src/cideldill_server/exceptions.py"),
     ),

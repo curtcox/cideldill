@@ -4,15 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from cideldill_shared import serialization_common as _common
-
+from . import serialization_common as _common
 from .exceptions import DebugSerializationError
 
 try:
     from .custom_picklers import UnpicklablePlaceholder, auto_register_for_pickling
 except Exception:  # pragma: no cover - fallback for environments without custom_picklers
 
-    from cideldill_shared.serialization_common import UnpicklablePlaceholder
+    from .serialization_common import UnpicklablePlaceholder
 
     def auto_register_for_pickling(obj: Any, protocol: int | None = None) -> bool:
         return False
@@ -23,8 +22,8 @@ def _configure() -> None:
         auto_register_for_pickling,
         UnpicklablePlaceholder,
         DebugSerializationError,
-        logger_name="cideldill_server.serialization",
-        module_key="module",
+        logger_name=__name__,
+        module_key="object_module",
     )
 
 
@@ -41,6 +40,26 @@ def deserialize(data: bytes) -> Any:
 def compute_cid(obj: Any) -> str:
     _configure()
     return _common.compute_cid(obj)
+
+
+def _safe_dumps(
+    obj: Any,
+    *,
+    depth: int = 0,
+    max_depth: int = _common.DEFAULT_MAX_DEPTH,
+    max_attributes: int = _common.DEFAULT_MAX_ATTRIBUTES,
+    strict: bool = False,
+    _visited: set[int] | None = None,
+) -> bytes:
+    _configure()
+    return _common._safe_dumps(
+        obj,
+        depth=depth,
+        max_depth=max_depth,
+        max_attributes=max_attributes,
+        strict=strict,
+        _visited=_visited,
+    )
 
 
 SerializedObject = _common.SerializedObject
@@ -69,6 +88,7 @@ class Serializer(_common.Serializer):
         _configure()
         return _common.Serializer.verify_cid(data_base64, expected_cid)
 
+
 __all__ = [
     "CIDCache",
     "SerializedObject",
@@ -76,4 +96,5 @@ __all__ = [
     "compute_cid",
     "deserialize",
     "serialize",
+    "_safe_dumps",
 ]
