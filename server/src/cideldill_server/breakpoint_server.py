@@ -2300,7 +2300,6 @@ class BreakpointServer:
       if (!links.length) return '';
       return `<div class="object-links">${links.join(' ')}</div>`;
     }
-    }
 
     function updateTimelineControls() {
       const slider = document.getElementById('timeline');
