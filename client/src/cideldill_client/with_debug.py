@@ -272,7 +272,7 @@ def _register_callable_or_halt(
     signature: str | None,
 ) -> None:
     try:
-        client.register_function(name, signature=signature)
+        client.register_function(name, signature=signature, target=target)
         register_local_function(target, name=name, signature=signature)
     except SystemExit:
         raise

@@ -251,7 +251,7 @@ def test_with_debug_registers_callable_for_breakpoints(monkeypatch) -> None:
 
     register_calls: list[str] = []
 
-    def record_register(self, function_name: str, signature: str | None = None) -> None:
+    def record_register(self, function_name: str, signature: str | None = None, **_: object) -> None:
         register_calls.append(function_name)
 
     monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
@@ -279,7 +279,7 @@ def test_with_debug_registers_callable_even_when_target_is_proxy(monkeypatch) ->
 
     register_calls: list[str] = []
 
-    def record_register(self, function_name: str, signature: str | None = None) -> None:
+    def record_register(self, function_name: str, signature: str | None = None, **_: object) -> None:
         register_calls.append(function_name)
 
     monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
@@ -308,7 +308,7 @@ def test_with_debug_registers_alias_name_for_callable(monkeypatch) -> None:
 
     register_calls: list[str] = []
 
-    def record_register(self, function_name: str, signature: str | None = None) -> None:
+    def record_register(self, function_name: str, signature: str | None = None, **_: object) -> None:
         register_calls.append(function_name)
 
     monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
@@ -336,7 +336,7 @@ def test_with_debug_registers_callable_object_for_breakpoints(monkeypatch) -> No
 
     register_calls: list[str] = []
 
-    def record_register(self, function_name: str, signature: str | None = None) -> None:
+    def record_register(self, function_name: str, signature: str | None = None, **_: object) -> None:
         register_calls.append(function_name)
 
     monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
@@ -404,7 +404,7 @@ def test_with_debug_alias_callable_object_registers_alias(monkeypatch) -> None:
 
     register_calls: list[str] = []
 
-    def record_register(self, function_name: str, signature: str | None = None) -> None:
+    def record_register(self, function_name: str, signature: str | None = None, **_: object) -> None:
         register_calls.append(function_name)
 
     monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
@@ -472,7 +472,7 @@ def test_with_debug_partial_callable_object_registers_callable_name(monkeypatch)
 
     register_calls: list[str] = []
 
-    def record_register(self, function_name: str, signature: str | None = None) -> None:
+    def record_register(self, function_name: str, signature: str | None = None, **_: object) -> None:
         register_calls.append(function_name)
 
     monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
@@ -541,7 +541,7 @@ def test_with_debug_signature_failure_does_not_block_registration(monkeypatch) -
 
     register_calls: list[str] = []
 
-    def record_register(self, function_name: str, signature: str | None = None) -> None:
+    def record_register(self, function_name: str, signature: str | None = None, **_: object) -> None:
         register_calls.append(function_name)
         assert signature in (None, "")
 
@@ -621,7 +621,7 @@ def test_with_debug_callable_breakpointed_even_if_serialization_minimal(monkeypa
     register_calls: list[str] = []
     call_names: list[str] = []
 
-    def record_register(self, function_name: str, signature: str | None = None) -> None:
+    def record_register(self, function_name: str, signature: str | None = None, **_: object) -> None:
         register_calls.append(function_name)
 
     def record_call_start(
@@ -735,7 +735,7 @@ def test_with_debug_dynamic_function_registers(monkeypatch) -> None:
 
     register_calls: list[str] = []
 
-    def record_register(self, function_name: str, signature: str | None = None) -> None:
+    def record_register(self, function_name: str, signature: str | None = None, **_: object) -> None:
         register_calls.append(function_name)
 
     monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
@@ -855,7 +855,7 @@ def test_with_debug_breakpoint_unavailable_halts(monkeypatch) -> None:
 
     events: list[dict[str, object]] = []
 
-    def record_register(self, function_name: str, signature: str | None = None) -> None:
+    def record_register(self, function_name: str, signature: str | None = None, **_: object) -> None:
         raise RuntimeError("registration failed")
 
     def record_event(
@@ -902,7 +902,7 @@ def test_with_debug_alias_callable_is_serializable(monkeypatch) -> None:
     def noop_check(self) -> None:
         return None
 
-    def record_register(self, function_name: str, signature: str | None = None) -> None:
+    def record_register(self, function_name: str, signature: str | None = None, **_: object) -> None:
         return None
 
     monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)

@@ -14,6 +14,7 @@ pytest.importorskip("dill")
 from cideldill_server.breakpoint_manager import BreakpointManager
 from cideldill_server.breakpoint_server import BreakpointServer
 from cideldill_server.serialization import Serializer
+from cideldill_server.serialization_common import UnpicklablePlaceholder
 
 
 @pytest.fixture
@@ -101,6 +102,50 @@ def test_delete_breakpoint_endpoint(server) -> None:
     response = server.test_client().delete("/api/breakpoints/my_func")
     assert response.status_code == 200
     assert "my_func" not in server.manager.get_breakpoints()
+
+
+def test_register_function_includes_placeholder_metadata(server) -> None:
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    placeholder = UnpicklablePlaceholder(
+        type_name="ConfiguredFunction",
+        module="nat.builder.workflow_builder",
+        qualname="ConfiguredFunction",
+        object_id="0x1",
+        repr_text="<ConfiguredFunction>",
+        str_text=None,
+        attributes={},
+        failed_attributes={},
+        pickle_error="TypeError: not picklable",
+        pickle_attempts=["dill.dumps: TypeError"],
+        capture_timestamp=0.0,
+        depth=0,
+        object_name="asset_tool",
+        object_path="nat.builder.workflow_builder.ConfiguredFunction",
+    )
+    serializer = Serializer()
+    serialized = serializer.force_serialize_with_data(placeholder)
+
+    response = server.test_client().post(
+        "/api/functions",
+        data=json.dumps({
+            "function_name": "asset_tool",
+            "function_cid": serialized.cid,
+            "function_data": serialized.data_base64,
+        }),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200
+
+    response = server.test_client().get("/api/functions")
+    assert response.status_code == 200
+    data = json.loads(response.data)
+    metadata = data["function_metadata"]["asset_tool"]
+    assert metadata["__cideldill_placeholder__"] is True
+    assert metadata["object_name"] == "asset_tool"
 
 
 def test_get_paused_executions_endpoint(server) -> None:

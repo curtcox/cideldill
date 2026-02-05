@@ -98,17 +98,42 @@ class DebugClient:
                 self._server_url,
             )
 
-    def register_function(self, function_name: str, signature: str | None = None) -> None:
+    def register_function(
+        self,
+        function_name: str,
+        signature: str | None = None,
+        *,
+        target: Any | None = None,
+    ) -> None:
         self.register_breakpoint(function_name, signature=signature)
         payload: dict[str, Any] = {"function_name": function_name}
         if signature is not None:
             payload["signature"] = signature
+        if target is not None:
+            serialized = self._serializer.force_serialize_with_data(target)
+            if serialized.data_base64:
+                try:
+                    value = self._serializer.deserialize_base64(serialized.data_base64)
+                except Exception:
+                    value = None
+                if value is not None and self._is_placeholder(value):
+                    payload["function_cid"] = serialized.cid
+                    payload["function_data"] = serialized.data_base64
         response = self._post_json("/api/functions", payload)
         if response.get("status") != "ok":
             exit_with_server_failure(
                 "Debug server failed to register function",
                 self._server_url,
             )
+
+    @staticmethod
+    def _is_placeholder(value: Any) -> bool:
+        return (
+            hasattr(value, "pickle_error")
+            and hasattr(value, "attributes")
+            and hasattr(value, "failed_attributes")
+            and hasattr(value, "type_name")
+        )
 
     def record_call_start(
         self,

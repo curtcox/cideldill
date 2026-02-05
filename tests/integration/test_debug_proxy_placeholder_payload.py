@@ -68,7 +68,7 @@ def test_debug_proxy_sends_placeholder_payloads(monkeypatch, tmp_path):
             def check_connection(self) -> None:
                 return None
 
-            def register_function(self, function_name, signature=None):
+            def register_function(self, function_name, signature=None, **_):
                 return None
 
             def _post_json(self, path, payload):
