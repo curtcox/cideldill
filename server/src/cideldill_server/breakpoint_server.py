@@ -942,11 +942,13 @@ class BreakpointServer:
         def _placeholder_summary(value: object) -> str:
             module = getattr(value, "module", "unknown")
             qualname = getattr(value, "qualname", getattr(value, "type_name", "Unknown"))
+            object_name = getattr(value, "object_name", None)
             attrs = getattr(value, "attributes", {}) or {}
             failed = getattr(value, "failed_attributes", {}) or {}
             error = getattr(value, "pickle_error", "")
+            name_prefix = f"{object_name} " if object_name else ""
             return (
-                f"<Unpicklable {module}.{qualname} "
+                f"<Unpicklable {name_prefix}{module}.{qualname} "
                 f"attrs={len(attrs)} failed={len(failed)} error={error}>"
             )
 
@@ -974,6 +976,8 @@ class BreakpointServer:
                 "type_name": getattr(value, "type_name", "Unknown"),
                 "module": getattr(value, "module", "unknown"),
                 "qualname": getattr(value, "qualname", "Unknown"),
+                "object_name": getattr(value, "object_name", None),
+                "object_path": getattr(value, "object_path", None),
                 "object_id": getattr(value, "object_id", "unknown"),
                 "repr_text": getattr(value, "repr_text", ""),
                 "str_text": getattr(value, "str_text", None),

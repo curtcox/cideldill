@@ -35,6 +35,8 @@ class UnpicklablePlaceholder:
     pickle_attempts: list[str]
     capture_timestamp: float
     depth: int
+    object_name: str | None = None
+    object_path: str | None = None
 
     def __repr__(self) -> str:
         n_ok = len(self.attributes)
@@ -50,6 +52,8 @@ class UnpicklablePlaceholder:
             "type_name": self.type_name,
             "module": self.module,
             "qualname": self.qualname,
+            "object_name": self.object_name,
+            "object_path": self.object_path,
             "object_id": self.object_id,
             "repr_text": self.repr_text,
             "str_text": self.str_text,
@@ -488,6 +492,8 @@ def _reconstruct_placeholder(info: dict) -> UnpicklablePlaceholder:
         pickle_attempts=info.get("pickle_attempts", []),
         capture_timestamp=info.get("capture_timestamp", 0.0),
         depth=info.get("depth", 0),
+        object_name=info.get("object_name"),
+        object_path=info.get("object_path"),
     )
 
 

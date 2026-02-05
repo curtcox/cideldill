@@ -40,6 +40,8 @@ class UnpicklablePlaceholder:  # noqa: D401 - fallback placeholder
     pickle_attempts: list[str]
     capture_timestamp: float
     depth: int
+    object_name: str | None = None
+    object_path: str | None = None
 
     def __repr__(self) -> str:
         n_ok = len(self.attributes)
@@ -54,6 +56,8 @@ class UnpicklablePlaceholder:  # noqa: D401 - fallback placeholder
             "type_name": self.type_name,
             "module": self.module,
             "qualname": self.qualname,
+            "object_name": self.object_name,
+            "object_path": self.object_path,
             "object_id": self.object_id,
             "repr_text": self.repr_text,
             "str_text": self.str_text,
@@ -132,6 +136,27 @@ def _safe_str(obj: Any, repr_text: str, *, max_length: int = MAX_REPR_LENGTH) ->
     return text
 
 
+def _resolve_object_name(obj: Any) -> str:
+    for attr in ("_cideldill_alias_name", "__name__", "name", "tool_name", "function_name"):
+        try:
+            value = getattr(obj, attr)
+        except Exception:  # noqa: BLE001
+            continue
+        if isinstance(value, str) and value:
+            return value
+    qualname = getattr(obj, "__qualname__", None)
+    if isinstance(qualname, str) and qualname:
+        return qualname
+    obj_type = type(obj)
+    return getattr(obj_type, "__qualname__", obj_type.__name__)
+
+
+def _resolve_object_path(module: str, qualname: str) -> str:
+    if module:
+        return f"{module}.{qualname}"
+    return qualname
+
+
 def _should_include_attr(name: str) -> bool:
     if name.startswith("__") and name.endswith("__"):
         return False
@@ -181,11 +206,18 @@ def _minimal_placeholder(
     obj_type = type(obj)
     repr_text = _safe_repr(obj)
     str_text = _safe_str(obj, repr_text)
+    object_name = _resolve_object_name(obj)
+    object_path = _resolve_object_path(
+        obj_type.__module__,
+        getattr(obj_type, "__qualname__", obj_type.__name__),
+    )
     placeholder_cls = _unpicklable_placeholder_cls
     return placeholder_cls(
         type_name=obj_type.__name__,
         module=obj_type.__module__,
         qualname=getattr(obj_type, "__qualname__", obj_type.__name__),
+        object_name=object_name,
+        object_path=object_path,
         object_id=hex(id(obj)),
         repr_text=repr_text,
         str_text=str_text,
@@ -202,11 +234,18 @@ def _circular_ref_placeholder(obj: Any, depth: int) -> UnpicklablePlaceholder:
     obj_type = type(obj)
     repr_text = _safe_repr(obj)
     str_text = _safe_str(obj, repr_text)
+    object_name = _resolve_object_name(obj)
+    object_path = _resolve_object_path(
+        obj_type.__module__,
+        getattr(obj_type, "__qualname__", obj_type.__name__),
+    )
     placeholder_cls = _unpicklable_placeholder_cls
     return placeholder_cls(
         type_name=obj_type.__name__,
         module=obj_type.__module__,
         qualname=getattr(obj_type, "__qualname__", obj_type.__name__),
+        object_name=object_name,
+        object_path=object_path,
         object_id=hex(id(obj)),
         repr_text=repr_text,
         str_text=str_text,
@@ -231,6 +270,11 @@ def _build_snapshot(
     obj_type = type(obj)
     repr_text = _safe_repr(obj)
     str_text = _safe_str(obj, repr_text)
+    object_name = _resolve_object_name(obj)
+    object_path = _resolve_object_path(
+        obj_type.__module__,
+        getattr(obj_type, "__qualname__", obj_type.__name__),
+    )
 
     attributes: dict[str, Any] = {}
     failed_attributes: dict[str, str] = {}
@@ -270,6 +314,8 @@ def _build_snapshot(
         type_name=obj_type.__name__,
         module=obj_type.__module__,
         qualname=getattr(obj_type, "__qualname__", obj_type.__name__),
+        object_name=object_name,
+        object_path=object_path,
         object_id=hex(id(obj)),
         repr_text=repr_text,
         str_text=str_text,
@@ -342,6 +388,7 @@ def _safe_dumps(
         extra={
             "type": type(obj).__qualname__,
             _module_key: type(obj).__module__,
+            "object_name": _resolve_object_name(obj),
             "error": str(last_error),
             "captured_attrs": len(placeholder.attributes),
             "failed_attrs": list(placeholder.failed_attributes.keys()),

@@ -72,5 +72,6 @@ def test_serialization_error_event_sends_placeholder(monkeypatch) -> None:
     assert payload["method_name"] == "pickle_error"
     assert payload["exception_cid"]
     assert payload["exception_data"]
+    assert payload["exception"]["object_name"] == "UnpicklableContainer"
     restored = client._serializer.deserialize_base64(payload["exception_data"])
     assert isinstance(restored, UnpicklablePlaceholder)

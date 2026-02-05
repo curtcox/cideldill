@@ -28,6 +28,7 @@ def test_serialize_degrades_to_placeholder_with_attribute_snapshot():
 
     assert isinstance(restored, UnpicklablePlaceholder)
     assert restored.type_name == "UnpicklableContainer"
+    assert restored.object_name == "UnpicklableContainer"
     assert restored.attributes["ok"] == 123
     assert "bad" in restored.failed_attributes
     assert "TypeError" in restored.failed_attributes["bad"]
@@ -67,4 +68,11 @@ def test_safe_dumps_logging_extra_does_not_overwrite_logrecord(caplog):
         if record.message == "Serialization degraded to placeholder"
     ]
     assert records
-    assert getattr(records[0], "object_module") == UnpicklableContainer.__module__
+    assert any(
+        getattr(record, "object_module") == UnpicklableContainer.__module__
+        for record in records
+    )
+    assert any(
+        getattr(record, "object_name") == "UnpicklableContainer"
+        for record in records
+    )

@@ -126,6 +126,7 @@ def test_debug_proxy_sends_placeholder_payloads(monkeypatch, tmp_path):
         assert pretty_args, "Expected pretty_args in call record"
         assert isinstance(pretty_args[0], dict)
         assert pretty_args[0].get("__cideldill_placeholder__") is True
+        assert pretty_args[0].get("object_name") == "ExplodingGetState"
         assert isinstance(pretty_result, dict)
         assert pretty_result.get("__cideldill_placeholder__") is True
     finally:

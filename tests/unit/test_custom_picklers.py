@@ -154,15 +154,19 @@ def test_reconstruct_from_dict_with_additional_state():
 
 def test_reconstruct_placeholder():
     info = {
-        "type": SimpleClass,
+        "type_name": "SimpleClass",
         "repr": "<SimpleClass object>",
         "module": "test_custom_picklers",
         "qualname": "SimpleClass",
+        "object_name": "simple_tool",
+        "object_path": "test_custom_picklers.SimpleClass",
     }
 
     placeholder = _reconstruct_placeholder(info)
     assert "Unpicklable" in repr(placeholder)
     assert "SimpleClass" in repr(placeholder)
+    assert placeholder.object_name == "simple_tool"
+    assert placeholder.object_path == "test_custom_picklers.SimpleClass"
 
 
 # PickleRegistry
