@@ -7,9 +7,10 @@ import hashlib
 import logging
 import threading
 import time
+import traceback
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 
 import dill
 
@@ -75,12 +76,15 @@ def _default_auto_register_for_pickling(obj: Any, protocol: int | None = None) -
 
 auto_register_for_pickling = _default_auto_register_for_pickling
 DebugSerializationError: type[Exception] = Exception
+ReportSerializationError: Callable[[dict[str, Any]], None] | None = None
+_report_guard = threading.local()
 
 
 def configure_picklers(
     auto_register: Any,
     placeholder_cls: type[UnpicklablePlaceholder] | None = None,
     debug_serialization_error: type[Exception] | None = None,
+    report_serialization_error: Callable[[dict[str, Any]], None] | None = None,
     logger_name: str | None = None,
     module_key: str | None = None,
 ) -> None:
@@ -88,6 +92,7 @@ def configure_picklers(
     global auto_register_for_pickling
     global _unpicklable_placeholder_cls
     global DebugSerializationError
+    global ReportSerializationError
     global logger
     global _module_key
 
@@ -96,6 +101,8 @@ def configure_picklers(
         _unpicklable_placeholder_cls = placeholder_cls
     if debug_serialization_error is not None:
         DebugSerializationError = debug_serialization_error
+    if report_serialization_error is not None:
+        ReportSerializationError = report_serialization_error
     if logger_name is not None:
         logger = logging.getLogger(logger_name)
     if module_key is not None:
@@ -125,6 +132,61 @@ def _safe_str(obj: Any, repr_text: str, *, max_length: int = MAX_REPR_LENGTH) ->
     if text == repr_text:
         return None
     return text
+
+
+def _format_traceback(error: Exception) -> tuple[str, list[dict[str, Any]]]:
+    tb = getattr(error, "__traceback__", None)
+    if tb is None:
+        return "", []
+    frames = traceback.extract_tb(tb)
+    stack_trace: list[dict[str, Any]] = []
+    for frame in frames:
+        stack_trace.append({
+            "filename": frame.filename,
+            "lineno": frame.lineno,
+            "function": frame.name,
+            "code_context": frame.line.strip() if frame.line else None,
+        })
+    formatted = "".join(traceback.format_exception(type(error), error, tb))
+    return formatted, stack_trace
+
+
+def _report_serialization_error(
+    obj: Any,
+    error: Exception,
+    attempts: list[str],
+    *,
+    depth: int,
+) -> None:
+    reporter = ReportSerializationError
+    if reporter is None:
+        return
+    if getattr(_report_guard, "active", False):
+        return
+    _report_guard.active = True
+    try:
+        obj_type = type(obj)
+        repr_text = _safe_repr(obj)
+        formatted_tb, stack_trace = _format_traceback(error)
+        report_payload = {
+            "event_type": "pickle_error",
+            "timestamp": time.time(),
+            "object_type": f"{obj_type.__module__}.{getattr(obj_type, '__qualname__', obj_type.__name__)}",
+            "object_id": hex(id(obj)),
+            "object_repr": repr_text,
+            "error": f"{type(error).__name__}: {error}",
+            "attempts": list(attempts),
+            "traceback": _truncate_text(formatted_tb, 8000),
+            "call_site": {
+                "timestamp": time.time(),
+                "stack_trace": stack_trace,
+            },
+        }
+        reporter(report_payload)
+    except Exception:
+        return
+    finally:
+        _report_guard.active = False
 
 
 def _should_include_attr(name: str) -> bool:
@@ -318,6 +380,8 @@ def _safe_dumps(
 
     if strict:
         raise DebugSerializationError(obj, last_error) from last_error
+
+    _report_serialization_error(obj, last_error, attempts, depth=depth)
 
     if depth >= max_depth:
         placeholder = _minimal_placeholder(obj, last_error, attempts, depth)

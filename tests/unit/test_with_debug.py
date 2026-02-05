@@ -19,6 +19,17 @@ class AsyncCallable:
         return "ok"
 
 
+def _mock_server_ok(monkeypatch) -> None:
+    def record_post(self, path, payload):
+        return {"status": "ok"}
+
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient._post_json",
+        record_post,
+        raising=False,
+    )
+
+
 def test_with_debug_off_returns_info() -> None:
     info = with_debug("OFF")
     assert info.is_enabled() is False
@@ -88,6 +99,7 @@ def test_with_debug_wraps_object_when_on(monkeypatch) -> None:
         return None
 
     monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
+    _mock_server_ok(monkeypatch)
     configure_debug(server_url="http://localhost:5000")
     with_debug("ON")
 
@@ -96,6 +108,97 @@ def test_with_debug_wraps_object_when_on(monkeypatch) -> None:
     assert isinstance(proxy, DebugProxy)
     assert proxy is not target
     assert proxy == proxy
+
+
+def test_with_debug_off_does_not_contact_server(monkeypatch) -> None:
+    """When debug is OFF, with_debug should not contact the server."""
+    def fail_post(self, path, payload):
+        raise AssertionError("Server contact should not occur when debug is OFF")
+
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient._post_json",
+        fail_post,
+        raising=False,
+    )
+
+    with_debug("OFF")
+    target = Sample()
+    result = with_debug(target)
+    assert result is target
+
+
+def test_with_debug_on_sends_registration_event(monkeypatch) -> None:
+    """with_debug should confirm registration was sent to the server."""
+    def noop_check(self) -> None:
+        return None
+
+    calls: list[str] = []
+
+    def record_post(self, path, payload):
+        calls.append(path)
+        return {"status": "ok"}
+
+    monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient._post_json",
+        record_post,
+        raising=False,
+    )
+    configure_debug(server_url="http://localhost:5000")
+    with_debug("ON")
+
+    def my_fn() -> int:
+        return 1
+
+    _wrapped = with_debug(my_fn)
+    assert "/api/call/event" in calls
+
+
+def test_with_debug_on_wraps_non_callable_sends_event(monkeypatch) -> None:
+    """Non-callable registrations should also be confirmed to the server."""
+    def noop_check(self) -> None:
+        return None
+
+    calls: list[str] = []
+
+    def record_post(self, path, payload):
+        calls.append(path)
+        return {"status": "ok"}
+
+    monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient._post_json",
+        record_post,
+        raising=False,
+    )
+    configure_debug(server_url="http://localhost:5000")
+    with_debug("ON")
+
+    target = Sample()
+    _wrapped = with_debug(target)
+    assert "/api/call/event" in calls
+
+
+def test_with_debug_on_exits_if_registration_not_confirmed(monkeypatch) -> None:
+    """with_debug should exit loudly if it cannot confirm server registration."""
+    def noop_check(self) -> None:
+        return None
+
+    def fail_post(self, path, payload):
+        raise SystemExit(1)
+
+    monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient._post_json",
+        fail_post,
+        raising=False,
+    )
+    configure_debug(server_url="http://localhost:5000")
+    with_debug("ON")
+
+    target = Sample()
+    with pytest.raises(SystemExit):
+        with_debug(target)
 
 
 def test_with_debug_registers_callable_for_breakpoints(monkeypatch) -> None:
@@ -110,6 +213,7 @@ def test_with_debug_registers_callable_for_breakpoints(monkeypatch) -> None:
         register_calls.append(function_name)
 
     monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
+    _mock_server_ok(monkeypatch)
     monkeypatch.setattr(
         "cideldill_client.debug_client.DebugClient.register_function",
         record_register,
@@ -137,6 +241,7 @@ def test_with_debug_registers_callable_even_when_target_is_proxy(monkeypatch) ->
         register_calls.append(function_name)
 
     monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
+    _mock_server_ok(monkeypatch)
     monkeypatch.setattr(
         "cideldill_client.debug_client.DebugClient.register_function",
         record_register,
@@ -165,6 +270,7 @@ def test_with_debug_registers_alias_name_for_callable(monkeypatch) -> None:
         register_calls.append(function_name)
 
     monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
+    _mock_server_ok(monkeypatch)
     monkeypatch.setattr(
         "cideldill_client.debug_client.DebugClient.register_function",
         record_register,
@@ -190,6 +296,7 @@ def test_with_debug_alias_callable_is_serializable(monkeypatch) -> None:
         return None
 
     monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
+    _mock_server_ok(monkeypatch)
     monkeypatch.setattr(
         "cideldill_client.debug_client.DebugClient.register_function",
         record_register,
@@ -242,6 +349,7 @@ def test_with_debug_async_callable_uses_async_proxy(monkeypatch) -> None:
         return None
 
     monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
+    _mock_server_ok(monkeypatch)
     configure_debug(server_url="http://localhost:5000")
     with_debug("ON")
 

@@ -14,6 +14,9 @@ def _stub_debug_client(monkeypatch) -> None:
     def record_call_complete(self, *args, **kwargs):  # type: ignore[no-untyped-def]
         return None
 
+    def post_ok(self, path, payload):  # type: ignore[no-untyped-def]
+        return {"status": "ok"}
+
     monkeypatch.setattr(
         "cideldill_client.debug_client.DebugClient.check_connection",
         noop_check,
@@ -26,6 +29,11 @@ def _stub_debug_client(monkeypatch) -> None:
     monkeypatch.setattr(
         "cideldill_client.debug_client.DebugClient.record_call_complete",
         record_call_complete,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient._post_json",
+        post_ok,
         raising=False,
     )
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from . import serialization_common as _common
 from .exceptions import DebugSerializationError
@@ -17,11 +17,22 @@ except Exception:  # pragma: no cover - fallback for environments without custom
         return False
 
 
+_reporter: Callable[[dict[str, Any]], None] | None = None
+
+
+def set_serialization_error_reporter(
+    reporter: Callable[[dict[str, Any]], None] | None,
+) -> None:
+    global _reporter
+    _reporter = reporter
+
+
 def _configure() -> None:
     _common.configure_picklers(
         auto_register_for_pickling,
         UnpicklablePlaceholder,
         DebugSerializationError,
+        report_serialization_error=_reporter,
         logger_name=__name__,
         module_key="object_module",
     )
@@ -97,4 +108,5 @@ __all__ = [
     "deserialize",
     "serialize",
     "_safe_dumps",
+    "set_serialization_error_reporter",
 ]

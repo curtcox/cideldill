@@ -358,7 +358,6 @@ def auto_register_for_pickling(obj: Any, protocol: int | None = None) -> bool:
             logger.warning(
                 "Auto-registered reducer failed to pickle %s",
                 obj_type,
-                exc_info=True,
             )
             return False
 
@@ -368,7 +367,6 @@ def auto_register_for_pickling(obj: Any, protocol: int | None = None) -> bool:
         logger.warning(
             "Failed to auto-register custom pickler for %s",
             obj_type,
-            exc_info=True,
         )
         return False
 
@@ -378,7 +376,6 @@ def auto_register_for_pickling(obj: Any, protocol: int | None = None) -> bool:
         logger.warning(
             "Auto-registered reducer did not make %s picklable",
             obj_type,
-            exc_info=True,
         )
         return False
 

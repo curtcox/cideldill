@@ -5,6 +5,7 @@ for managing breakpoints and paused executions through a web UI.
 """
 
 import base64
+import uuid
 import html
 import json
 import logging
@@ -2792,6 +2793,66 @@ class BreakpointServer:
                     "timeout_ms": 60_000,
                 })
 
+            return jsonify({"status": "ok"})
+
+        @self.app.route('/api/call/event', methods=['POST'])
+        def call_event():
+            """Record an event for call tree views (non-call diagnostics)."""
+            data = request.get_json() or {}
+            process_pid = data.get("process_pid")
+            process_start_time = data.get("process_start_time")
+            process_key = _process_key(process_pid, process_start_time)
+            if process_key is None:
+                return jsonify({
+                    "error": "missing_process_identity",
+                    "message": "process_pid and process_start_time are required",
+                }), 400
+
+            result_data = data.get("result_data")
+            result_cid = data.get("result_cid")
+            exception_data = data.get("exception_data")
+            exception_cid = data.get("exception_cid")
+
+            if result_data and result_cid:
+                self._cid_store.store(result_cid, base64.b64decode(result_data))
+            if exception_data and exception_cid:
+                self._cid_store.store(exception_cid, base64.b64decode(exception_data))
+
+            timestamp = data.get("timestamp") or time.time()
+            call_site = data.get("call_site") or {}
+
+            pretty_result = None
+            if result_cid:
+                pretty_result = _format_payload_value({"cid": result_cid})
+            elif "pretty_result" in data:
+                pretty_result = data.get("pretty_result")
+
+            pretty_exception = None
+            if exception_cid:
+                pretty_exception = _format_payload_value({"cid": exception_cid})
+            elif "exception" in data:
+                pretty_exception = data.get("exception")
+
+            call_record = {
+                "call_id": data.get("event_id") or data.get("call_id") or str(uuid.uuid4()),
+                "method_name": data.get("method_name") or data.get("event_type") or "event",
+                "status": data.get("status") or data.get("event_type") or "event",
+                "pretty_args": data.get("pretty_args", []),
+                "pretty_kwargs": data.get("pretty_kwargs", {}),
+                "signature": data.get("signature"),
+                "call_site": call_site,
+                "process_pid": int(process_pid),
+                "process_start_time": float(process_start_time),
+                "process_key": process_key,
+                "started_at": timestamp,
+                "completed_at": timestamp,
+            }
+            if pretty_result is not None:
+                call_record["pretty_result"] = pretty_result
+            if pretty_exception is not None:
+                call_record["exception"] = pretty_exception
+
+            self.manager.record_call(call_record)
             return jsonify({"status": "ok"})
 
         @self.app.route('/api/paused', methods=['GET'])

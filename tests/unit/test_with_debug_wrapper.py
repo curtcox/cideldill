@@ -40,6 +40,9 @@ def debug_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     def record_call_complete(self, *args, **kwargs):  # type: ignore[no-untyped-def]
         return None
 
+    def post_ok(self, path, payload):  # type: ignore[no-untyped-def]
+        return {"status": "ok"}
+
     monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
     monkeypatch.setattr(
         "cideldill_client.debug_client.DebugClient.record_call_start",
@@ -49,6 +52,11 @@ def debug_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "cideldill_client.debug_client.DebugClient.record_call_complete",
         record_call_complete,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient._post_json",
+        post_ok,
         raising=False,
     )
 

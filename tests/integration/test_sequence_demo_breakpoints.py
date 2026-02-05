@@ -40,25 +40,46 @@ def test_sequence_demo_actually_stops_at_breakpoints(tmp_path: Path, monkeypatch
 
     server_thread = threading.Thread(target=lambda: server.start(), daemon=True)
     server_thread.start()
-    time.sleep(1)  # Wait for server to start
+    server_start_deadline = time.monotonic() + 5.0
+    port = 0
+    while time.monotonic() < server_start_deadline:
+        if port_file.exists():
+            try:
+                port = int(port_file.read_text().strip())
+            except ValueError:
+                port = 0
+        if port:
+            try:
+                resp = requests.get(
+                    f"http://localhost:{port}/api/breakpoints",
+                    timeout=1,
+                )
+                if resp.status_code == 200:
+                    break
+            except requests.RequestException:
+                pass
+        time.sleep(0.05)
+    else:
+        pytest.fail("Breakpoint server did not start within 5 seconds")
 
     try:
         # Set breakpoints like the script does
         for func_name in ["whole_numbers", "announce_say_default", "delay_1s"]:
             response = requests.post(
-                "http://localhost:5002/api/breakpoints",
+                f"http://localhost:{port}/api/breakpoints",
                 json={"function_name": func_name},
                 timeout=5
             )
             assert response.status_code == 200
 
         # Verify breakpoints are set
-        response = requests.get("http://localhost:5002/api/breakpoints", timeout=5)
+        response = requests.get(f"http://localhost:{port}/api/breakpoints", timeout=5)
         breakpoints = response.json()["breakpoints"]
         assert "whole_numbers" in breakpoints
 
         # Now run a simulated sequence demo
-        configure_debug(server_url="http://localhost:5002")
+        monkeypatch.setenv("CIDELDILL_SERVER_URL", f"http://localhost:{port}")
+        configure_debug(server_url=f"http://localhost:{port}")
         with_debug("ON")
 
         # Import the functions from sequence_demo
@@ -91,7 +112,7 @@ def test_sequence_demo_actually_stops_at_breakpoints(tmp_path: Path, monkeypatch
         time.sleep(0.5)  # Give it time to hit breakpoint
 
         # Check if there are paused executions
-        response = requests.get("http://localhost:5002/api/paused", timeout=5)
+        response = requests.get(f"http://localhost:{port}/api/paused", timeout=5)
         paused = response.json().get("paused", [])
 
         # This should have paused executions if breakpoints are working
@@ -103,7 +124,7 @@ def test_sequence_demo_actually_stops_at_breakpoints(tmp_path: Path, monkeypatch
         # Resume execution
         pause_id = paused[0]["id"]
         requests.post(
-            f"http://localhost:5002/api/paused/{pause_id}/continue",
+            f"http://localhost:{port}/api/paused/{pause_id}/continue",
             json={"action": "continue"},
             timeout=5
         )
@@ -114,6 +135,7 @@ def test_sequence_demo_actually_stops_at_breakpoints(tmp_path: Path, monkeypatch
     finally:
         with_debug("OFF")
         monkeypatch.delenv("CIDELDILL_PORT_FILE", raising=False)
+        monkeypatch.delenv("CIDELDILL_SERVER_URL", raising=False)
 
 
 def test_breakpoint_behavior_defaults():
@@ -163,17 +185,34 @@ def test_behavior_api_endpoints(tmp_path: Path, monkeypatch):
 
     server_thread = threading.Thread(target=lambda: server.start(), daemon=True)
     server_thread.start()
-    time.sleep(1)
+    server_start_deadline = time.monotonic() + 5.0
+    port = 0
+    while time.monotonic() < server_start_deadline:
+        if port_file.exists():
+            try:
+                port = int(port_file.read_text().strip())
+            except ValueError:
+                port = 0
+        if port:
+            try:
+                resp = requests.get(f"http://localhost:{port}/api/behavior", timeout=1)
+                if resp.status_code == 200:
+                    break
+            except requests.RequestException:
+                pass
+        time.sleep(0.05)
+    else:
+        pytest.fail("Breakpoint server did not start within 5 seconds")
 
     try:
         # Get default behavior
-        response = requests.get("http://localhost:5003/api/behavior", timeout=5)
+        response = requests.get(f"http://localhost:{port}/api/behavior", timeout=5)
         assert response.status_code == 200
         assert response.json()["behavior"] == "stop"
 
         # Set to go
         response = requests.post(
-            "http://localhost:5003/api/behavior",
+            f"http://localhost:{port}/api/behavior",
             json={"behavior": "go"},
             timeout=5,
         )
@@ -181,12 +220,12 @@ def test_behavior_api_endpoints(tmp_path: Path, monkeypatch):
         assert response.json()["behavior"] == "go"
 
         # Verify it was set
-        response = requests.get("http://localhost:5003/api/behavior", timeout=5)
+        response = requests.get(f"http://localhost:{port}/api/behavior", timeout=5)
         assert response.json()["behavior"] == "go"
 
         # Try invalid behavior
         response = requests.post(
-            "http://localhost:5003/api/behavior",
+            f"http://localhost:{port}/api/behavior",
             json={"behavior": "invalid"},
             timeout=5
         )

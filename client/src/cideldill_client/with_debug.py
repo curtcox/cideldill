@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import os
 import threading
+import time
 from dataclasses import dataclass
 from functools import wraps
 from typing import Any
@@ -12,12 +13,13 @@ from urllib.parse import urlparse
 
 from .debug_client import DebugClient
 from .debug_info import DebugInfo
-from .debug_proxy import AsyncDebugProxy, DebugProxy
+from .debug_proxy import AsyncDebugProxy, DebugProxy, _build_stack_trace
 from .exceptions import DebugServerError
 from .function_registry import compute_signature
 from .function_registry import register_function as register_local_function
 from .port_discovery import read_port_from_discovery_file
 from .server_failure import exit_with_server_failure
+from .serialization import set_serialization_error_reporter
 
 
 @dataclass
@@ -79,6 +81,21 @@ def with_debug(target: Any) -> Any:
             signature = compute_signature(underlying)
             client.register_function(underlying.__name__, signature=signature)
             register_local_function(underlying, signature=signature)
+            _record_registration(
+                client,
+                name=underlying.__name__,
+                signature=signature,
+                alias_name=getattr(target, "_cideldill_alias_name", None),
+                target=underlying,
+            )
+        else:
+            _record_registration(
+                client,
+                name=type(underlying).__qualname__,
+                signature=None,
+                alias_name=getattr(target, "_cideldill_alias_name", None),
+                target=underlying,
+            )
         return target
 
     if callable(target) and hasattr(target, "__name__"):
@@ -86,6 +103,13 @@ def with_debug(target: Any) -> Any:
             signature = compute_signature(target)
             client.register_function(alias_name, signature=signature)
             register_local_function(target, name=alias_name, signature=signature)
+            _record_registration(
+                client,
+                name=alias_name,
+                signature=signature,
+                alias_name=alias_name,
+                target=target,
+            )
 
             original = target
 
@@ -100,6 +124,29 @@ def with_debug(target: Any) -> Any:
             signature = compute_signature(target)
             client.register_function(target.__name__, signature=signature)
             register_local_function(target, signature=signature)
+            _record_registration(
+                client,
+                name=target.__name__,
+                signature=signature,
+                alias_name=None,
+                target=target,
+            )
+    elif alias_name is not None:
+        _record_registration(
+            client,
+            name=alias_name,
+            signature=None,
+            alias_name=alias_name,
+            target=target,
+        )
+    else:
+        _record_registration(
+            client,
+            name=type(target).__qualname__,
+            signature=None,
+            alias_name=None,
+            target=target,
+        )
 
     proxy_class = AsyncDebugProxy if _is_coroutine_target(target) else DebugProxy
     proxy = proxy_class(target, client, _is_debug_enabled)
@@ -114,6 +161,7 @@ def _set_debug_mode(enabled: bool) -> DebugInfo:
         with _state_lock:
             _state.enabled = False
             _state.client = None
+        set_serialization_error_reporter(None)
         return DebugInfo(enabled=False, server=None, status="disabled")
 
     server_url = _resolve_server_url()
@@ -127,9 +175,39 @@ def _set_debug_mode(enabled: bool) -> DebugInfo:
         exit_with_server_failure(str(exc), server_url, exc)
 
     with _state_lock:
+        client.enable_events()
         _state.client = client
         _state.enabled = True
     return DebugInfo(enabled=True, server=server_url, status="connected")
+
+
+def _record_registration(
+    client: DebugClient,
+    *,
+    name: str,
+    signature: str | None,
+    alias_name: str | None,
+    target: Any,
+) -> None:
+    if not hasattr(client, "record_event"):
+        return
+    call_site = {
+        "timestamp": time.time(),
+        "stack_trace": _build_stack_trace(skip=2),
+    }
+    result_payload = {
+        "event": "with_debug_registration",
+        "function_name": name,
+        "signature": signature,
+        "alias": alias_name,
+        "target_type": f"{type(target).__module__}.{type(target).__qualname__}",
+    }
+    client.record_event(
+        method_name="with_debug.register",
+        status="registered",
+        call_site=call_site,
+        result=result_payload,
+    )
 
 
 def _is_debug_enabled() -> bool:

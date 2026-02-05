@@ -18,7 +18,7 @@ from .exceptions import (
     DebugProtocolError,
 )
 from .server_failure import exit_with_server_failure
-from .serialization import Serializer
+from .serialization import Serializer, set_serialization_error_reporter
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +42,15 @@ class DebugClient:
         self._object_cache_limit = 10_000
         self._process_pid = os.getpid()
         self._process_start_time = time.time()
+        self._events_enabled = False
+        set_serialization_error_reporter(self._report_serialization_error)
 
     @property
     def server_url(self) -> str:
         return self._server_url
+
+    def enable_events(self) -> None:
+        self._events_enabled = True
 
     def check_connection(self) -> None:
         """Verify that the server is reachable."""
@@ -466,6 +471,61 @@ class DebugClient:
                 self._server_url,
             )
         return data
+
+    def record_event(
+        self,
+        *,
+        method_name: str,
+        status: str,
+        call_site: dict[str, Any],
+        pretty_args: list[Any] | None = None,
+        pretty_kwargs: dict[str, Any] | None = None,
+        signature: str | None = None,
+        result: Any | None = None,
+        exception: Any | None = None,
+    ) -> None:
+        if not self._events_enabled:
+            return
+        payload: dict[str, Any] = {
+            "method_name": method_name,
+            "status": status,
+            "timestamp": time.time(),
+            "call_site": call_site,
+            "process_pid": self._process_pid,
+            "process_start_time": self._process_start_time,
+            "pretty_args": pretty_args or [],
+            "pretty_kwargs": pretty_kwargs or {},
+        }
+        if signature is not None:
+            payload["signature"] = signature
+        if result is not None:
+            payload["pretty_result"] = self._sanitize_for_json(result)
+        if exception is not None:
+            payload["exception"] = self._sanitize_for_json(exception)
+
+        response = self._post_json("/api/call/event", payload)
+        if response.get("status") != "ok":
+            exit_with_server_failure(
+                "Debug server failed to record debug event",
+                self._server_url,
+            )
+
+    def _report_serialization_error(self, payload: dict[str, Any]) -> None:
+        if not self._events_enabled:
+            return
+        info = dict(payload)
+        call_site = info.pop("call_site", None) or {"timestamp": time.time(), "stack_trace": []}
+        pretty_kwargs = {
+            "object_type": info.get("object_type"),
+            "object_id": info.get("object_id"),
+        }
+        self.record_event(
+            method_name="pickle_error",
+            status="serialization_error",
+            call_site=call_site,
+            pretty_kwargs=pretty_kwargs,
+            exception=info,
+        )
 
     def _get_json(self, path: str) -> dict[str, Any]:
         deadline = time.time() + self._retry_timeout_s

@@ -9,7 +9,7 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 
 import dill
 
@@ -75,12 +75,14 @@ def _default_auto_register_for_pickling(obj: Any, protocol: int | None = None) -
 
 auto_register_for_pickling = _default_auto_register_for_pickling
 DebugSerializationError: type[Exception] = Exception
+ReportSerializationError: Callable[[dict[str, Any]], None] | None = None
 
 
 def configure_picklers(
     auto_register: Any,
     placeholder_cls: type[UnpicklablePlaceholder] | None = None,
     debug_serialization_error: type[Exception] | None = None,
+    report_serialization_error: Callable[[dict[str, Any]], None] | None = None,
     logger_name: str | None = None,
     module_key: str | None = None,
 ) -> None:
@@ -88,6 +90,7 @@ def configure_picklers(
     global auto_register_for_pickling
     global _unpicklable_placeholder_cls
     global DebugSerializationError
+    global ReportSerializationError
     global logger
     global _module_key
 
@@ -96,6 +99,8 @@ def configure_picklers(
         _unpicklable_placeholder_cls = placeholder_cls
     if debug_serialization_error is not None:
         DebugSerializationError = debug_serialization_error
+    if report_serialization_error is not None:
+        ReportSerializationError = report_serialization_error
     if logger_name is not None:
         logger = logging.getLogger(logger_name)
     if module_key is not None:
