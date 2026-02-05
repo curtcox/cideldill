@@ -24,6 +24,25 @@ from .serialization import Serializer, set_serialization_error_reporter
 
 logger = logging.getLogger(__name__)
 
+_PROCESS_IDENTITY_LOCK = threading.Lock()
+_PROCESS_IDENTITY: dict[str, float | int | None] = {
+    "pid": None,
+    "start_time": None,
+}
+
+
+def _get_process_identity() -> tuple[int, float]:
+    pid = os.getpid()
+    with _PROCESS_IDENTITY_LOCK:
+        cached_pid = _PROCESS_IDENTITY.get("pid")
+        cached_start = _PROCESS_IDENTITY.get("start_time")
+        if cached_pid == pid and isinstance(cached_start, float):
+            return pid, cached_start
+        start_time = time.time()
+        _PROCESS_IDENTITY["pid"] = pid
+        _PROCESS_IDENTITY["start_time"] = start_time
+        return pid, start_time
+
 
 class DebugClient:
     """HTTP client used by debug proxies."""
@@ -48,8 +67,7 @@ class DebugClient:
         self._client_ref_by_id: dict[int, int] = {}
         self._client_ref_objects: OrderedDict[int, Any] = OrderedDict()
         self._client_ref_cache_limit = 10_000
-        self._process_pid = os.getpid()
-        self._process_start_time = time.time()
+        self._process_pid, self._process_start_time = _get_process_identity()
         self._events_enabled = False
         set_serialization_error_reporter(self._report_serialization_error)
 
