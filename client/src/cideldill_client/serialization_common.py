@@ -412,7 +412,19 @@ def _safe_dumps(
     except Exception as exc:  # noqa: BLE001 - extremely defensive
         attempts.append(f"placeholder.dumps: {type(exc).__name__}: {exc}")
         minimal = _minimal_placeholder(obj, last_error, attempts, depth)
-        return dill.dumps(minimal, protocol=DILL_PROTOCOL)
+        try:
+            return dill.dumps(minimal, protocol=DILL_PROTOCOL)
+        except Exception as minimal_exc:  # noqa: BLE001 - final fallback
+            attempts.append(f"minimal_placeholder.dumps: {type(minimal_exc).__name__}: {minimal_exc}")
+            fallback_payload = {
+                "type": type(obj).__qualname__,
+                _module_key: type(obj).__module__,
+                "repr": _safe_repr(obj),
+                "error": str(last_error),
+                "attempts": list(attempts),
+                "timestamp": time.time(),
+            }
+            return dill.dumps(fallback_payload, protocol=DILL_PROTOCOL)
 
 
 def serialize(obj: Any, *, strict: bool = False) -> bytes:

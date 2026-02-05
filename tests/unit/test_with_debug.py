@@ -10,6 +10,7 @@ pytest.importorskip("requests")
 
 from cideldill_client.debug_proxy import AsyncDebugProxy, DebugProxy
 from cideldill_client.with_debug import configure_debug, with_debug
+import cideldill_client.serialization_common as serialization_common
 
 
 class Sample:
@@ -594,8 +595,6 @@ def test_with_debug_unpicklable_callable_records_pickle_error(monkeypatch) -> No
         raising=False,
     )
 
-    import cideldill_client.serialization_common as serialization_common
-
     original_dumps = serialization_common.dill.dumps
 
     def failing_dumps(obj, *args, **kwargs):  # type: ignore[no-untyped-def]
@@ -613,6 +612,77 @@ def test_with_debug_unpicklable_callable_records_pickle_error(monkeypatch) -> No
 
     method_names = [entry["payload"].get("method_name") for entry in events]
     assert "pickle_error" in method_names
+
+
+def test_with_debug_callable_breakpointed_even_if_serialization_minimal(monkeypatch) -> None:
+    def noop_check(self) -> None:
+        return None
+
+    register_calls: list[str] = []
+    call_names: list[str] = []
+
+    def record_register(self, function_name: str, signature: str | None = None) -> None:
+        register_calls.append(function_name)
+
+    def record_call_start(
+        self,
+        method_name: str,
+        target,
+        target_cid: str,
+        args,
+        kwargs,
+        call_site,
+        signature: str | None = None,
+    ):
+        call_names.append(method_name)
+        return {"action": "continue", "call_id": "1"}
+
+    def record_call_complete(self, *args, **kwargs):
+        return None
+
+    def post_ok(self, path, payload):
+        return {"status": "ok"}
+
+    monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient.register_function",
+        record_register,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient.record_call_start",
+        record_call_start,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient.record_call_complete",
+        record_call_complete,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient._post_json",
+        post_ok,
+        raising=False,
+    )
+
+    original_dumps = serialization_common.dill.dumps
+    placeholder_cls = serialization_common.UnpicklablePlaceholder
+
+    def failing_dumps(obj, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if isinstance(obj, (UnpicklableCallable, placeholder_cls)):
+            raise TypeError("forced pickle failure")
+        return original_dumps(obj, *args, **kwargs)
+
+    monkeypatch.setattr(serialization_common.dill, "dumps", failing_dumps)
+
+    configure_debug(server_url="http://localhost:5000")
+    with_debug("ON")
+
+    proxy = with_debug(UnpicklableCallable())
+    assert proxy(7) == 7
+
+    assert "UnpicklableCallable.__call__" in register_calls
+    assert call_names == ["UnpicklableCallable.__call__"]
 
 
 def test_with_debug_bound_method_of_unpicklable_instance(monkeypatch) -> None:

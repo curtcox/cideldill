@@ -73,6 +73,16 @@ If you see this error, try:
 - Ensuring the callable has a stable name and import path
 - Removing custom `__signature__`/`__reduce__` implementations that raise
 
+## Serialization Guarantee For Breakpoints
+
+When debug is ON, callables wrapped with `with_debug` are always registered and
+visible in the breakpoint server, even if the callable (or its internals) is highly
+resistant to serialization.
+
+CID el Dill falls back to minimal serialization payloads so breakpoint discovery
+and call interception continue to work even when detailed object snapshots cannot
+be captured.
+
 ## Handling Unpicklable Objects
 
 CID el Dill automatically handles objects that can't be pickled using dill's default
