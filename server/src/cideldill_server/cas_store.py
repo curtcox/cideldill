@@ -454,3 +454,9 @@ class CASStore:
         if self._conn:
             self._conn.close()
             self._conn = None
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            return

@@ -2916,6 +2916,10 @@ class BreakpointServer:
         self._running = False
         if self._server is not None:
             self._server.shutdown()
+        try:
+            self._cid_store.close()
+        except Exception:
+            return
 
     def is_running(self) -> bool:
         """Check if server is running.

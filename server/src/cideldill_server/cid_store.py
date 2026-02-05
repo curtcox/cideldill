@@ -113,3 +113,17 @@ class CIDStore:
                 "count": count or 0,
                 "total_size_bytes": total_size or 0,
             }
+
+    def close(self) -> None:
+        """Close the underlying database connection."""
+        with self._lock:
+            try:
+                self._conn.close()
+            except Exception:
+                return
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            return
