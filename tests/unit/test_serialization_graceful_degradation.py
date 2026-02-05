@@ -101,7 +101,7 @@ def test_serialize_suppresses_pickling_warnings_by_default(monkeypatch):
     assert not captured
 
 
-def test_serialize_logs_pickling_warnings_when_verbose(monkeypatch, caplog):
+def test_serialize_logs_pickling_warnings_when_verbose(monkeypatch):
     original_dumps = serialization_common.dill.dumps
 
     def noisy_dumps(obj, *args, **kwargs):  # type: ignore[no-untyped-def]
@@ -112,9 +112,13 @@ def test_serialize_logs_pickling_warnings_when_verbose(monkeypatch, caplog):
 
     set_verbose_serialization_warnings(True)
     try:
-        with caplog.at_level(logging.DEBUG, logger="cideldill_client.serialization"):
+        with warnings.catch_warnings(record=True) as captured:
+            warnings.simplefilter("always", category=serialization_common.dill.PicklingWarning)
             serialize({"ok": True})
     finally:
         set_verbose_serialization_warnings(False)
 
-    assert any("PicklingWarning" in record.message for record in caplog.records)
+    assert any(
+        isinstance(w.message, serialization_common.dill.PicklingWarning)
+        for w in captured
+    )

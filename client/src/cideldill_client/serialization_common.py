@@ -118,6 +118,15 @@ def configure_picklers(
 def set_verbose_serialization_warnings(enabled: bool) -> None:
     global _verbose_serialization_warnings
     _verbose_serialization_warnings = enabled
+    pickling_warning = getattr(dill, "PicklingWarning", Warning)
+    if enabled:
+        warnings.filterwarnings("default", category=pickling_warning)
+    else:
+        warnings.filterwarnings("ignore", category=pickling_warning)
+
+
+# Default to suppress pickling warnings unless explicitly enabled.
+set_verbose_serialization_warnings(False)
 
 
 def _truncate_text(text: str, max_length: int) -> str:
@@ -414,6 +423,8 @@ def _try_pickle(obj: Any, attempts: list[str]) -> bytes:
         if _verbose_serialization_warnings and captured:
             for warn in captured:
                 logger.debug("PicklingWarning: %s", warn.message)
+            for warn in captured:
+                warnings.warn(warn.message, category=pickling_warning, stacklevel=3)
         return data
 
     try:
