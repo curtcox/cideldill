@@ -473,6 +473,162 @@ def test_report_com_error_endpoint(server) -> None:
     assert b"Communication Errors" in response.data
 
 
+def test_objects_page_lists_refs_and_cids(server) -> None:
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    serializer = Serializer()
+    target_payload = serializer.force_serialize_with_data({"target": True})
+    arg_payload = serializer.force_serialize_with_data(["alpha"])
+
+    process_pid = 8080
+    process_start_time = 111.222
+    process_key = f"{process_start_time:.6f}+{process_pid}"
+
+    response = server.test_client().post(
+        "/api/call/start",
+        data=json.dumps({
+            "method_name": "noop",
+            "target_cid": "t1",
+            "target": {
+                "cid": target_payload.cid,
+                "data": target_payload.data_base64,
+                "client_ref": 1,
+            },
+            "args": [{
+                "cid": arg_payload.cid,
+                "data": arg_payload.data_base64,
+                "client_ref": 99,
+            }],
+            "kwargs": {},
+            "call_site": {"timestamp": 0.0},
+            "process_pid": process_pid,
+            "process_start_time": process_start_time,
+        }),
+        content_type="application/json",
+    )
+    assert response.status_code == 200
+
+    response = server.test_client().get("/objects")
+    assert response.status_code == 200
+    body = response.data.decode()
+    assert arg_payload.cid in body
+    assert f"ref:{process_key}:99" in body
+
+
+def test_object_pages_show_backrefs_and_snapshots(server) -> None:
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    serializer = Serializer()
+    arg_payload = serializer.force_serialize_with_data(["alpha"])
+
+    process_pid = 9090
+    process_start_time = 222.333
+    process_key = f"{process_start_time:.6f}+{process_pid}"
+
+    response = server.test_client().post(
+        "/api/call/start",
+        data=json.dumps({
+            "method_name": "noop",
+            "target_cid": "t1",
+            "target": {
+                "cid": arg_payload.cid,
+                "data": arg_payload.data_base64,
+                "client_ref": 7,
+            },
+            "args": [{
+                "cid": arg_payload.cid,
+                "data": arg_payload.data_base64,
+                "client_ref": 7,
+            }],
+            "kwargs": {},
+            "call_site": {"timestamp": 0.0},
+            "process_pid": process_pid,
+            "process_start_time": process_start_time,
+        }),
+        content_type="application/json",
+    )
+    assert response.status_code == 200
+
+    ref = f"ref:{process_key}:7"
+    response = server.test_client().get(f"/object/{ref}")
+    assert response.status_code == 200
+    body = response.data.decode()
+    assert arg_payload.cid in body
+
+    response = server.test_client().get(f"/object/{arg_payload.cid}")
+    assert response.status_code == 200
+    body = response.data.decode()
+    assert ref in body
+
+
+def test_register_function_tracks_client_ref(server) -> None:
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    response = server.test_client().post(
+        "/api/functions",
+        data=json.dumps({
+            "function_name": "asset_tool",
+            "function_client_ref": 42,
+        }),
+        content_type="application/json",
+    )
+    assert response.status_code == 200
+
+    response = server.test_client().get("/api/functions")
+    assert response.status_code == 200
+    data = json.loads(response.data)
+    assert data["function_metadata"]["asset_tool"]["client_ref"] == 42
+
+
+def test_call_tree_links_registered_target_ref(server) -> None:
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    response = server.test_client().post(
+        "/api/functions",
+        data=json.dumps({
+            "function_name": "demo_func",
+            "function_client_ref": 17,
+        }),
+        content_type="application/json",
+    )
+    assert response.status_code == 200
+
+    process_pid = 5555
+    process_start_time = 333.444
+    process_key = f"{process_start_time:.6f}+{process_pid}"
+
+    response = server.test_client().post(
+        "/api/call/event",
+        data=json.dumps({
+            "method_name": "with_debug.register",
+            "status": "registered",
+            "call_site": {"timestamp": 0.0},
+            "process_pid": process_pid,
+            "process_start_time": process_start_time,
+            "pretty_result": {
+                "event": "with_debug_registration",
+                "function_name": "demo_func",
+            },
+        }),
+        content_type="application/json",
+    )
+    assert response.status_code == 200
+
+    response = server.test_client().get(f"/call-tree/{process_key}")
+    assert response.status_code == 200
+    body = response.data.decode()
+    assert "registered_target_ref" in body
+    assert f"ref:{process_key}:17" in body
+
+
 def test_frame_endpoint_renders_source_for_paused_execution(server) -> None:
     """Test GET /frame/<pause_id>/<frame_index> endpoint."""
     thread = threading.Thread(target=server.start, daemon=True)

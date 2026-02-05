@@ -74,6 +74,12 @@ class BreakpointManager:
         with self._lock:
             return dict(self._function_metadata)
 
+    def update_function_metadata(self, function_name: str, updates: dict[str, Any]) -> None:
+        with self._lock:
+            current = dict(self._function_metadata.get(function_name, {}))
+            current.update(updates)
+            self._function_metadata[function_name] = current
+
     def add_breakpoint(self, function_name: str) -> None:
         """Add a breakpoint on a function.
 
@@ -269,6 +275,21 @@ class BreakpointManager:
         key = (process_key, client_ref)
         with self._lock:
             return list(self._object_history.get(key, []))
+
+    def get_all_object_histories(self) -> dict[tuple[str, int | str], list[dict[str, Any]]]:
+        with self._lock:
+            return {
+                key: list(history)
+                for key, history in self._object_history.items()
+            }
+
+    def get_object_histories_by_ref(self, client_ref: int | str) -> dict[str, list[dict[str, Any]]]:
+        with self._lock:
+            return {
+                process_key: list(history)
+                for (process_key, ref), history in self._object_history.items()
+                if ref == client_ref
+            }
 
     def wait_for_resume_action(
         self,

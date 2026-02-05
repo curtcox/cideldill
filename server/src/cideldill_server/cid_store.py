@@ -114,6 +114,35 @@ class CIDStore:
                 "total_size_bytes": total_size or 0,
             }
 
+    def list_entries(self) -> List[dict[str, object]]:
+        """Return all stored CIDs with metadata."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT cid, created_at, size_bytes FROM cid_data ORDER BY created_at DESC"
+            )
+            return [
+                {
+                    "cid": row[0],
+                    "created_at": row[1],
+                    "size_bytes": row[2],
+                }
+                for row in cursor.fetchall()
+            ]
+
+    def get_meta(self, cid: str) -> Optional[dict[str, object]]:
+        """Return metadata for a CID without loading the data."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT created_at, size_bytes FROM cid_data WHERE cid = ?", (cid,)
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "created_at": row[0],
+                "size_bytes": row[1],
+            }
+
     def close(self) -> None:
         """Close the underlying database connection."""
         with self._lock:

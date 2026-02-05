@@ -10,6 +10,7 @@ import html
 import json
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -278,6 +279,7 @@ HTML_TEMPLATE = """
         <h1>🛑 Interactive Breakpoints</h1>
 
         <div class="nav-links">
+            <a class="nav-link" href="/objects">🧭 Objects</a>
             <a class="nav-link" href="/call-tree">🌲 Call Tree</a>
             <a class="nav-link" href="/com-errors">📡 Com Errors</a>
         </div>
@@ -1127,6 +1129,14 @@ class BreakpointServer:
                 return json.dumps(value, indent=2)
             return str(value)
 
+        def _is_cid(value: object) -> bool:
+            return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+        def _object_ref(process_key: str | None, client_ref: int | str) -> str:
+            if process_key:
+                return f"ref:{process_key}:{client_ref}"
+            return f"ref:{client_ref}"
+
         def _normalize_stack_trace(call_site: object) -> list[dict[str, object]]:
             if not isinstance(call_site, dict):
                 return []
@@ -1414,6 +1424,495 @@ class BreakpointServer:
                 template.replace("@@COM_ERRORS_JSON@@", errors_json)
             )
 
+        @self.app.route('/objects', methods=['GET'])
+        def objects_page():
+            """Browse object references and stored CIDs."""
+            rows: list[dict[str, object]] = []
+
+            object_histories = self.manager.get_all_object_histories()
+            for (process_key, client_ref), history in object_histories.items():
+                if not history:
+                    continue
+                def snapshot_ts(item: dict[str, object]) -> float:
+                    try:
+                        return float(item.get("timestamp") or 0)
+                    except Exception:
+                        return 0.0
+                latest = max(history, key=snapshot_ts)
+                rows.append({
+                    "kind": "object",
+                    "ref": _object_ref(process_key, client_ref),
+                    "process_key": process_key,
+                    "client_ref": client_ref,
+                    "cid": latest.get("cid"),
+                    "role": latest.get("role"),
+                    "method_name": latest.get("method_name"),
+                    "call_id": latest.get("call_id"),
+                    "last_seen": latest.get("timestamp"),
+                    "summary": _pretty_text(latest.get("pretty")),
+                })
+
+            refs_seen = {row.get("ref") for row in rows if row.get("ref")}
+            for function_name, meta in self.manager.get_function_metadata().items():
+                client_ref = meta.get("client_ref")
+                if client_ref is None:
+                    continue
+                process_key = meta.get("last_process_key")
+                ref_value = _object_ref(process_key, client_ref)
+                if ref_value in refs_seen:
+                    continue
+                rows.append({
+                    "kind": "function",
+                    "ref": ref_value,
+                    "process_key": process_key,
+                    "client_ref": client_ref,
+                    "role": "registered",
+                    "method_name": function_name,
+                    "call_id": None,
+                    "last_seen": meta.get("registered_at"),
+                    "summary": meta.get("summary")
+                    or meta.get("object_name")
+                    or meta.get("object_path")
+                    or "",
+                })
+                refs_seen.add(ref_value)
+
+            for entry in self._cid_store.list_entries():
+                rows.append({
+                    "kind": "cid",
+                    "cid": entry.get("cid"),
+                    "created_at": entry.get("created_at"),
+                    "size_bytes": entry.get("size_bytes"),
+                    "last_seen": entry.get("created_at"),
+                })
+
+            data_json = json.dumps(rows)
+
+            template = """<!DOCTYPE html>
+<html lang=\"en\">
+<head>
+  <meta charset=\"UTF-8\">
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">
+  <title>Objects</title>
+  <style>
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; background-color: #f5f5f5; }
+    .container { max-width: 1300px; margin: 0 auto; }
+    h1 { color: #333; border-bottom: 3px solid #4CAF50; padding-bottom: 10px; }
+    .back-link { display: inline-block; margin-bottom: 20px; color: #1976D2; text-decoration: none; }
+    .back-link:hover { text-decoration: underline; }
+    .toolbar { display: flex; gap: 12px; align-items: center; margin: 14px 0 16px; flex-wrap: wrap; }
+    .search-input { flex: 1; min-width: 280px; padding: 10px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 0.95em; background: white; }
+    .summary { color: #666; font-size: 0.9em; white-space: nowrap; }
+    table { width: 100%; border-collapse: collapse; background: white; border: 1px solid #ddd; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.06); }
+    thead th { text-align: left; background: #fafafa; border-bottom: 1px solid #eee; padding: 12px 10px; font-size: 0.9em; color: #444; user-select: none; cursor: pointer; white-space: nowrap; }
+    thead th.sort-active { color: #111; }
+    tbody td { padding: 10px; border-bottom: 1px solid #f0f0f0; vertical-align: top; font-size: 0.92em; color: #222; }
+    tbody tr:hover { background: #f7fbff; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.92em; white-space: pre-wrap; word-break: break-word; }
+    .row-link { color: #1976D2; text-decoration: none; font-weight: 600; }
+    .row-link:hover { text-decoration: underline; }
+    .empty-state { text-align: center; padding: 40px; color: #666; font-style: italic; }
+  </style>
+</head>
+<body>
+  <div class=\"container\">
+    <a href=\"/\" class=\"back-link\">← Back to Breakpoints</a>
+    <h1>Objects</h1>
+    <div class=\"toolbar\">
+      <input id=\"searchInput\" class=\"search-input\" type=\"text\" placeholder=\"Filter by ref, CID, method, role, or summary...\" />
+      <div id=\"summary\" class=\"summary\"></div>
+    </div>
+    <div id=\"tableWrapper\"></div>
+  </div>
+
+  <script>
+    const rows = @@DATA_JSON@@;
+    const state = { filter: '', sortKey: 'last_seen', sortDir: 'desc' };
+
+    function formatTs(ts) {
+      if (!ts) return 'Unknown';
+      try { return new Date(ts * 1000).toLocaleString(); } catch (e) { return 'Unknown'; }
+    }
+
+    function formatBytes(bytes) {
+      if (!bytes && bytes !== 0) return '';
+      const units = ['B', 'KB', 'MB', 'GB'];
+      let idx = 0;
+      let value = Number(bytes);
+      while (value >= 1024 && idx < units.length - 1) {
+        value /= 1024;
+        idx += 1;
+      }
+      return `${value.toFixed(value >= 10 || idx === 0 ? 0 : 1)} ${units[idx]}`;
+    }
+
+    function getCellValue(row, key) {
+      if (key === 'id') return row.ref || row.cid || '';
+      if (key === 'last_seen') return row.last_seen || row.created_at || 0;
+      if (key === 'size_bytes') return row.size_bytes || 0;
+      return row[key] || '';
+    }
+
+    function sortRows(items) {
+      const key = state.sortKey;
+      const dir = state.sortDir === 'asc' ? 1 : -1;
+      return [...items].sort((a, b) => {
+        const av = getCellValue(a, key);
+        const bv = getCellValue(b, key);
+        if (typeof av === 'number' && typeof bv === 'number') {
+          return (av - bv) * dir;
+        }
+        return String(av).localeCompare(String(bv)) * dir;
+      });
+    }
+
+    function matchesFilter(row, filter) {
+      if (!filter) return true;
+      const haystack = JSON.stringify(row).toLowerCase();
+      return haystack.includes(filter);
+    }
+
+    function render() {
+      const filter = state.filter;
+      const filtered = rows.filter((row) => matchesFilter(row, filter));
+      const sorted = sortRows(filtered);
+      const summary = document.getElementById('summary');
+      summary.textContent = `${sorted.length} of ${rows.length} rows`;
+
+      if (!sorted.length) {
+        document.getElementById('tableWrapper').innerHTML =
+          '<div class=\"empty-state\">No objects or CIDs recorded yet.</div>';
+        return;
+      }
+
+      const header = `
+        <table>
+          <thead>
+            <tr>
+              <th data-key=\"kind\">Type</th>
+              <th data-key=\"id\">Ref / CID</th>
+              <th data-key=\"process_key\">Process</th>
+              <th data-key=\"client_ref\">Client Ref</th>
+              <th data-key=\"role\">Role</th>
+              <th data-key=\"method_name\">Method</th>
+              <th data-key=\"call_id\">Call</th>
+              <th data-key=\"last_seen\">Last Seen</th>
+              <th data-key=\"size_bytes\">Size</th>
+              <th data-key=\"summary\">Summary</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${sorted.map((row) => {
+              const id = row.ref || row.cid || '';
+              const href = id ? `/object/${encodeURIComponent(id)}` : '';
+              const link = href ? `<a class=\"row-link\" href=\"${href}\">${id}</a>` : '';
+              return `
+                <tr>
+                  <td>${row.kind || ''}</td>
+                  <td class=\"mono\">${link || ''}</td>
+                  <td class=\"mono\">${row.process_key || ''}</td>
+                  <td class=\"mono\">${row.client_ref ?? ''}</td>
+                  <td>${row.role || ''}</td>
+                  <td class=\"mono\">${row.method_name || ''}</td>
+                  <td class=\"mono\">${row.call_id || ''}</td>
+                  <td class=\"mono\">${formatTs(row.last_seen || row.created_at)}</td>
+                  <td class=\"mono\">${formatBytes(row.size_bytes)}</td>
+                  <td>${row.summary || ''}</td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      `;
+
+      document.getElementById('tableWrapper').innerHTML = header;
+      document.querySelectorAll('th[data-key]').forEach((th) => {
+        const key = th.getAttribute('data-key');
+        th.classList.toggle('sort-active', key === state.sortKey);
+        th.addEventListener('click', () => {
+          if (state.sortKey === key) {
+            state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
+          } else {
+            state.sortKey = key;
+            state.sortDir = 'asc';
+          }
+          render();
+        });
+      });
+    }
+
+    document.getElementById('searchInput').addEventListener('input', (event) => {
+      state.filter = String(event.target.value || '').trim().toLowerCase();
+      render();
+    });
+
+    render();
+  </script>
+</body>
+</html>"""
+
+            return template.replace("@@DATA_JSON@@", data_json)
+
+        @self.app.route('/object/<path:object_ref>', methods=['GET'])
+        def object_page(object_ref: str):
+            """Show object details for a CID or client ref."""
+            def parse_ref(value: str) -> tuple[str | None, int | str]:
+                ref_value = value
+                if ref_value.startswith("ref:"):
+                    ref_value = ref_value[4:]
+                if ":" in ref_value:
+                    process_part, client_part = ref_value.split(":", 1)
+                else:
+                    process_part, client_part = None, ref_value
+                if client_part.isdigit():
+                    client_ref_value: int | str = int(client_part)
+                else:
+                    client_ref_value = client_part
+                return process_part, client_ref_value
+
+            if _is_cid(object_ref):
+                meta = self._cid_store.get_meta(object_ref)
+                data = self._cid_store.get(object_ref)
+                if meta is None or data is None:
+                    return (
+                        "<h1>Object not found.</h1><p>Unknown CID.</p>"
+                    ), 404
+
+                decoded: object | None = None
+                decode_error: str | None = None
+                try:
+                    decoded = deserialize(data)
+                except Exception as exc:  # noqa: BLE001
+                    decode_error = f"{type(exc).__name__}: {exc}"
+
+                if decode_error:
+                    rendered = f"<unavailable: {decode_error}>"
+                elif _is_placeholder(decoded):
+                    rendered = json.dumps(_format_placeholder(decoded), indent=2)
+                elif isinstance(decoded, (dict, list)):
+                    rendered = json.dumps(decoded, indent=2)
+                else:
+                    rendered = _safe_repr(decoded)
+
+                backrefs: list[dict[str, object]] = []
+                for (process_key, client_ref), history in self.manager.get_all_object_histories().items():
+                    for snapshot in history:
+                        if snapshot.get("cid") == object_ref:
+                            backrefs.append({
+                                "process_key": process_key,
+                                "client_ref": client_ref,
+                                "role": snapshot.get("role"),
+                                "method_name": snapshot.get("method_name"),
+                                "call_id": snapshot.get("call_id"),
+                                "timestamp": snapshot.get("timestamp"),
+                            })
+                backrefs.sort(key=lambda item: float(item.get("timestamp") or 0), reverse=True)
+
+                backref_rows = "".join(
+                    "<tr>"
+                    f"<td class='mono'>{html.escape(_format_ts(item.get('timestamp')))}</td>"
+                    f"<td class='mono'>{html.escape(str(item.get('process_key') or ''))}</td>"
+                    f"<td class='mono'>{html.escape(str(item.get('client_ref') or ''))}</td>"
+                    f"<td>{html.escape(str(item.get('role') or ''))}</td>"
+                    f"<td class='mono'>{html.escape(str(item.get('method_name') or ''))}</td>"
+                    f"<td class='mono'>{html.escape(str(item.get('call_id') or ''))}</td>"
+                    f"<td><a class='row-link' href='/object/{quote(_object_ref(item.get('process_key'), item.get('client_ref')), safe='')}'>"
+                    f"{html.escape(_object_ref(item.get('process_key'), item.get('client_ref')))}</a></td>"
+                    "</tr>"
+                    for item in backrefs
+                )
+                backref_table = (
+                    "<table>"
+                    "<thead><tr>"
+                    "<th>Timestamp</th>"
+                    "<th>Process</th>"
+                    "<th>Client Ref</th>"
+                    "<th>Role</th>"
+                    "<th>Method</th>"
+                    "<th>Call</th>"
+                    "<th></th>"
+                    "</tr></thead>"
+                    "<tbody>"
+                    + backref_rows
+                    + "</tbody></table>"
+                ) if backrefs else "<div class='empty-state'>No references recorded for this CID.</div>"
+
+                template = """<!DOCTYPE html>
+<html lang=\"en\">
+<head>
+  <meta charset=\"UTF-8\">
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">
+  <title>Object {cid}</title>
+  <style>
+    body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; background-color: #f5f5f5; }}
+    .container {{ max-width: 1200px; margin: 0 auto; }}
+    h1 {{ color: #333; border-bottom: 3px solid #4CAF50; padding-bottom: 10px; }}
+    .back-link {{ display: inline-block; margin-bottom: 20px; color: #1976D2; text-decoration: none; }}
+    .back-link:hover {{ text-decoration: underline; }}
+    .panel {{ background: white; border: 1px solid #ddd; border-radius: 10px; padding: 16px; box-shadow: 0 2px 4px rgba(0,0,0,0.06); margin-bottom: 16px; }}
+    .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; white-space: pre-wrap; word-break: break-word; }}
+    pre {{ margin: 0; white-space: pre-wrap; word-break: break-word; }}
+    table {{ width: 100%; border-collapse: collapse; background: white; border: 1px solid #ddd; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.06); }}
+    thead th {{ text-align: left; background: #fafafa; border-bottom: 1px solid #eee; padding: 12px 10px; font-size: 0.9em; color: #444; }}
+    tbody td {{ padding: 10px; border-bottom: 1px solid #f0f0f0; vertical-align: top; font-size: 0.92em; color: #222; }}
+    tbody tr:hover {{ background: #f7fbff; }}
+    .row-link {{ color: #1976D2; text-decoration: none; font-weight: 600; }}
+    .row-link:hover {{ text-decoration: underline; }}
+    .empty-state {{ text-align: center; padding: 20px; color: #666; font-style: italic; }}
+  </style>
+</head>
+<body>
+  <div class=\"container\">
+    <a href=\"/objects\" class=\"back-link\">← Back to Objects</a>
+    <h1>Object CID</h1>
+    <div class=\"panel\">
+      <div class=\"mono\">{cid}</div>
+      <div class=\"mono\">Size: {size_bytes} bytes</div>
+      <div class=\"mono\">Stored: {stored_at}</div>
+    </div>
+    <div class=\"panel\">
+      <h2>Decoded</h2>
+      <pre class=\"mono\">{decoded}</pre>
+    </div>
+    <div class=\"panel\">
+      <h2>Referenced By</h2>
+      {backrefs}
+    </div>
+  </div>
+</body>
+</html>""".format(
+                    cid=html.escape(object_ref),
+                    size_bytes=html.escape(str(meta.get("size_bytes") or 0)),
+                    stored_at=html.escape(_format_ts(meta.get("created_at"))),
+                    decoded=html.escape(rendered),
+                    backrefs=backref_table,
+                )
+                return template
+
+            process_key, client_ref = parse_ref(object_ref)
+            histories: dict[str, list[dict[str, object]]] = {}
+            if process_key:
+                histories[process_key] = self.manager.get_object_history(process_key, client_ref)
+            else:
+                histories = self.manager.get_object_histories_by_ref(client_ref)
+
+            function_matches: list[tuple[str, dict[str, object]]] = []
+            for name, meta in self.manager.get_function_metadata().items():
+                if meta.get("client_ref") == client_ref:
+                    function_matches.append((name, meta))
+
+            snapshot_sections: list[str] = []
+            for proc, history in histories.items():
+                if not history:
+                    continue
+                row_lines: list[str] = []
+                for item in history:
+                    link = ""
+                    if item.get("cid"):
+                        link = (
+                            "<a class='row-link' href='/object/"
+                            f"{quote(str(item.get('cid')), safe='')}'>View</a>"
+                        )
+                    row_lines.append(
+                        "<tr>"
+                        f"<td class='mono'>{html.escape(_format_ts(item.get('timestamp')))}</td>"
+                        f"<td>{html.escape(str(item.get('role') or ''))}</td>"
+                        f"<td class='mono'>{html.escape(str(item.get('method_name') or ''))}</td>"
+                        f"<td class='mono'>{html.escape(str(item.get('call_id') or ''))}</td>"
+                        f"<td class='mono'>{html.escape(str(item.get('cid') or ''))}</td>"
+                        f"<td>{html.escape(_pretty_text(item.get('pretty')))}</td>"
+                        f"<td>{link}</td>"
+                        "</tr>"
+                    )
+                rows_html = "".join(row_lines)
+                snapshot_sections.append(
+                    "<div class='panel'>"
+                    f"<h2>Snapshots ({html.escape(str(proc))})</h2>"
+                    "<table>"
+                    "<thead><tr>"
+                    "<th>Timestamp</th>"
+                    "<th>Role</th>"
+                    "<th>Method</th>"
+                    "<th>Call</th>"
+                    "<th>CID</th>"
+                    "<th>Summary</th>"
+                    "<th></th>"
+                    "</tr></thead>"
+                    "<tbody>"
+                    + rows_html
+                    + "</tbody></table>"
+                    "</div>"
+                )
+
+            functions_html = ""
+            if function_matches:
+                rows = "".join(
+                    "<tr>"
+                    f"<td class='mono'>{html.escape(name)}</td>"
+                    f"<td>{html.escape(str(meta.get('summary') or meta.get('object_name') or meta.get('object_path') or ''))}</td>"
+                    f"<td class='mono'>{html.escape(str(meta.get('last_process_key') or ''))}</td>"
+                    "</tr>"
+                    for name, meta in function_matches
+                )
+                functions_html = (
+                    "<div class='panel'>"
+                    "<h2>Registered Functions</h2>"
+                    "<table>"
+                    "<thead><tr>"
+                    "<th>Function</th>"
+                    "<th>Summary</th>"
+                    "<th>Last Process</th>"
+                    "</tr></thead>"
+                    "<tbody>"
+                    + rows
+                    + "</tbody></table>"
+                    "</div>"
+                )
+
+            if not snapshot_sections and not functions_html:
+                snapshot_sections = ["<div class='panel'><div class='empty-state'>No snapshots recorded for this ref.</div></div>"]
+
+            template = """<!DOCTYPE html>
+<html lang=\"en\">
+<head>
+  <meta charset=\"UTF-8\">
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">
+  <title>Object {ref}</title>
+  <style>
+    body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; background-color: #f5f5f5; }}
+    .container {{ max-width: 1200px; margin: 0 auto; }}
+    h1 {{ color: #333; border-bottom: 3px solid #4CAF50; padding-bottom: 10px; }}
+    .back-link {{ display: inline-block; margin-bottom: 20px; color: #1976D2; text-decoration: none; }}
+    .back-link:hover {{ text-decoration: underline; }}
+    .panel {{ background: white; border: 1px solid #ddd; border-radius: 10px; padding: 16px; box-shadow: 0 2px 4px rgba(0,0,0,0.06); margin-bottom: 16px; }}
+    .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; white-space: pre-wrap; word-break: break-word; }}
+    table {{ width: 100%; border-collapse: collapse; background: white; border: 1px solid #ddd; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.06); }}
+    thead th {{ text-align: left; background: #fafafa; border-bottom: 1px solid #eee; padding: 12px 10px; font-size: 0.9em; color: #444; }}
+    tbody td {{ padding: 10px; border-bottom: 1px solid #f0f0f0; vertical-align: top; font-size: 0.92em; color: #222; }}
+    tbody tr:hover {{ background: #f7fbff; }}
+    .row-link {{ color: #1976D2; text-decoration: none; font-weight: 600; }}
+    .row-link:hover {{ text-decoration: underline; }}
+    .empty-state {{ text-align: center; padding: 20px; color: #666; font-style: italic; }}
+  </style>
+</head>
+<body>
+  <div class=\"container\">
+    <a href=\"/objects\" class=\"back-link\">← Back to Objects</a>
+    <h1>Object Ref</h1>
+    <div class=\"panel\">
+      <div class=\"mono\">{ref}</div>
+    </div>
+    {functions}
+    {snapshots}
+  </div>
+</body>
+</html>""".format(
+                ref=html.escape(object_ref),
+                functions=functions_html,
+                snapshots="".join(snapshot_sections),
+            )
+            return template
+
         @self.app.route('/call-tree', methods=['GET'])
         def call_tree_index():
             """List processes with recorded calls."""
@@ -1539,6 +2038,7 @@ class BreakpointServer:
 
             nodes: list[dict[str, object]] = []
             stack_signatures: dict[str, tuple[tuple[object, object, object], ...]] = {}
+            function_metadata = self.manager.get_function_metadata()
 
             for idx, record in enumerate(records):
                 call_id = record.get("call_id") or f"call-{idx}"
@@ -1560,14 +2060,34 @@ class BreakpointServer:
                     "completed_at": completed_at,
                     "duration": duration,
                     "status": record.get("status"),
+                    "process_key": record.get("process_key"),
+                    "target": record.get("target"),
+                    "pretty_target": record.get("pretty_target"),
+                    "args": record.get("args", []),
+                    "kwargs": record.get("kwargs", {}),
                     "pretty_args": record.get("pretty_args", []),
                     "pretty_kwargs": record.get("pretty_kwargs", {}),
                     "pretty_result": record.get("pretty_result"),
                     "exception": record.get("exception"),
+                    "result_cid": record.get("result_cid"),
+                    "result_client_ref": record.get("result_client_ref"),
+                    "exception_cid": record.get("exception_cid"),
+                    "exception_client_ref": record.get("exception_client_ref"),
                     "signature": record.get("signature"),
                     "call_site": call_site,
                     "stack_trace": stack_trace,
                 }
+                if record.get("method_name") == "with_debug.register":
+                    pretty_result = record.get("pretty_result")
+                    if isinstance(pretty_result, dict):
+                        function_name = pretty_result.get("function_name")
+                        if function_name in function_metadata:
+                            meta = function_metadata.get(function_name, {})
+                            client_ref = meta.get("client_ref")
+                            if client_ref is not None:
+                                node["registered_target_ref"] = _object_ref(
+                                    record.get("process_key"), client_ref
+                                )
                 nodes.append(node)
                 stack_signatures[str(call_id)] = _stack_signature(stack_trace)
 
@@ -1684,6 +2204,12 @@ class BreakpointServer:
     .detail-item { margin: 10px 0; }
     .detail-label { font-weight: 700; color: #444; margin-bottom: 4px; }
     .detail-value { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; white-space: pre-wrap; word-break: break-word; color: #222; background: #f8f8f8; padding: 8px; border-radius: 8px; }
+    .payload-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 8px; }
+    .payload-key { font-weight: 700; color: #333; min-width: 80px; }
+    .payload-value { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; background: #f8f8f8; padding: 6px 8px; border-radius: 6px; white-space: pre-wrap; word-break: break-word; }
+    .object-links { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+    .object-link { color: #1976D2; text-decoration: none; font-weight: 600; }
+    .object-link:hover { text-decoration: underline; }
     .stack-frame { padding: 6px 8px; border-radius: 6px; margin-bottom: 6px; background: #f9fafb; border: 1px solid #eee; }
     .empty-state { text-align: center; padding: 40px; color: #666; font-style: italic; }
     @media (max-width: 900px) {
@@ -1742,7 +2268,38 @@ class BreakpointServer:
       if (value && typeof value === 'object' && value.__cideldill_placeholder__) {
         return value.summary || '<Unpicklable>';
       }
+      if (value && typeof value === 'object') {
+        try { return JSON.stringify(value, null, 2); } catch (e) { return '[object]'; }
+      }
       return String(value);
+    }
+
+    function escapeHtml(text) {
+      return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function renderPretty(value) {
+      return escapeHtml(formatPretty(value));
+    }
+
+    function renderObjectLinks(item, processKey) {
+      if (!item || typeof item !== 'object') return '';
+      const links = [];
+      if (item.cid) {
+        links.push(`<a class="object-link" href="/object/${encodeURIComponent(item.cid)}">cid</a>`);
+      }
+      if (item.client_ref !== undefined && item.client_ref !== null && processKey) {
+        const ref = `ref:${processKey}:${item.client_ref}`;
+        links.push(`<a class="object-link" href="/object/${encodeURIComponent(ref)}">ref ${item.client_ref}</a>`);
+      }
+      if (!links.length) return '';
+      return `<div class="object-links">${links.join(' ')}</div>`;
+    }
     }
 
     function updateTimelineControls() {
@@ -1811,8 +2368,7 @@ class BreakpointServer:
         details.innerHTML = '<div class="empty-state">No call selected.</div>';
         return;
       }
-
-      const args = JSON.stringify({ args: node.pretty_args || [], kwargs: node.pretty_kwargs || {} }, null, 2);
+      const processKey = node.process_key || '';
       const stackTrace = node.stack_trace || [];
       const stackHtml = stackTrace.length
         ? stackTrace.map((frame) => `
@@ -1823,41 +2379,116 @@ class BreakpointServer:
           `).join('')
         : '<div class="empty-state">No stack trace recorded.</div>';
 
+      const targetHtml = node.target ? `
+        <div class="detail-item">
+          <div class="detail-label">Target</div>
+          <div class="payload-value">${renderPretty(node.pretty_target)}</div>
+          ${renderObjectLinks(node.target, processKey)}
+        </div>
+      ` : '';
+
+      const argsItems = node.args || [];
+      const prettyArgs = node.pretty_args || [];
+      const argsHtml = argsItems.length
+        ? argsItems.map((item, idx) => `
+            <div class="payload-row">
+              <div class="payload-key">[${idx}]</div>
+              <div class="payload-value">${renderPretty(prettyArgs[idx])}</div>
+              ${renderObjectLinks(item, processKey)}
+            </div>
+          `).join('')
+        : '<div class="empty-state">No arguments recorded.</div>';
+
+      const kwargsEntries = Object.entries(node.kwargs || {});
+      const prettyKwargs = node.pretty_kwargs || {};
+      const kwargsHtml = kwargsEntries.length
+        ? kwargsEntries.map(([key, item]) => `
+            <div class="payload-row">
+              <div class="payload-key">${escapeHtml(key)}</div>
+              <div class="payload-value">${renderPretty(prettyKwargs[key])}</div>
+              ${renderObjectLinks(item, processKey)}
+            </div>
+          `).join('')
+        : '<div class="empty-state">No keyword arguments recorded.</div>';
+
+      let resultLinks = '';
+      if (node.result_cid) {
+        resultLinks += `<a class="object-link" href="/object/${encodeURIComponent(node.result_cid)}">cid</a>`;
+      }
+      if (node.result_client_ref !== undefined && node.result_client_ref !== null && processKey) {
+        const ref = `ref:${processKey}:${node.result_client_ref}`;
+        resultLinks += ` <a class="object-link" href="/object/${encodeURIComponent(ref)}">ref ${node.result_client_ref}</a>`;
+      }
+      if (resultLinks) {
+        resultLinks = `<div class="object-links">${resultLinks}</div>`;
+      }
+
+      let exceptionLinks = '';
+      if (node.exception_cid) {
+        exceptionLinks += `<a class="object-link" href="/object/${encodeURIComponent(node.exception_cid)}">cid</a>`;
+      }
+      if (node.exception_client_ref !== undefined && node.exception_client_ref !== null && processKey) {
+        const ref = `ref:${processKey}:${node.exception_client_ref}`;
+        exceptionLinks += ` <a class="object-link" href="/object/${encodeURIComponent(ref)}">ref ${node.exception_client_ref}</a>`;
+      }
+      if (exceptionLinks) {
+        exceptionLinks = `<div class="object-links">${exceptionLinks}</div>`;
+      }
+
+      const registeredTargetHtml = node.registered_target_ref ? `
+        <div class="detail-item">
+          <div class="detail-label">Registered Target</div>
+          <div class="detail-value">
+            <a class="object-link" href="/object/${encodeURIComponent(node.registered_target_ref)}">
+              ${escapeHtml(node.registered_target_ref)}
+            </a>
+          </div>
+        </div>
+      ` : '';
+
       details.innerHTML = `
         <div class="detail-item">
           <div class="detail-label">Call</div>
-          <div class="detail-value">${node.method_name || 'unknown'}()</div>
+          <div class="detail-value">${escapeHtml(node.method_name || 'unknown')}()</div>
         </div>
         <div class="detail-item">
           <div class="detail-label">Status</div>
-          <div class="detail-value">${node.status || 'unknown'}</div>
+          <div class="detail-value">${escapeHtml(node.status || 'unknown')}</div>
         </div>
         <div class="detail-item">
           <div class="detail-label">Started</div>
-          <div class="detail-value">${formatTs(node.started_at)}</div>
+          <div class="detail-value">${escapeHtml(formatTs(node.started_at))}</div>
         </div>
         <div class="detail-item">
           <div class="detail-label">Completed</div>
-          <div class="detail-value">${formatTs(node.completed_at)}</div>
+          <div class="detail-value">${escapeHtml(formatTs(node.completed_at))}</div>
         </div>
         <div class="detail-item">
           <div class="detail-label">Duration</div>
-          <div class="detail-value">${formatDuration(node.duration)}</div>
+          <div class="detail-value">${escapeHtml(formatDuration(node.duration))}</div>
         </div>
+        ${registeredTargetHtml}
+        ${targetHtml}
         <div class="detail-item">
           <div class="detail-label">Arguments</div>
-          <div class="detail-value">${args}</div>
+          ${argsHtml}
+        </div>
+        <div class="detail-item">
+          <div class="detail-label">Keyword Arguments</div>
+          ${kwargsHtml}
         </div>
         ${node.pretty_result !== undefined && node.pretty_result !== null ? `
           <div class="detail-item">
             <div class="detail-label">Result</div>
-            <div class="detail-value">${formatPretty(node.pretty_result)}</div>
+            <div class="detail-value">${renderPretty(node.pretty_result)}</div>
+            ${resultLinks}
           </div>
         ` : ''}
         ${node.exception ? `
           <div class="detail-item">
             <div class="detail-label">Exception</div>
-            <div class="detail-value">${formatPretty(node.exception)}</div>
+            <div class="detail-value">${renderPretty(node.exception)}</div>
+            ${exceptionLinks}
           </div>
         ` : ''}
         <div class="detail-item">
@@ -2642,6 +3273,7 @@ class BreakpointServer:
             signature = data.get('signature')
             function_cid = data.get('function_cid')
             function_data = data.get('function_data')
+            function_client_ref = data.get('function_client_ref')
             metadata: dict[str, Any] | None = None
             if not function_name:
                 return jsonify({"error": "function_name required"}), 400
@@ -2666,6 +3298,11 @@ class BreakpointServer:
                     metadata = None
             if metadata is None and isinstance(data.get("function_metadata"), dict):
                 metadata = data.get("function_metadata")
+            normalized_ref = _normalize_client_ref(function_client_ref)
+            if normalized_ref is not None:
+                metadata = dict(metadata or {})
+                metadata.setdefault("client_ref", normalized_ref)
+                metadata.setdefault("registered_at", time.time())
             self.manager.register_function(function_name, signature=signature, metadata=metadata)
             return jsonify({
                 "status": "ok",
@@ -2827,6 +3464,11 @@ class BreakpointServer:
             action = {"call_id": call_id, "action": "continue"}
 
             # Check if we should pause at this breakpoint
+            pretty_target = (
+                _format_payload_value(target)
+                if isinstance(target, dict)
+                else None
+            )
             pretty_args = [
                 _format_payload_value(item)
                 for item in args
@@ -2839,6 +3481,8 @@ class BreakpointServer:
             }
             call_data = {
                 "method_name": method_name,
+                "target": target if isinstance(target, dict) else None,
+                "pretty_target": pretty_target,
                 "args": args,
                 "kwargs": kwargs,
                 "pretty_args": pretty_args,
@@ -2950,8 +3594,16 @@ class BreakpointServer:
                 call_record["status"] = status
                 call_record["completed_at"] = completed_at
                 call_record["pretty_result"] = pretty_result
+                if result_cid:
+                    call_record["result_cid"] = result_cid
+                if result_client_ref is not None:
+                    call_record["result_client_ref"] = result_client_ref
                 if pretty_exception is not None:
                     call_record["exception"] = pretty_exception
+                if exception_cid:
+                    call_record["exception_cid"] = exception_cid
+                if exception_client_ref is not None:
+                    call_record["exception_client_ref"] = exception_client_ref
                 call_site = call_data.get("call_site") or {}
                 call_record["started_at"] = call_site.get("timestamp")
                 self.manager.record_call(call_record)
@@ -3022,6 +3674,16 @@ class BreakpointServer:
             elif "exception" in data:
                 pretty_exception = data.get("exception")
 
+            if (
+                data.get("method_name") == "with_debug.register"
+                and isinstance(pretty_result, dict)
+                and pretty_result.get("function_name")
+            ):
+                self.manager.update_function_metadata(
+                    str(pretty_result.get("function_name")),
+                    {"last_process_key": process_key},
+                )
+
             call_record = {
                 "call_id": data.get("event_id") or data.get("call_id") or str(uuid.uuid4()),
                 "method_name": data.get("method_name") or data.get("event_type") or "event",
@@ -3036,6 +3698,10 @@ class BreakpointServer:
                 "started_at": timestamp,
                 "completed_at": timestamp,
             }
+            if result_cid:
+                call_record["result_cid"] = result_cid
+            if exception_cid:
+                call_record["exception_cid"] = exception_cid
             if pretty_result is not None:
                 call_record["pretty_result"] = pretty_result
             if pretty_exception is not None:
