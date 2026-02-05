@@ -19,8 +19,17 @@ import argparse
 import logging
 import platform
 import subprocess
+import sys
 import time
+from pathlib import Path
 from typing import Callable, Optional
+
+# Ensure local imports work when running from the repo.
+_script_dir = Path(__file__).resolve().parent
+_repo_root = _script_dir.parent
+sys.path.insert(0, str(_repo_root))
+sys.path.insert(0, str(_repo_root / "client" / "src"))
+sys.path.insert(0, str(_repo_root / "server" / "src"))
 
 from cideldill_client import with_debug
 

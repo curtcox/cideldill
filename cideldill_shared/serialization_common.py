@@ -163,6 +163,10 @@ def _iter_attributes(obj: Any) -> Iterator[tuple[str, Any]]:
                 continue
 
 
+def _is_simple_snapshot_value(value: Any) -> bool:
+    return isinstance(value, (str, int, float, bool, bytes, type(None)))
+
+
 def _minimal_placeholder(
     obj: Any,
     error: Exception,
@@ -246,9 +250,13 @@ def _build_snapshot(
                 _visited=visited,
             )
             nested_value = dill.loads(nested_bytes)
-            attributes[name] = nested_value
             if isinstance(nested_value, _unpicklable_placeholder_cls):
+                attributes[name] = nested_value
                 failed_attributes[name] = nested_value.pickle_error
+            elif _is_simple_snapshot_value(nested_value):
+                attributes[name] = nested_value
+            else:
+                attributes[name] = _safe_repr(nested_value)
         except Exception as exc:  # noqa: BLE001 - snapshotting should be best-effort
             failed_attributes[name] = f"{type(exc).__name__}: {exc}"
 

@@ -82,7 +82,6 @@ class DebugClient:
     def register_breakpoint(self, function_name: str, signature: str | None = None) -> None:
         payload: dict[str, Any] = {
             "function_name": function_name,
-            "behavior": "go",
             "timestamp": time.time(),
         }
         if signature is not None:
@@ -116,8 +115,10 @@ class DebugClient:
         call_site: dict[str, Any],
         signature: str | None = None,
     ) -> dict[str, Any]:
+        alias_name = getattr(target, "_cideldill_alias_name", None)
+        effective_name = alias_name or method_name
         payload, cid_to_obj = self._build_call_payload(
-            method_name, target, target_cid, args, kwargs, call_site, signature
+            effective_name, target, target_cid, args, kwargs, call_site, signature
         )
         response = self._post_json_allowing_cid_errors("/api/call/start", payload)
         if response.get("error") == "cid_not_found":

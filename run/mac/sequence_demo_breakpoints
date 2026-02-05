@@ -325,7 +325,11 @@ def main():
         demo_env = os.environ.copy()
         demo_env["CIDELDILL_SERVER_URL"] = f"http://localhost:{actual_port}"
         existing_pythonpath = demo_env.get("PYTHONPATH", "")
-        pythonpaths = [str(repo_root / "client" / "src"), str(repo_root / "server" / "src")]
+        pythonpaths = [
+            str(repo_root),
+            str(repo_root / "client" / "src"),
+            str(repo_root / "server" / "src"),
+        ]
         pythonpaths.extend(
             [existing_pythonpath] if existing_pythonpath else []
         )

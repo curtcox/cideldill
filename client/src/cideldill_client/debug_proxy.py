@@ -300,9 +300,13 @@ class DebugProxy:
         # For wrapped functions, use the actual function name for breakpoint matching
         # instead of "__call__"
         if callable(self._target) and hasattr(self._target, '__name__'):
+            alias_name = getattr(self, "_cideldill_alias_name", None)
+            if not alias_name:
+                alias_name = getattr(self._target, "_cideldill_alias_name", None)
+            method_name = alias_name or self._target.__name__
             # Call the target function directly with the correct name for breakpoint matching
             if self._is_enabled():
-                return self._wrap_method(self._target, self._target.__name__)(*args, **kwargs)
+                return self._wrap_method(self._target, method_name)(*args, **kwargs)
             return self._target(*args, **kwargs)
         return self._intercept_dunder("__call__", *args, **kwargs)
 

@@ -2527,10 +2527,16 @@ class BreakpointServer:
             data = request.get_json() or {}
             function_name = data.get('function_name')
             signature = data.get('signature')
+            behavior = data.get('behavior')
             if not function_name:
                 return jsonify({"error": "function_name required"}), 400
 
             self.manager.add_breakpoint(function_name)
+            if behavior in {"stop", "go", "yield"}:
+                try:
+                    self.manager.set_breakpoint_behavior(function_name, behavior)
+                except ValueError:
+                    return jsonify({"error": "behavior must be 'stop', 'go', or 'yield'"}), 400
             self.manager.register_function(function_name, signature=signature)
             return jsonify({"status": "ok", "function_name": function_name})
 

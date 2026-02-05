@@ -347,6 +347,9 @@ def auto_register_for_pickling(obj: Any, protocol: int | None = None) -> bool:
     except Exception as exc:  # noqa: BLE001 - preserve context for logging
         obj_type = type(obj)
 
+    if obj_type.__module__ == "builtins" and obj_type not in PickleRegistry._reducers:
+        return False
+
     if obj_type in PickleRegistry._reducers:
         try:
             dill.dumps(obj, protocol=protocol)
@@ -489,3 +492,14 @@ def _reconstruct_placeholder(info: dict) -> UnpicklablePlaceholder:
         capture_timestamp=info.get("capture_timestamp", 0.0),
         depth=info.get("depth", 0),
     )
+
+
+def _placeholder_reducer(obj: UnpicklablePlaceholder) -> tuple[Callable, tuple[Any, ...]]:
+    """Reduce placeholders to a dict payload to avoid recursive pickling."""
+    return (_reconstruct_placeholder, (obj.to_dict(),))
+
+
+try:
+    PickleRegistry.register(UnpicklablePlaceholder, _placeholder_reducer)
+except Exception:
+    logger.debug("Unable to register UnpicklablePlaceholder reducer", exc_info=True)

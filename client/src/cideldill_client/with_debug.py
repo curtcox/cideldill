@@ -94,6 +94,7 @@ def with_debug(target: Any) -> Any:
                 return original(*args, **kwargs)
 
             _aliased.__name__ = alias_name
+            setattr(_aliased, "_cideldill_alias_name", alias_name)
             target = _aliased
         else:
             signature = compute_signature(target)
@@ -101,7 +102,11 @@ def with_debug(target: Any) -> Any:
             register_local_function(target, signature=signature)
 
     proxy_class = AsyncDebugProxy if _is_coroutine_target(target) else DebugProxy
-    return proxy_class(target, client, _is_debug_enabled)
+    proxy = proxy_class(target, client, _is_debug_enabled)
+    if alias_name is not None:
+        # Keep an alias on the proxy itself in case the target drops attributes.
+        object.__setattr__(proxy, "_cideldill_alias_name", alias_name)
+    return proxy
 
 
 def _set_debug_mode(enabled: bool) -> DebugInfo:
