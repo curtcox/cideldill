@@ -222,11 +222,21 @@ def _record_registration(
         "alias": alias_name,
         "target_type": f"{type(target).__module__}.{type(target).__qualname__}",
     }
+    pretty_summary = alias_name or name
+    pretty_arg: dict[str, Any] = {
+        "__cideldill_placeholder__": True,
+        "summary": pretty_summary,
+    }
+    try:
+        pretty_arg["client_ref"] = client._get_client_ref(target)
+    except Exception:
+        pass
     client.record_event(
         method_name="with_debug.register",
         status="registered",
         call_site=call_site,
         result=result_payload,
+        pretty_args=[pretty_arg],
     )
 
 

@@ -745,6 +745,46 @@ def test_call_tree_builds_from_outer_to_inner_stack_traces(server) -> None:
     assert payload["children"]["call-b"] == ["call-c"]
 
 
+def test_call_tree_renders_pretty_args_when_args_missing(server) -> None:
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    process_pid = 2468
+    process_start_time = 2000.0
+    process_key = f"{process_start_time:.6f}+{process_pid}"
+
+    record = {
+        "call_id": "call-1",
+        "method_name": "with_debug.register",
+        "status": "registered",
+        "pretty_args": [
+            {"__cideldill_placeholder__": True, "summary": "asset_tool", "client_ref": 17}
+        ],
+        "pretty_kwargs": {},
+        "signature": None,
+        "call_site": {"timestamp": 1.0, "stack_trace": []},
+        "process_pid": process_pid,
+        "process_start_time": process_start_time,
+        "process_key": process_key,
+        "started_at": 1.0,
+        "completed_at": 1.0,
+    }
+    server.manager.record_call(record)
+
+    response = server.test_client().get(f"/call-tree/{process_key}")
+    assert response.status_code == 200
+    html = response.data.decode("utf-8")
+
+    match = re.search(r"const data = ({.*?});", html, re.S)
+    assert match, "Expected call tree data to be embedded in HTML."
+    payload = json.loads(match.group(1))
+    assert payload["nodes"][0]["pretty_args"][0]["summary"] == "asset_tool"
+    assert payload["nodes"][0]["args"] == []
+    assert "argsSource = argsItems.length ? argsItems : prettyArgs" in html
+    assert "kwargsSource = kwargsEntries.length ? kwargsEntries : Object.entries(prettyKwargs)" in html
+
+
 def test_poll_waits_until_resume_action(server) -> None:
     """Test /api/poll waits for resume action."""
     thread = threading.Thread(target=server.start, daemon=True)

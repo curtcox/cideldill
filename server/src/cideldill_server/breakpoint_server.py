@@ -2386,28 +2386,38 @@ class BreakpointServer:
         </div>
       ` : '';
 
-      const argsItems = node.args || [];
-      const prettyArgs = node.pretty_args || [];
-      const argsHtml = argsItems.length
-        ? argsItems.map((item, idx) => `
-            <div class="payload-row">
-              <div class="payload-key">[${idx}]</div>
-              <div class="payload-value">${renderPretty(prettyArgs[idx])}</div>
-              ${renderObjectLinks(item, processKey)}
-            </div>
-          `).join('')
+      const argsItems = Array.isArray(node.args) ? node.args : [];
+      const prettyArgs = Array.isArray(node.pretty_args) ? node.pretty_args : [];
+      const argsSource = argsItems.length ? argsItems : prettyArgs;
+      const argsHtml = argsSource.length
+        ? argsSource.map((item, idx) => {
+            const pretty = idx < prettyArgs.length ? prettyArgs[idx] : item;
+            return `
+              <div class="payload-row">
+                <div class="payload-key">[${idx}]</div>
+                <div class="payload-value">${renderPretty(pretty)}</div>
+                ${renderObjectLinks(item, processKey)}
+              </div>
+            `;
+          }).join('')
         : '<div class="empty-state">No arguments recorded.</div>';
 
       const kwargsEntries = Object.entries(node.kwargs || {});
       const prettyKwargs = node.pretty_kwargs || {};
-      const kwargsHtml = kwargsEntries.length
-        ? kwargsEntries.map(([key, item]) => `
-            <div class="payload-row">
-              <div class="payload-key">${escapeHtml(key)}</div>
-              <div class="payload-value">${renderPretty(prettyKwargs[key])}</div>
-              ${renderObjectLinks(item, processKey)}
-            </div>
-          `).join('')
+      const kwargsSource = kwargsEntries.length ? kwargsEntries : Object.entries(prettyKwargs);
+      const kwargsHtml = kwargsSource.length
+        ? kwargsSource.map(([key, item]) => {
+            const pretty = Object.prototype.hasOwnProperty.call(prettyKwargs, key)
+              ? prettyKwargs[key]
+              : item;
+            return `
+              <div class="payload-row">
+                <div class="payload-key">${escapeHtml(key)}</div>
+                <div class="payload-value">${renderPretty(pretty)}</div>
+                ${renderObjectLinks(item, processKey)}
+              </div>
+            `;
+          }).join('')
         : '<div class="empty-state">No keyword arguments recorded.</div>';
 
       let resultLinks = '';
