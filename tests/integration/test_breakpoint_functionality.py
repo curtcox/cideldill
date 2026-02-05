@@ -175,6 +175,8 @@ def test_with_debug_preserves_function_name():
     """Test that with_debug wrapper preserves the original function name."""
     from cideldill_client import with_debug
 
+    with_debug("OFF")
+
     def my_test_function():
         return "result"
 

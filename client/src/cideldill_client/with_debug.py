@@ -28,6 +28,7 @@ class _DebugState:
     enabled: bool = False
     server_url: str | None = None
     client: DebugClient | None = None
+    first_call_seen: bool = False
 
 
 _state = _DebugState()
@@ -45,6 +46,13 @@ def configure_debug(server_url: str | None = None) -> None:
 def with_debug(target: Any) -> Any:
     """Enable/disable debugging or wrap objects for debugging."""
     alias_name: str | None = None
+
+    if not _state.first_call_seen:
+        if not isinstance(target, str) or target.strip().upper() not in {"ON", "OFF"}:
+            raise ValueError(
+                "with_debug must be called with 'ON' or 'OFF' before any other use"
+            )
+        _state.first_call_seen = True
 
     if (
         isinstance(target, tuple)
