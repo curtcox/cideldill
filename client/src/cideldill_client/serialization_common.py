@@ -8,6 +8,7 @@ import logging
 import threading
 import time
 import traceback
+import warnings
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator, Optional
@@ -82,6 +83,7 @@ auto_register_for_pickling = _default_auto_register_for_pickling
 DebugSerializationError: type[Exception] = Exception
 ReportSerializationError: Callable[[dict[str, Any]], None] | None = None
 _report_guard = threading.local()
+_verbose_serialization_warnings = False
 
 
 def configure_picklers(
@@ -111,6 +113,11 @@ def configure_picklers(
         logger = logging.getLogger(logger_name)
     if module_key is not None:
         _module_key = module_key
+
+
+def set_verbose_serialization_warnings(enabled: bool) -> None:
+    global _verbose_serialization_warnings
+    _verbose_serialization_warnings = enabled
 
 
 def _truncate_text(text: str, max_length: int) -> str:
@@ -398,15 +405,26 @@ def _build_snapshot(
 
 
 def _try_pickle(obj: Any, attempts: list[str]) -> bytes:
+    pickling_warning = getattr(dill, "PicklingWarning", Warning)
+
+    def _dill_dumps_with_warnings(target: Any) -> bytes:
+        with warnings.catch_warnings(record=True) as captured:
+            warnings.simplefilter("always", pickling_warning)
+            data = dill.dumps(target, protocol=DILL_PROTOCOL)
+        if _verbose_serialization_warnings and captured:
+            for warn in captured:
+                logger.debug("PicklingWarning: %s", warn.message)
+        return data
+
     try:
-        return dill.dumps(obj, protocol=DILL_PROTOCOL)
+        return _dill_dumps_with_warnings(obj)
     except Exception as exc:  # noqa: BLE001 - preserve original error context
         attempts.append(f"dill.dumps: {type(exc).__name__}: {exc}")
         first_error = exc
 
     if auto_register_for_pickling(obj, protocol=DILL_PROTOCOL):
         try:
-            return dill.dumps(obj, protocol=DILL_PROTOCOL)
+            return _dill_dumps_with_warnings(obj)
         except Exception as exc:  # noqa: BLE001 - preserve original error context
             attempts.append(f"auto_register retry: {type(exc).__name__}: {exc}")
             raise exc

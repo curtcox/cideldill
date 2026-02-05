@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 import time
 import traceback
+import weakref
 from collections import OrderedDict
 from collections.abc import Iterable
 from typing import Any
@@ -40,6 +42,12 @@ class DebugClient:
         self._serializer = Serializer()
         self._object_cache: OrderedDict[str, Any] = OrderedDict()
         self._object_cache_limit = 10_000
+        self._client_ref_counter = 0
+        self._client_ref_lock = threading.Lock()
+        self._client_ref_by_obj: weakref.WeakKeyDictionary[Any, int] = weakref.WeakKeyDictionary()
+        self._client_ref_by_id: dict[int, int] = {}
+        self._client_ref_objects: OrderedDict[int, Any] = OrderedDict()
+        self._client_ref_cache_limit = 10_000
         self._process_pid = os.getpid()
         self._process_start_time = time.time()
         self._events_enabled = False
@@ -110,6 +118,7 @@ class DebugClient:
         if signature is not None:
             payload["signature"] = signature
         if target is not None:
+            payload["function_client_ref"] = self._get_client_ref(target)
             serialized = self._serializer.force_serialize_with_data(target)
             if serialized.data_base64:
                 try:
@@ -178,6 +187,7 @@ class DebugClient:
         if status == "success":
             serialized = self._serializer.serialize(result)
             payload["result_cid"] = serialized.cid
+            payload["result_client_ref"] = self._get_client_ref(result)
             if serialized.data_base64:
                 payload["result_data"] = serialized.data_base64
         elif status == "exception" and exception is not None:
@@ -185,6 +195,7 @@ class DebugClient:
             payload["exception_message"] = str(exception)
             serialized = self._serializer.serialize(exception)
             payload["exception_cid"] = serialized.cid
+            payload["exception_client_ref"] = self._get_client_ref(exception)
             if serialized.data_base64:
                 payload["exception_data"] = serialized.data_base64
         else:
@@ -277,7 +288,10 @@ class DebugClient:
         cid_to_obj: dict[str, Any] = {}
 
         target_serialized = self._serializer.serialize(target)
-        target_payload = {"cid": target_serialized.cid}
+        target_payload = {
+            "cid": target_serialized.cid,
+            "client_ref": self._get_client_ref(target),
+        }
         if target_serialized.data_base64:
             target_payload["data"] = target_serialized.data_base64
         cid_to_obj[target_serialized.cid] = target
@@ -286,7 +300,10 @@ class DebugClient:
         args_payload = []
         for arg in args:
             serialized = self._serializer.serialize(arg)
-            payload = {"cid": serialized.cid}
+            payload = {
+                "cid": serialized.cid,
+                "client_ref": self._get_client_ref(arg),
+            }
             if serialized.data_base64:
                 payload["data"] = serialized.data_base64
             args_payload.append(payload)
@@ -296,7 +313,10 @@ class DebugClient:
         kwargs_payload: dict[str, Any] = {}
         for key, value in kwargs.items():
             serialized = self._serializer.serialize(value)
-            payload = {"cid": serialized.cid}
+            payload = {
+                "cid": serialized.cid,
+                "client_ref": self._get_client_ref(value),
+            }
             if serialized.data_base64:
                 payload["data"] = serialized.data_base64
             kwargs_payload[key] = payload
@@ -316,6 +336,38 @@ class DebugClient:
         if signature is not None:
             payload["signature"] = signature
         return payload, cid_to_obj
+
+    def _get_client_ref(self, obj: Any) -> int:
+        try:
+            with self._client_ref_lock:
+                try:
+                    existing = self._client_ref_by_obj.get(obj)
+                except TypeError:
+                    existing = None
+                if existing is not None:
+                    return existing
+                obj_id = id(obj)
+                existing = self._client_ref_by_id.get(obj_id)
+                if existing is not None:
+                    if obj_id in self._client_ref_objects:
+                        self._client_ref_objects.move_to_end(obj_id)
+                    return existing
+                self._client_ref_counter += 1
+                ref = self._client_ref_counter
+                try:
+                    self._client_ref_by_obj[obj] = ref
+                    return ref
+                except TypeError:
+                    self._client_ref_by_id[obj_id] = ref
+                    self._client_ref_objects[obj_id] = obj
+                    if len(self._client_ref_objects) > self._client_ref_cache_limit:
+                        oldest_id, _ = self._client_ref_objects.popitem(last=False)
+                        self._client_ref_by_id.pop(oldest_id, None)
+                    return ref
+        except Exception:
+            with self._client_ref_lock:
+                self._client_ref_counter += 1
+                return self._client_ref_counter
 
     def _attach_missing_data(
         self, payload: dict[str, Any], cid_to_obj: dict[str, Any], missing: Iterable[str]

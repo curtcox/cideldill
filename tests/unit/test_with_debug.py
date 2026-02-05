@@ -1,6 +1,8 @@
 """Unit tests for with_debug API."""
 
 import functools
+import importlib
+import logging
 import pytest
 import requests
 import threading
@@ -10,6 +12,7 @@ pytest.importorskip("requests")
 
 from cideldill_client.debug_proxy import AsyncDebugProxy, DebugProxy
 from cideldill_client.with_debug import configure_debug, with_debug
+with_debug_module = importlib.import_module("cideldill_client.with_debug")
 import cideldill_client.serialization_common as serialization_common
 
 
@@ -78,6 +81,24 @@ def test_with_debug_off_returns_info() -> None:
     assert info.connection_status() == "disabled"
 
 
+def test_with_debug_verbose_enables_debug(monkeypatch) -> None:
+    def noop_check(self) -> None:
+        return None
+
+    monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
+    configure_debug(server_url="http://localhost:5000")
+
+    info = with_debug("VERBOSE")
+    assert info.is_enabled() is True
+    with_debug("OFF")
+
+
+def test_with_debug_first_call_requires_control_string() -> None:
+    with_debug_module._state.first_call_seen = False
+    with pytest.raises(ValueError, match="with_debug must be called"):
+        with_debug("maybe")
+
+
 def test_with_debug_returns_original_when_off() -> None:
     """When debug is OFF, with_debug(obj) returns the original object unchanged (NOP)."""
     with_debug("OFF")
@@ -112,6 +133,34 @@ def test_with_debug_invalid_string_raises_when_on(monkeypatch) -> None:
     # With debug ON, non-command strings should raise
     with pytest.raises(ValueError, match="with_debug expects"):
         with_debug("maybe")
+
+
+def test_with_debug_logs_breakpoint_label_on_register(monkeypatch, caplog) -> None:
+    def noop_check(self) -> None:
+        return None
+
+    def post_ok(self, path, payload):
+        return {"status": "ok"}
+
+    monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient._post_json",
+        post_ok,
+        raising=False,
+    )
+    configure_debug(server_url="http://localhost:5000")
+    with_debug("ON")
+
+    def my_fn():
+        return "ok"
+
+    with caplog.at_level(logging.INFO, logger="cideldill_client.with_debug"):
+        with_debug(("asset_tool", my_fn))
+
+    assert any(
+        "asset_tool" in record.message and "Registered breakpoint label" in record.message
+        for record in caplog.records
+    )
 
 
 def test_with_debug_on_exits_with_help_when_unverified(monkeypatch, capsys) -> None:

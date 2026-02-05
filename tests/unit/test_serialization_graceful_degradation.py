@@ -1,10 +1,17 @@
 import logging
+import warnings
 
 import pytest
 
 from cideldill_client.custom_picklers import UnpicklablePlaceholder
 from cideldill_client.exceptions import DebugSerializationError
-from cideldill_client.serialization import _safe_dumps, deserialize, serialize
+from cideldill_client.serialization import (
+    _safe_dumps,
+    deserialize,
+    serialize,
+    set_verbose_serialization_warnings,
+)
+import cideldill_client.serialization_common as serialization_common
 
 
 class ExplodingState:
@@ -76,3 +83,38 @@ def test_safe_dumps_logging_extra_does_not_overwrite_logrecord(caplog):
         getattr(record, "object_name") == "UnpicklableContainer"
         for record in records
     )
+
+
+def test_serialize_suppresses_pickling_warnings_by_default(monkeypatch):
+    original_dumps = serialization_common.dill.dumps
+
+    def noisy_dumps(obj, *args, **kwargs):  # type: ignore[no-untyped-def]
+        warnings.warn("noisy", category=serialization_common.dill.PicklingWarning)
+        return original_dumps(obj, *args, **kwargs)
+
+    monkeypatch.setattr(serialization_common.dill, "dumps", noisy_dumps)
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        serialize({"ok": True})
+
+    assert not captured
+
+
+def test_serialize_logs_pickling_warnings_when_verbose(monkeypatch, caplog):
+    original_dumps = serialization_common.dill.dumps
+
+    def noisy_dumps(obj, *args, **kwargs):  # type: ignore[no-untyped-def]
+        warnings.warn("noisy", category=serialization_common.dill.PicklingWarning)
+        return original_dumps(obj, *args, **kwargs)
+
+    monkeypatch.setattr(serialization_common.dill, "dumps", noisy_dumps)
+
+    set_verbose_serialization_warnings(True)
+    try:
+        with caplog.at_level(logging.DEBUG, logger="cideldill_client.serialization"):
+            serialize({"ok": True})
+    finally:
+        set_verbose_serialization_warnings(False)
+
+    assert any("PicklingWarning" in record.message for record in caplog.records)

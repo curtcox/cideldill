@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import inspect
+import logging
 import os
 import threading
 import time
@@ -20,7 +21,7 @@ from .function_registry import compute_signature
 from .function_registry import register_function as register_local_function
 from .port_discovery import read_port_from_discovery_file
 from .server_failure import exit_with_breakpoint_unavailable, exit_with_server_failure
-from .serialization import set_serialization_error_reporter
+from .serialization import set_serialization_error_reporter, set_verbose_serialization_warnings
 
 
 @dataclass
@@ -33,6 +34,7 @@ class _DebugState:
 
 _state = _DebugState()
 _state_lock = threading.Lock()
+logger = logging.getLogger(__name__)
 
 
 def configure_debug(server_url: str | None = None) -> None:
@@ -48,9 +50,9 @@ def with_debug(target: Any) -> Any:
     alias_name: str | None = None
 
     if not _state.first_call_seen:
-        if not isinstance(target, str) or target.strip().upper() not in {"ON", "OFF"}:
+        if not isinstance(target, str) or target.strip().upper() not in {"ON", "OFF", "VERBOSE"}:
             raise ValueError(
-                "with_debug must be called with 'ON' or 'OFF' before any other use"
+                "with_debug must be called with 'ON', 'OFF', or 'VERBOSE' before any other use"
             )
         _state.first_call_seen = True
 
@@ -65,7 +67,11 @@ def with_debug(target: Any) -> Any:
     # Check if it's a control command (ON/OFF)
     if isinstance(target, str):
         mode = target.strip().upper()
+        if mode == "VERBOSE":
+            set_verbose_serialization_warnings(True)
+            return _set_debug_mode(True)
         if mode in {"ON", "OFF"}:
+            set_verbose_serialization_warnings(False)
             return _set_debug_mode(mode == "ON")
         # If it's a string but not ON/OFF, it might be a typo - raise an error
         # unless we're in a debug-disabled state where we should just return it
@@ -73,7 +79,7 @@ def with_debug(target: Any) -> Any:
             # When debug is OFF, any object (including non-command strings) is returned as-is
             return target
         # When debug is ON, reject invalid command strings as likely typos
-        raise ValueError("with_debug expects 'ON', 'OFF', or an object to wrap")
+        raise ValueError("with_debug expects 'ON', 'OFF', 'VERBOSE', or an object to wrap")
 
     # When debug is OFF, return the original object unchanged (true NOP)
     if not _is_debug_enabled():
@@ -281,6 +287,7 @@ def _register_callable_or_halt(
 ) -> None:
     try:
         client.register_function(name, signature=signature, target=target)
+        logger.info("Registered breakpoint label: %s", name)
         register_local_function(target, name=name, signature=signature)
     except SystemExit:
         raise

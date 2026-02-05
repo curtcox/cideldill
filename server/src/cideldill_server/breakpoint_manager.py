@@ -41,6 +41,7 @@ class BreakpointManager:
         self._execution_history: dict[str, list[dict[str, Any]]] = {}
         self._call_records: list[dict[str, Any]] = []
         self._com_errors: list[dict[str, Any]] = []
+        self._object_history: dict[tuple[str, int | str], list[dict[str, Any]]] = {}
         self._com_error_limit = 500
         self._lock = threading.Lock()
         # Default behavior when a breakpoint is hit: "stop" or "go"
@@ -252,6 +253,22 @@ class BreakpointManager:
         with self._lock:
             action = self._resume_actions.pop(pause_id, None)
         return action
+
+    def record_object_snapshot(
+        self,
+        process_key: str,
+        client_ref: int | str,
+        snapshot: dict[str, Any],
+    ) -> None:
+        key = (process_key, client_ref)
+        with self._lock:
+            history = self._object_history.setdefault(key, [])
+            history.append(dict(snapshot))
+
+    def get_object_history(self, process_key: str, client_ref: int | str) -> list[dict[str, Any]]:
+        key = (process_key, client_ref)
+        with self._lock:
+            return list(self._object_history.get(key, []))
 
     def wait_for_resume_action(
         self,

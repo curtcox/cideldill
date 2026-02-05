@@ -14,7 +14,7 @@ pytest.importorskip("requests")
 import dill
 
 from cideldill_client.debug_client import DebugClient
-from cideldill_client.serialization import Serializer
+from cideldill_client.serialization import Serializer, compute_cid
 
 
 class _Response:
@@ -116,3 +116,49 @@ def test_async_poll_timeout_returns_poll_action(monkeypatch, caplog) -> None:
     result = asyncio.run(client.async_poll(action))
     assert result == action
     assert "poll timed out" in caplog.text.lower()
+
+
+def test_record_call_start_includes_stable_client_refs(monkeypatch) -> None:
+    captured: list[dict] = []
+
+    def fake_post(self, path: str, payload: dict) -> dict:
+        captured.append(payload)
+        return {"call_id": "1-001", "action": "continue"}
+
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient._post_json_allowing_cid_errors",
+        fake_post,
+    )
+
+    client = DebugClient("http://localhost:5000")
+    target = {"x": 1}
+    mutable = ["alpha"]
+    target_cid = compute_cid(target)
+
+    client.record_call_start(
+        method_name="noop",
+        target=target,
+        target_cid=target_cid,
+        args=(mutable,),
+        kwargs={"same": mutable},
+        call_site={"timestamp": 0.0},
+    )
+
+    mutable.append("beta")
+    client.record_call_start(
+        method_name="noop",
+        target=target,
+        target_cid=target_cid,
+        args=(mutable,),
+        kwargs={"same": mutable},
+        call_site={"timestamp": 1.0},
+    )
+
+    payload1, payload2 = captured
+    ref1 = payload1["args"][0]["client_ref"]
+    ref2 = payload2["args"][0]["client_ref"]
+
+    assert ref1 == ref2
+    assert payload1["kwargs"]["same"]["client_ref"] == ref1
+    assert payload2["kwargs"]["same"]["client_ref"] == ref2
+    assert payload1["target"]["client_ref"] != ref1

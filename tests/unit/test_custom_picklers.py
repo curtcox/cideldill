@@ -298,19 +298,27 @@ def test_auto_register_returns_false_on_failure(monkeypatch):
 def test_auto_register_logs_success(caplog):
     import logging
 
-    caplog.set_level(logging.INFO)
+    from cideldill_client.custom_picklers import set_verbose_serialization_warnings
+
+    caplog.set_level(logging.DEBUG)
 
     obj = UnpicklableClass("test")
-    auto_register_for_pickling(obj)
+    set_verbose_serialization_warnings(True)
+    try:
+        auto_register_for_pickling(obj)
+    finally:
+        set_verbose_serialization_warnings(False)
 
-    assert "Auto-registered" in caplog.text
+    assert "Auto-registered custom pickler" in caplog.text
     assert "UnpicklableClass" in caplog.text
 
 
 def test_auto_register_logs_failure(caplog, monkeypatch):
     import logging
 
-    caplog.set_level(logging.WARNING)
+    from cideldill_client.custom_picklers import set_verbose_serialization_warnings
+
+    caplog.set_level(logging.DEBUG)
 
     def boom(*args, **kwargs):
         raise RuntimeError("register failed")
@@ -318,9 +326,13 @@ def test_auto_register_logs_failure(caplog, monkeypatch):
     monkeypatch.setattr(PickleRegistry, "register", boom)
 
     obj = UnpicklableClass("test")
-    auto_register_for_pickling(obj)
+    set_verbose_serialization_warnings(True)
+    try:
+        auto_register_for_pickling(obj)
+    finally:
+        set_verbose_serialization_warnings(False)
 
-    assert "Failed to auto-register" in caplog.text
+    assert "Failed to auto-register custom pickler" in caplog.text
 
 
 # Introspection strategies

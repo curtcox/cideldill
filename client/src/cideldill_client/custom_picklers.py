@@ -17,6 +17,12 @@ from typing import Any, Callable
 import dill
 
 logger = logging.getLogger(__name__)
+_verbose_serialization_warnings = False
+
+
+def set_verbose_serialization_warnings(enabled: bool) -> None:
+    global _verbose_serialization_warnings
+    _verbose_serialization_warnings = enabled
 
 
 @dataclass
@@ -359,31 +365,35 @@ def auto_register_for_pickling(obj: Any, protocol: int | None = None) -> bool:
             dill.dumps(obj, protocol=protocol)
             return True
         except Exception:
-            logger.warning(
-                "Auto-registered reducer failed to pickle %s",
-                obj_type,
-            )
+            if _verbose_serialization_warnings:
+                logger.debug(
+                    "Auto-registered reducer failed to pickle %s",
+                    obj_type,
+                )
             return False
 
     try:
         PickleRegistry.register(obj_type)
     except Exception:
-        logger.warning(
-            "Failed to auto-register custom pickler for %s",
-            obj_type,
-        )
+        if _verbose_serialization_warnings:
+            logger.debug(
+                "Failed to auto-register custom pickler for %s",
+                obj_type,
+            )
         return False
 
     try:
         dill.dumps(obj, protocol=protocol)
     except Exception:
-        logger.warning(
-            "Auto-registered reducer did not make %s picklable",
-            obj_type,
-        )
+        if _verbose_serialization_warnings:
+            logger.debug(
+                "Auto-registered reducer did not make %s picklable",
+                obj_type,
+            )
         return False
 
-    logger.info("Auto-registered custom pickler for %s", obj_type.__qualname__)
+    if _verbose_serialization_warnings:
+        logger.debug("Auto-registered custom pickler for %s", obj_type.__qualname__)
     return True
 
 

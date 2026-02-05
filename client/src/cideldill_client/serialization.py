@@ -8,13 +8,20 @@ from . import serialization_common as _common
 from .exceptions import DebugSerializationError
 
 try:
-    from .custom_picklers import UnpicklablePlaceholder, auto_register_for_pickling
+    from .custom_picklers import (
+        UnpicklablePlaceholder,
+        auto_register_for_pickling,
+        set_verbose_serialization_warnings as _set_custom_verbose_warnings,
+    )
 except Exception:  # pragma: no cover - fallback for environments without custom_picklers
 
     from .serialization_common import UnpicklablePlaceholder
 
     def auto_register_for_pickling(obj: Any, protocol: int | None = None) -> bool:
         return False
+
+    def _set_custom_verbose_warnings(enabled: bool) -> None:
+        return None
 
 
 _reporter: Callable[[dict[str, Any]], None] | None = None
@@ -25,6 +32,12 @@ def set_serialization_error_reporter(
 ) -> None:
     global _reporter
     _reporter = reporter
+
+
+def set_verbose_serialization_warnings(enabled: bool) -> None:
+    _configure()
+    _common.set_verbose_serialization_warnings(enabled)
+    _set_custom_verbose_warnings(enabled)
 
 
 def _configure() -> None:
@@ -109,4 +122,5 @@ __all__ = [
     "serialize",
     "_safe_dumps",
     "set_serialization_error_reporter",
+    "set_verbose_serialization_warnings",
 ]

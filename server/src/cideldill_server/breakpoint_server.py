@@ -1043,6 +1043,77 @@ class BreakpointServer:
                 return _format_placeholder(value)
             return _safe_repr(value)
 
+        def _normalize_client_ref(value: object) -> int | str | None:
+            if isinstance(value, (int, str)):
+                return value
+            return None
+
+        def _record_payload_snapshots(
+            *,
+            process_key: str,
+            call_id: str,
+            method_name: str,
+            target: dict[str, object] | None,
+            args: list[object],
+            kwargs: dict[str, object],
+        ) -> None:
+            timestamp = time.time()
+
+            def record_item(
+                item: dict[str, object],
+                role: str,
+                *,
+                index: int | None = None,
+                key: str | None = None,
+            ) -> None:
+                client_ref = _normalize_client_ref(item.get("client_ref"))
+                if client_ref is None:
+                    return
+                snapshot = {
+                    "timestamp": timestamp,
+                    "call_id": call_id,
+                    "method_name": method_name,
+                    "role": role,
+                    "cid": item.get("cid"),
+                    "pretty": _format_payload_value(item),
+                }
+                if index is not None:
+                    snapshot["index"] = index
+                if key is not None:
+                    snapshot["key"] = key
+                self.manager.record_object_snapshot(process_key, client_ref, snapshot)
+
+            if isinstance(target, dict):
+                record_item(target, "target")
+            for idx, item in enumerate(args):
+                if isinstance(item, dict):
+                    record_item(item, "arg", index=idx)
+            for key, item in kwargs.items():
+                if isinstance(item, dict):
+                    record_item(item, "kwarg", key=key)
+
+        def _record_completion_snapshot(
+            *,
+            process_key: str,
+            call_id: str,
+            method_name: str,
+            role: str,
+            client_ref: object,
+            cid: str | None,
+        ) -> None:
+            normalized_ref = _normalize_client_ref(client_ref)
+            if normalized_ref is None or cid is None:
+                return
+            snapshot = {
+                "timestamp": time.time(),
+                "call_id": call_id,
+                "method_name": method_name,
+                "role": role,
+                "cid": cid,
+                "pretty": _format_payload_value({"cid": cid}),
+            }
+            self.manager.record_object_snapshot(process_key, normalized_ref, snapshot)
+
         def _pretty_text(value: object) -> str:
             if isinstance(value, dict) and value.get("__cideldill_placeholder__"):
                 summary = value.get("summary")
@@ -2728,6 +2799,14 @@ class BreakpointServer:
             store_payload(kwargs)
 
             call_id = next_call_id()
+            _record_payload_snapshots(
+                process_key=process_key,
+                call_id=call_id,
+                method_name=method_name,
+                target=target if isinstance(target, dict) else None,
+                args=args,
+                kwargs=kwargs,
+            )
             action = {"call_id": call_id, "action": "continue"}
 
             # Check if we should pause at this breakpoint
@@ -2800,6 +2879,8 @@ class BreakpointServer:
             result_cid = data.get("result_cid")
             exception_data = data.get("exception_data")
             exception_cid = data.get("exception_cid")
+            result_client_ref = data.get("result_client_ref")
+            exception_client_ref = data.get("exception_client_ref")
             completed_at = data.get("timestamp") or time.time()
 
             if result_data and result_cid:
@@ -2808,6 +2889,34 @@ class BreakpointServer:
                 self._cid_store.store(exception_cid, base64.b64decode(exception_data))
 
             call_data = self.manager.pop_call(call_id) if call_id else None
+            method_name = ""
+            process_key = None
+            if call_data:
+                method_name = call_data.get("method_name", "")
+                process_key = _process_key(
+                    call_data.get("process_pid"),
+                    call_data.get("process_start_time"),
+                )
+            if process_key is None:
+                process_key = _process_key(data.get("process_pid"), data.get("process_start_time"))
+
+            if process_key and call_id:
+                _record_completion_snapshot(
+                    process_key=process_key,
+                    call_id=call_id,
+                    method_name=method_name,
+                    role="result",
+                    client_ref=result_client_ref,
+                    cid=result_cid,
+                )
+                _record_completion_snapshot(
+                    process_key=process_key,
+                    call_id=call_id,
+                    method_name=method_name,
+                    role="exception",
+                    client_ref=exception_client_ref,
+                    cid=exception_cid,
+                )
 
             # Record execution history for breakpoints
             if call_data:

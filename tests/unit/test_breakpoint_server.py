@@ -165,6 +165,122 @@ def test_get_paused_executions_endpoint(server) -> None:
     assert data["paused"][0]["call_data"]["function_name"] == "add"
 
 
+def test_call_start_tracks_client_ref_state(server) -> None:
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    serializer = Serializer()
+    mutable = ["alpha"]
+
+    def make_item(obj, client_ref):
+        serialized = serializer.force_serialize_with_data(obj)
+        return {
+            "cid": serialized.cid,
+            "data": serialized.data_base64,
+            "client_ref": client_ref,
+        }
+
+    process_pid = 4242
+    process_start_time = 123.456
+    process_key = f"{process_start_time:.6f}+{process_pid}"
+
+    payload1 = {
+        "method_name": "noop",
+        "target_cid": "t1",
+        "target": make_item({"target": True}, client_ref=1),
+        "args": [make_item(mutable, client_ref=99)],
+        "kwargs": {},
+        "call_site": {"timestamp": 0.0},
+        "process_pid": process_pid,
+        "process_start_time": process_start_time,
+    }
+    response1 = server.test_client().post(
+        "/api/call/start",
+        data=json.dumps(payload1),
+        content_type="application/json",
+    )
+    assert response1.status_code == 200
+
+    mutable.append("beta")
+    payload2 = {
+        "method_name": "noop",
+        "target_cid": "t2",
+        "target": make_item({"target": True}, client_ref=1),
+        "args": [make_item(mutable, client_ref=99)],
+        "kwargs": {},
+        "call_site": {"timestamp": 1.0},
+        "process_pid": process_pid,
+        "process_start_time": process_start_time,
+    }
+    response2 = server.test_client().post(
+        "/api/call/start",
+        data=json.dumps(payload2),
+        content_type="application/json",
+    )
+    assert response2.status_code == 200
+
+    history = server.manager.get_object_history(process_key, 99)
+    assert len(history) == 2
+    assert history[0]["pretty"] == "['alpha']"
+    assert history[1]["pretty"] == "['alpha', 'beta']"
+
+
+def test_call_start_tracks_client_ref_for_placeholder(server) -> None:
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    placeholder = UnpicklablePlaceholder(
+        type_name="ConfiguredFunction",
+        module="nat.builder.workflow_builder",
+        qualname="ConfiguredFunction",
+        object_id="0x2",
+        repr_text="<ConfiguredFunction>",
+        str_text=None,
+        attributes={},
+        failed_attributes={},
+        pickle_error="TypeError: not picklable",
+        pickle_attempts=["dill.dumps: TypeError"],
+        capture_timestamp=0.0,
+        depth=0,
+        object_name="asset_tool",
+        object_path="nat.builder.workflow_builder.ConfiguredFunction",
+    )
+    serializer = Serializer()
+    serialized = serializer.force_serialize_with_data(placeholder)
+
+    process_pid = 1337
+    process_start_time = 555.0
+    process_key = f"{process_start_time:.6f}+{process_pid}"
+
+    payload = {
+        "method_name": "noop",
+        "target_cid": "t1",
+        "target": {
+            "cid": serialized.cid,
+            "data": serialized.data_base64,
+            "client_ref": 777,
+        },
+        "args": [],
+        "kwargs": {},
+        "call_site": {"timestamp": 0.0},
+        "process_pid": process_pid,
+        "process_start_time": process_start_time,
+    }
+
+    response = server.test_client().post(
+        "/api/call/start",
+        data=json.dumps(payload),
+        content_type="application/json",
+    )
+    assert response.status_code == 200
+
+    history = server.manager.get_object_history(process_key, 777)
+    assert len(history) == 1
+    assert history[0]["pretty"]["__cideldill_placeholder__"] is True
+
+
 def test_continue_execution_endpoint(server) -> None:
     """Test POST /api/paused/<id>/continue endpoint."""
     thread = threading.Thread(target=server.start, daemon=True)
