@@ -988,6 +988,80 @@ class BreakpointServer:
                 f"attrs={len(attrs)} failed={len(failed)} error={error}>"
             )
 
+        def _is_json_scalar(value: object) -> bool:
+            return value is None or isinstance(value, (str, int, float, bool))
+
+        def _format_placeholder_value(
+            value: object,
+            *,
+            depth: int,
+            max_depth: int,
+        ) -> object:
+            if _is_placeholder(value):
+                if depth < max_depth:
+                    return _format_placeholder(value, depth=depth + 1, max_depth=max_depth)
+                return _placeholder_summary(value)
+
+            if _is_json_scalar(value):
+                return value
+
+            if depth > max_depth:
+                return _safe_repr(value)
+
+            if isinstance(value, dict):
+                formatted_items: dict[str, object] = {}
+                for idx, (item_key, item_value) in enumerate(value.items()):
+                    if idx >= 50:
+                        remaining = len(value) - 50
+                        if remaining > 0:
+                            formatted_items["__skipped__"] = f"{remaining} more items skipped"
+                        break
+                    key_text = item_key if isinstance(item_key, str) else _safe_repr(item_key)
+                    formatted_items[str(key_text)] = _format_placeholder_value(
+                        item_value,
+                        depth=depth + 1,
+                        max_depth=max_depth,
+                    )
+                return formatted_items
+
+            if isinstance(value, (list, tuple)):
+                sequence = list(value)
+                formatted_list: list[object] = []
+                for idx, item in enumerate(sequence):
+                    if idx >= 50:
+                        remaining = len(sequence) - 50
+                        if remaining > 0:
+                            formatted_list.append(f"<{remaining} more items skipped>")
+                        break
+                    formatted_list.append(
+                        _format_placeholder_value(
+                            item,
+                            depth=depth + 1,
+                            max_depth=max_depth,
+                        )
+                    )
+                return formatted_list
+
+            if isinstance(value, (set, frozenset)):
+                formatted_set: list[object] = []
+                ordered_items = sorted(value, key=lambda item: _safe_repr(item))
+                for idx, item in enumerate(ordered_items):
+                    if idx >= 50:
+                        remaining = len(ordered_items) - 50
+                        if remaining > 0:
+                            formatted_set.append(f"<{remaining} more items skipped>")
+                        break
+                    formatted_set.append(
+                        _format_placeholder_value(
+                            item,
+                            depth=depth + 1,
+                            max_depth=max_depth,
+                        )
+                    )
+                return {"__cideldill_set__": formatted_set}
+
+            return _safe_repr(value)
+
         def _format_placeholder(value: object, depth: int = 0, max_depth: int = 2) -> dict[str, object]:
             attributes = getattr(value, "attributes", {}) or {}
             failed_attributes = getattr(value, "failed_attributes", {}) or {}
@@ -999,12 +1073,11 @@ class BreakpointServer:
                     if remaining > 0:
                         formatted_attributes["__skipped__"] = f"{remaining} more attributes skipped"
                     break
-                if _is_placeholder(attr_value) and depth < max_depth:
-                    formatted_attributes[name] = _format_placeholder(
-                        attr_value, depth=depth + 1, max_depth=max_depth
-                    )
-                else:
-                    formatted_attributes[name] = _safe_repr(attr_value)
+                formatted_attributes[name] = _format_placeholder_value(
+                    attr_value,
+                    depth=depth,
+                    max_depth=max_depth,
+                )
 
             return {
                 "__cideldill_placeholder__": True,

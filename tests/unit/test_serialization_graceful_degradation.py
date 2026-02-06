@@ -29,6 +29,18 @@ class UnpicklableContainer:
         raise TypeError("container boom")
 
 
+class MixedStateContainer:
+    def __init__(self):
+        self.payload = {
+            "ok": {"nested": [1, 2, 3]},
+            "bad": ExplodingState(),
+            "items": [10, ExplodingState(), {"deep": "value"}],
+        }
+
+    def __getstate__(self):
+        raise TypeError("mixed container boom")
+
+
 def test_serialize_degrades_to_placeholder_with_attribute_snapshot():
     data = serialize(UnpicklableContainer())
     restored = deserialize(data)
@@ -57,6 +69,29 @@ def test_circular_reference_becomes_placeholder():
     loop_value = restored.attributes["loop"]
     assert isinstance(loop_value, UnpicklablePlaceholder)
     assert "circular" in loop_value.pickle_error.lower()
+
+
+def test_serialize_captures_mixed_serializable_parts_inside_nested_containers():
+    data = serialize(MixedStateContainer())
+    restored = deserialize(data)
+
+    assert isinstance(restored, UnpicklablePlaceholder)
+    payload = restored.attributes["payload"]
+    assert isinstance(payload, UnpicklablePlaceholder)
+    assert payload.type_name == "dict"
+
+    assert payload.attributes["ok"] == {"nested": [1, 2, 3]}
+
+    bad_value = payload.attributes["bad"]
+    assert isinstance(bad_value, UnpicklablePlaceholder)
+    assert "TypeError" in bad_value.pickle_error
+
+    items_value = payload.attributes["items"]
+    assert isinstance(items_value, UnpicklablePlaceholder)
+    assert items_value.type_name == "list"
+    assert items_value.attributes["[0]"] == 10
+    assert items_value.attributes["[2]"] == {"deep": "value"}
+    assert isinstance(items_value.attributes["[1]"], UnpicklablePlaceholder)
 
 
 def test_serialize_strict_raises_debug_serialization_error():

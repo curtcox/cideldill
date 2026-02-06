@@ -149,6 +149,71 @@ def test_register_function_includes_placeholder_metadata(server) -> None:
     assert metadata["object_name"] == "asset_tool"
 
 
+def test_register_function_preserves_nested_serializable_metadata_parts(server) -> None:
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    child = UnpicklablePlaceholder(
+        type_name="ExplodingState",
+        module="tests.unit.test_breakpoint_server",
+        qualname="ExplodingState",
+        object_id="0xchild",
+        repr_text="<ExplodingState>",
+        str_text=None,
+        attributes={},
+        failed_attributes={},
+        pickle_error="TypeError: no state",
+        pickle_attempts=["dill.dumps: TypeError"],
+        capture_timestamp=0.0,
+        depth=1,
+        object_name="bad",
+        object_path="tests.unit.test_breakpoint_server.ExplodingState",
+    )
+    parent = UnpicklablePlaceholder(
+        type_name="Container",
+        module="tests.unit.test_breakpoint_server",
+        qualname="Container",
+        object_id="0xparent",
+        repr_text="<Container>",
+        str_text=None,
+        attributes={
+            "payload": {
+                "ok": {"nested": [1, 2]},
+                "bad": child,
+            }
+        },
+        failed_attributes={},
+        pickle_error="TypeError: parent",
+        pickle_attempts=["dill.dumps: TypeError"],
+        capture_timestamp=0.0,
+        depth=0,
+        object_name="container_tool",
+        object_path="tests.unit.test_breakpoint_server.Container",
+    )
+    serializer = Serializer()
+    serialized = serializer.force_serialize_with_data(parent)
+
+    response = server.test_client().post(
+        "/api/functions",
+        data=json.dumps({
+            "function_name": "container_tool",
+            "function_cid": serialized.cid,
+            "function_data": serialized.data_base64,
+        }),
+        content_type="application/json",
+    )
+    assert response.status_code == 200
+
+    response = server.test_client().get("/api/functions")
+    assert response.status_code == 200
+    metadata = json.loads(response.data)["function_metadata"]["container_tool"]
+    payload = metadata["attributes"]["payload"]
+    assert payload["ok"] == {"nested": [1, 2]}
+    assert payload["bad"]["__cideldill_placeholder__"] is True
+    assert "TypeError" in payload["bad"]["pickle_error"]
+
+
 def test_get_paused_executions_endpoint(server) -> None:
     """Test GET /api/paused endpoint."""
     thread = threading.Thread(target=server.start, daemon=True)

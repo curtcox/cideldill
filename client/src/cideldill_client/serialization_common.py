@@ -278,6 +278,32 @@ def _iter_attributes(obj: Any) -> Iterator[tuple[str, Any]]:
                 continue
 
 
+def _is_snapshot_container_value(value: Any) -> bool:
+    return isinstance(value, (dict, list, tuple, set, frozenset))
+
+
+def _iter_snapshot_members(obj: Any) -> Iterator[tuple[str, Any]]:
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if isinstance(key, str):
+                yield key, value
+            else:
+                yield f"[{_safe_repr(key, max_length=80)}]", value
+        return
+
+    if isinstance(obj, (list, tuple)):
+        for idx, value in enumerate(obj):
+            yield f"[{idx}]", value
+        return
+
+    if isinstance(obj, (set, frozenset)):
+        for idx, value in enumerate(sorted(obj, key=lambda item: _safe_repr(item, max_length=80))):
+            yield f"[{idx}]", value
+        return
+
+    yield from _iter_attributes(obj)
+
+
 def _is_simple_snapshot_value(value: Any) -> bool:
     return isinstance(value, (str, int, float, bool, bytes, type(None)))
 
@@ -366,7 +392,7 @@ def _build_snapshot(
 
     visited.add(id(obj))
 
-    items = list(_iter_attributes(obj))
+    items = list(_iter_snapshot_members(obj))
     for idx, (name, value) in enumerate(items):
         if idx >= max_attributes:
             remaining = len(items) - max_attributes
@@ -388,6 +414,8 @@ def _build_snapshot(
                 attributes[name] = nested_value
                 failed_attributes[name] = nested_value.pickle_error
             elif _is_simple_snapshot_value(nested_value):
+                attributes[name] = nested_value
+            elif _is_snapshot_container_value(nested_value):
                 attributes[name] = nested_value
             else:
                 attributes[name] = _safe_repr(nested_value)
