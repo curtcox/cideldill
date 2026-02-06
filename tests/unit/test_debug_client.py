@@ -140,6 +140,19 @@ def test_poll_logs_suspended_breakpoints_for_long_running_poll(monkeypatch, capl
         raise AssertionError(f"Unexpected path: {path}")
 
     def fake_get(url: str, timeout: float) -> _Response:
+        """
+        Return a canned `_Response` for the "/api/paused" endpoint or raise for any other URL.
+        
+        Parameters:
+            url (str): Request URL; if it ends with "/api/paused" a mock paused response is returned.
+            timeout (float): Ignored by this fake implementation.
+        
+        Returns:
+            _Response: A response with status code 200 and a JSON payload containing a single paused breakpoint whose `paused_at` is `clock.time() - 12.0` and whose `call_data.method_name` is "workflow:step_one".
+        
+        Raises:
+            AssertionError: If `url` does not end with "/api/paused".
+        """
         if url.endswith("/api/paused"):
             return _Response(
                 200,
@@ -186,11 +199,36 @@ def test_poll_logs_all_visible_suspended_breakpoints(monkeypatch, caplog) -> Non
     clock = _FakeClock()
 
     def fake_get_json(self, path: str) -> dict:
+        """
+        Return canned JSON responses for specific test GET paths.
+        
+        Parameters:
+            path (str): Request path to fetch a canned JSON response for; currently supports "/api/poll/abc".
+        
+        Returns:
+            dict: The JSON-like response for the given path (e.g., {"status": "waiting"} for "/api/poll/abc").
+        
+        Raises:
+            AssertionError: If an unexpected path is provided.
+        """
         if path == "/api/poll/abc":
             return {"status": "waiting"}
         raise AssertionError(f"Unexpected path: {path}")
 
     def fake_get(url: str, timeout: float) -> _Response:
+        """
+        Return a canned `_Response` for the `/api/paused` endpoint used in tests.
+        
+        Parameters:
+            url (str): The requested URL; only `.../api/paused` is supported.
+            timeout (float): Request timeout in seconds (ignored by this fake).
+        
+        Returns:
+            _Response: A response with status code 200 and a JSON payload containing two paused breakpoints.
+        
+        Raises:
+            AssertionError: If `url` is not the expected `/api/paused` endpoint.
+        """
         if url.endswith("/api/paused"):
             return _Response(
                 200,
@@ -243,11 +281,34 @@ def test_poll_uses_function_name_when_method_name_missing(monkeypatch, caplog) -
     clock = _FakeClock()
 
     def fake_get_json(self, path: str) -> dict:
+        """
+        Return canned JSON responses for specific test GET paths.
+        
+        Parameters:
+            path (str): Request path to fetch a canned JSON response for; currently supports "/api/poll/abc".
+        
+        Returns:
+            dict: The JSON-like response for the given path (e.g., {"status": "waiting"} for "/api/poll/abc").
+        
+        Raises:
+            AssertionError: If an unexpected path is provided.
+        """
         if path == "/api/poll/abc":
             return {"status": "waiting"}
         raise AssertionError(f"Unexpected path: {path}")
 
     def fake_get(url: str, timeout: float) -> _Response:
+        """
+        Return a canned _Response for the /api/paused endpoint used in tests.
+        
+        The response contains a single paused breakpoint with id "pause-1", a paused_at timestamp equal to clock.time() - 12.0, and call_data that includes a `function_name` of "workflow:legacy_step". For any other URL the function raises an AssertionError.
+        
+        Returns:
+            _Response: A mock HTTP response with a JSON payload under the "paused" key.
+        
+        Raises:
+            AssertionError: If called with an unexpected URL.
+        """
         if url.endswith("/api/paused"):
             return _Response(
                 200,

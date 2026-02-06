@@ -867,6 +867,22 @@ class DebugClient:
         return payload
 
     def _format_paused_execution_summary(self, paused: dict[str, Any]) -> str:
+        """
+        Builds a short human-readable summary for a paused execution.
+        
+        Parameters:
+            paused (dict): Pause metadata. Expected keys:
+                - call_data (dict, optional): If present and a dict, may contain `method_name` or `function_name`.
+                - method_name (str, optional): Fallback method name when `call_data` is not a dict.
+                - function_name (str, optional): Alternate fallback name.
+                - id (str|int, optional): Pause identifier.
+                - paused_at (float|int, optional): Unix timestamp when the execution was paused.
+        
+        Returns:
+            str: A one-line summary in the form "METHOD_NAME[id=ID, age=XS]" when `paused_at` is numeric,
+            or "METHOD_NAME[id=ID]" when `paused_at` is absent or not a number. Unknown fields are shown
+            as "<unknown>".
+        """
         call_data = paused.get("call_data")
         method_name = "<unknown>"
         if isinstance(call_data, dict):
