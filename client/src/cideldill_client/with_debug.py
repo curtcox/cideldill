@@ -30,6 +30,7 @@ class _DebugState:
     server_url: str | None = None
     client: DebugClient | None = None
     first_call_seen: bool = False
+    suspended_breakpoints_log_interval_s: float | None = None
 
 
 _state = _DebugState()
@@ -37,12 +38,22 @@ _state_lock = threading.Lock()
 logger = logging.getLogger(__name__)
 
 
-def configure_debug(server_url: str | None = None) -> None:
+def configure_debug(
+    server_url: str | None = None,
+    suspended_breakpoints_log_interval_s: float | None = None,
+) -> None:
     """Configure debug settings before enabling."""
     if server_url is not None:
         _validate_localhost(server_url)
+    if (
+        suspended_breakpoints_log_interval_s is not None
+        and suspended_breakpoints_log_interval_s < 0
+    ):
+        raise ValueError("suspended_breakpoints_log_interval_s must be >= 0")
     with _state_lock:
         _state.server_url = server_url
+        if suspended_breakpoints_log_interval_s is not None:
+            _state.suspended_breakpoints_log_interval_s = suspended_breakpoints_log_interval_s
 
 
 def with_debug(target: Any) -> Any:
@@ -87,7 +98,10 @@ def with_debug(target: Any) -> Any:
 
     client = _state.client
     if client is None:
-        client = DebugClient(_resolve_server_url())
+        client = DebugClient(
+            _resolve_server_url(),
+            suspended_breakpoints_log_interval_s=_resolve_suspended_breakpoint_log_interval_s(),
+        )
         _state.client = client
 
     if isinstance(target, (DebugProxy, AsyncDebugProxy)):
@@ -185,7 +199,10 @@ def _set_debug_mode(enabled: bool) -> DebugInfo:
         return DebugInfo(enabled=False, server=None, status="disabled")
 
     server_url = _resolve_server_url()
-    client = DebugClient(server_url)
+    client = DebugClient(
+        server_url,
+        suspended_breakpoints_log_interval_s=_resolve_suspended_breakpoint_log_interval_s(),
+    )
     try:
         client.check_connection()
     except DebugServerError as exc:
@@ -256,6 +273,26 @@ def _resolve_server_url() -> str:
         return f"http://localhost:{discovered_port}"
     default_url = "http://localhost:5174"
     return default_url
+
+
+def _resolve_suspended_breakpoint_log_interval_s() -> float:
+    if _state.suspended_breakpoints_log_interval_s is not None:
+        return max(0.0, _state.suspended_breakpoints_log_interval_s)
+
+    env_value = os.getenv("CIDELDILL_SUSPENDED_BREAKPOINT_LOG_INTERVAL_S")
+    if env_value is not None:
+        try:
+            interval = float(env_value)
+            if interval < 0:
+                raise ValueError
+            return interval
+        except ValueError:
+            logger.warning(
+                "Ignoring invalid CIDELDILL_SUSPENDED_BREAKPOINT_LOG_INTERVAL_S=%r; "
+                "using default 60s",
+                env_value,
+            )
+    return 60.0
 
 
 def _validate_localhost(server_url: str) -> None:

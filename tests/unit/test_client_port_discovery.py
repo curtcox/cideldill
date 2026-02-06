@@ -18,6 +18,7 @@ from cideldill_client.with_debug import _resolve_server_url
 def _reset_state() -> None:
     with_debug_module._state.server_url = None
     with_debug_module._state.enabled = False
+    with_debug_module._state.suspended_breakpoints_log_interval_s = None
 
 
 def test_resolve_server_url_uses_env_variable_first(monkeypatch: pytest.MonkeyPatch) -> None:

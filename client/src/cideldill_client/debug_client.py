@@ -53,11 +53,15 @@ class DebugClient:
         timeout_s: float = 30.0,
         retry_timeout_s: float = 60.0,
         retry_sleep_s: float = 0.25,
+        suspended_breakpoints_log_interval_s: float = 60.0,
     ) -> None:
         self._server_url = server_url.rstrip("/")
         self._timeout_s = timeout_s
         self._retry_timeout_s = retry_timeout_s
         self._retry_sleep_s = retry_sleep_s
+        self._suspended_breakpoints_log_interval_s = max(0.0, suspended_breakpoints_log_interval_s)
+        self._next_suspended_breakpoints_log_at: dict[str, float] = {}
+        self._suspended_breakpoints_lock = threading.Lock()
         self._serializer = Serializer()
         self._object_cache: OrderedDict[str, Any] = OrderedDict()
         self._object_cache_limit = 10_000
@@ -241,16 +245,20 @@ class DebugClient:
             response = self._get_json(poll_url)
             status = response.get("status")
             if status == "waiting":
+                self._log_suspended_breakpoints_if_due(poll_url)
                 time.sleep(interval_ms / 1000.0)
                 continue
             if status == "ready":
+                self._clear_suspended_breakpoint_timer(poll_url)
                 return response.get("action", {})
+            self._clear_suspended_breakpoint_timer(poll_url)
             raise DebugProtocolError("Malformed poll response")
         logger.info(
             "Debug server poll timed out after %sms (poll_url=%s). Continuing to wait...",
             timeout_ms,
             poll_url,
         )
+        self._log_suspended_breakpoints_if_due(poll_url)
         return action
 
     async def async_poll(self, action: dict[str, Any]) -> dict[str, Any]:
@@ -265,16 +273,20 @@ class DebugClient:
             response = self._get_json(poll_url)
             status = response.get("status")
             if status == "waiting":
+                self._log_suspended_breakpoints_if_due(poll_url)
                 await asyncio.sleep(interval_ms / 1000.0)
                 continue
             if status == "ready":
+                self._clear_suspended_breakpoint_timer(poll_url)
                 return response.get("action", {})
+            self._clear_suspended_breakpoint_timer(poll_url)
             raise DebugProtocolError("Malformed poll response")
         logger.info(
             "Debug server poll timed out after %sms (poll_url=%s). Continuing to wait...",
             timeout_ms,
             poll_url,
         )
+        self._log_suspended_breakpoints_if_due(poll_url)
         return action
 
     def deserialize_payload_item(self, item: dict[str, Any]) -> Any:
@@ -759,6 +771,106 @@ class DebugClient:
             )
         except requests.RequestException:
             return
+
+    def _log_suspended_breakpoints_if_due(self, poll_url: str) -> None:
+        interval_s = self._suspended_breakpoints_log_interval_s
+        if interval_s <= 0.0:
+            return
+
+        now = time.time()
+        with self._suspended_breakpoints_lock:
+            next_log_at = self._next_suspended_breakpoints_log_at.get(poll_url)
+            if next_log_at is None:
+                self._next_suspended_breakpoints_log_at[poll_url] = now + interval_s
+                return
+            if now < next_log_at:
+                return
+            self._next_suspended_breakpoints_log_at[poll_url] = now + interval_s
+
+        paused = self._get_paused_executions_for_logging()
+        if paused is None:
+            return
+        if not paused:
+            logger.warning(
+                "Long-running suspended breakpoint poll (poll_url=%s). "
+                "No suspended breakpoints are visible on the server.",
+                poll_url,
+            )
+            return
+
+        summaries = ", ".join(self._format_paused_execution_summary(item) for item in paused)
+        logger.warning(
+            "Long-running suspended breakpoint poll (poll_url=%s). "
+            "Suspended breakpoints on server (%s): %s",
+            poll_url,
+            len(paused),
+            summaries,
+        )
+
+    def _clear_suspended_breakpoint_timer(self, poll_url: str) -> None:
+        with self._suspended_breakpoints_lock:
+            self._next_suspended_breakpoints_log_at.pop(poll_url, None)
+
+    def _get_paused_executions_for_logging(self) -> list[dict[str, Any]] | None:
+        response = self._get_json_nonfatal("/api/paused")
+        if response is None:
+            return None
+        paused = response.get("paused")
+        if not isinstance(paused, list):
+            logger.warning(
+                "Unable to list suspended breakpoints: malformed /api/paused response (%r).",
+                response,
+            )
+            return None
+        return [item for item in paused if isinstance(item, dict)]
+
+    def _get_json_nonfatal(self, path: str) -> dict[str, Any] | None:
+        url = f"{self._server_url}{path}"
+        try:
+            response = requests.get(url, timeout=min(5.0, self._timeout_s))
+        except requests.RequestException as exc:
+            logger.warning(
+                "Unable to list suspended breakpoints: GET %s failed (%s: %s).",
+                path,
+                type(exc).__name__,
+                exc,
+            )
+            return None
+
+        if response.status_code >= 400:
+            logger.warning(
+                "Unable to list suspended breakpoints: GET %s returned %s.",
+                path,
+                response.status_code,
+            )
+            return None
+        try:
+            payload = response.json()
+        except ValueError:
+            logger.warning(
+                "Unable to list suspended breakpoints: GET %s returned malformed JSON.",
+                path,
+            )
+            return None
+        if not isinstance(payload, dict):
+            logger.warning(
+                "Unable to list suspended breakpoints: GET %s returned non-object payload.",
+                path,
+            )
+            return None
+        return payload
+
+    def _format_paused_execution_summary(self, paused: dict[str, Any]) -> str:
+        call_data = paused.get("call_data")
+        method_name = "<unknown>"
+        if isinstance(call_data, dict):
+            method_name = str(call_data.get("method_name", "<unknown>"))
+        pause_id = str(paused.get("id", "<unknown>"))
+        paused_at = paused.get("paused_at")
+        if isinstance(paused_at, (int, float)):
+            age_s = max(0.0, time.time() - float(paused_at))
+            return f"{method_name}[id={pause_id}, age={age_s:.1f}s]"
+        return f"{method_name}[id={pause_id}]"
 
     def _require_action(self, response: dict[str, Any]) -> dict[str, Any]:
         if "action" not in response:

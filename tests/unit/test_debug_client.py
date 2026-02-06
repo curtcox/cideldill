@@ -27,6 +27,17 @@ class _Response:
         return self._payload
 
 
+class _FakeClock:
+    def __init__(self, start: float = 1_000.0) -> None:
+        self.now = start
+
+    def time(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
 def test_record_call_start_resends_missing_cids(monkeypatch) -> None:
     serializer = Serializer()
     target = {"x": 1}
@@ -116,6 +127,138 @@ def test_async_poll_timeout_returns_poll_action(monkeypatch, caplog) -> None:
     result = asyncio.run(client.async_poll(action))
     assert result == action
     assert "poll timed out" in caplog.text.lower()
+
+
+def test_poll_logs_suspended_breakpoints_for_long_running_poll(monkeypatch, caplog) -> None:
+    caplog.set_level(logging.WARNING)
+    clock = _FakeClock()
+
+    def fake_get_json(self, path: str) -> dict:
+        if path == "/api/poll/abc":
+            return {"status": "waiting"}
+        raise AssertionError(f"Unexpected path: {path}")
+
+    def fake_get(url: str, timeout: float) -> _Response:
+        if url.endswith("/api/paused"):
+            return _Response(
+                200,
+                {
+                    "paused": [
+                        {
+                            "id": "pause-1",
+                            "paused_at": clock.time() - 12.0,
+                            "call_data": {"method_name": "frontend:add_routes"},
+                        },
+                    ],
+                },
+            )
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient._get_json",
+        fake_get_json,
+        raising=False,
+    )
+    monkeypatch.setattr("requests.get", fake_get)
+    monkeypatch.setattr("cideldill_client.debug_client.time.time", clock.time)
+    monkeypatch.setattr("cideldill_client.debug_client.time.sleep", clock.sleep)
+
+    client = DebugClient(
+        "http://localhost:5000",
+        suspended_breakpoints_log_interval_s=0.15,
+    )
+    action = {
+        "action": "poll",
+        "poll_url": "/api/poll/abc",
+        "poll_interval_ms": 100,
+        "timeout_ms": 350,
+    }
+
+    result = client.poll(action)
+    assert result == action
+    assert "long-running suspended breakpoint poll" in caplog.text.lower()
+    assert "frontend:add_routes" in caplog.text
+
+
+def test_poll_logs_when_no_suspended_breakpoints_are_visible(monkeypatch, caplog) -> None:
+    caplog.set_level(logging.WARNING)
+    clock = _FakeClock()
+
+    def fake_get_json(self, path: str) -> dict:
+        if path == "/api/poll/abc":
+            return {"status": "waiting"}
+        raise AssertionError(f"Unexpected path: {path}")
+
+    def fake_get(url: str, timeout: float) -> _Response:
+        if url.endswith("/api/paused"):
+            return _Response(200, {"paused": []})
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient._get_json",
+        fake_get_json,
+        raising=False,
+    )
+    monkeypatch.setattr("requests.get", fake_get)
+    monkeypatch.setattr("cideldill_client.debug_client.time.time", clock.time)
+    monkeypatch.setattr("cideldill_client.debug_client.time.sleep", clock.sleep)
+
+    client = DebugClient(
+        "http://localhost:5000",
+        suspended_breakpoints_log_interval_s=0.15,
+    )
+    action = {
+        "action": "poll",
+        "poll_url": "/api/poll/abc",
+        "poll_interval_ms": 100,
+        "timeout_ms": 350,
+    }
+
+    result = client.poll(action)
+    assert result == action
+    assert "no suspended breakpoints are visible on the server" in caplog.text.lower()
+
+
+def test_async_poll_logs_when_no_suspended_breakpoints_are_visible(monkeypatch, caplog) -> None:
+    caplog.set_level(logging.WARNING)
+    clock = _FakeClock()
+
+    def fake_get_json(self, path: str) -> dict:
+        if path == "/api/poll/abc":
+            return {"status": "waiting"}
+        raise AssertionError(f"Unexpected path: {path}")
+
+    def fake_get(url: str, timeout: float) -> _Response:
+        if url.endswith("/api/paused"):
+            return _Response(200, {"paused": []})
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    async def fake_sleep(seconds: float) -> None:
+        clock.sleep(seconds)
+
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient._get_json",
+        fake_get_json,
+        raising=False,
+    )
+    monkeypatch.setattr("requests.get", fake_get)
+    monkeypatch.setattr("cideldill_client.debug_client.time.time", clock.time)
+    monkeypatch.setattr("cideldill_client.debug_client.asyncio.sleep", fake_sleep)
+
+    client = DebugClient(
+        "http://localhost:5000",
+        suspended_breakpoints_log_interval_s=0.15,
+    )
+    action = {
+        "action": "poll",
+        "poll_url": "/api/poll/abc",
+        "poll_interval_ms": 100,
+        "timeout_ms": 350,
+    }
+
+    result = asyncio.run(client.async_poll(action))
+    assert result == action
+    assert "no suspended breakpoints are visible on the server" in caplog.text.lower()
 
 
 def test_record_call_start_includes_stable_client_refs(monkeypatch) -> None:
