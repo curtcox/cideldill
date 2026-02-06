@@ -367,7 +367,7 @@ def _parse_debug_call_args(
 ) -> tuple[str | None, Any, tuple[Any, ...]]:
     if isinstance(__name_or_func, str):
         alias = __name_or_func
-        if not args:
+        if not args or not callable(args[0]):
             raise TypeError("debug_call with alias requires a callable as second argument")
         func = args[0]
         call_args = args[1:]

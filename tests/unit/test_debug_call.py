@@ -107,6 +107,10 @@ class TestParseDebugCallArgs:
         with pytest.raises(TypeError, match="callable as second argument"):
             _parse_debug_call_args("step_3")
 
+    def test_string_alias_non_callable_second_arg_raises(self) -> None:
+        with pytest.raises(TypeError, match="callable as second argument"):
+            _parse_debug_call_args("step_3", 42)
+
     def test_non_string_non_callable_raises(self) -> None:
         with pytest.raises(TypeError, match="callable or"):
             _parse_debug_call_args(42)
