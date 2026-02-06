@@ -39,6 +39,8 @@ class _DebugState:
     client: DebugClient | None = None
     first_call_seen: bool = False
     suspended_breakpoints_log_interval_s: float | None = None
+    deadlock_watchdog_timeout_s: float | None = None
+    deadlock_watchdog_log_interval_s: float | None = None
 
 
 _state = _DebugState()
@@ -50,6 +52,8 @@ logger = logging.getLogger(__name__)
 def configure_debug(
     server_url: str | None = None,
     suspended_breakpoints_log_interval_s: float | None = None,
+    deadlock_watchdog_timeout_s: float | None = None,
+    deadlock_watchdog_log_interval_s: float | None = None,
 ) -> None:
     """Configure debug settings before enabling."""
     if server_url is not None:
@@ -59,10 +63,18 @@ def configure_debug(
         and suspended_breakpoints_log_interval_s < 0
     ):
         raise ValueError("suspended_breakpoints_log_interval_s must be >= 0")
+    if deadlock_watchdog_timeout_s is not None and deadlock_watchdog_timeout_s < 0:
+        raise ValueError("deadlock_watchdog_timeout_s must be >= 0")
+    if deadlock_watchdog_log_interval_s is not None and deadlock_watchdog_log_interval_s <= 0:
+        raise ValueError("deadlock_watchdog_log_interval_s must be > 0")
     with _state_lock:
         _state.server_url = server_url
         if suspended_breakpoints_log_interval_s is not None:
             _state.suspended_breakpoints_log_interval_s = suspended_breakpoints_log_interval_s
+        if deadlock_watchdog_timeout_s is not None:
+            _state.deadlock_watchdog_timeout_s = deadlock_watchdog_timeout_s
+        if deadlock_watchdog_log_interval_s is not None:
+            _state.deadlock_watchdog_log_interval_s = deadlock_watchdog_log_interval_s
 
 
 def with_debug(target: Any) -> Any:
@@ -107,10 +119,7 @@ def with_debug(target: Any) -> Any:
 
     client = _state.client
     if client is None:
-        client = DebugClient(
-            _resolve_server_url(),
-            suspended_breakpoints_log_interval_s=_resolve_suspended_breakpoint_log_interval_s(),
-        )
+        client = _new_debug_client(_resolve_server_url())
         _state.client = client
 
     if isinstance(target, (DebugProxy, AsyncDebugProxy)):
@@ -201,30 +210,38 @@ def with_debug(target: Any) -> Any:
 
 def _set_debug_mode(enabled: bool) -> DebugInfo:
     if not enabled:
+        previous_client: DebugClient | None
         with _state_lock:
+            previous_client = _state.client
             _state.enabled = False
             _state.client = None
+        _close_client(previous_client)
         _debug_call_registered.clear()
         set_serialization_error_reporter(None)
         return DebugInfo(enabled=False, server=None, status="disabled")
 
     server_url = _resolve_server_url()
-    client = DebugClient(
-        server_url,
-        suspended_breakpoints_log_interval_s=_resolve_suspended_breakpoint_log_interval_s(),
-    )
+    client = _new_debug_client(server_url)
     try:
         client.check_connection()
     except DebugServerError as exc:
+        previous_client = None
         with _state_lock:
+            previous_client = _state.client
             _state.enabled = False
             _state.client = None
+        _close_client(previous_client)
+        _close_client(client)
         exit_with_server_failure(str(exc), server_url, exc)
 
+    previous_client = None
     with _state_lock:
         client.enable_events()
+        previous_client = _state.client
         _state.client = client
         _state.enabled = True
+    if previous_client is not client:
+        _close_client(previous_client)
     return DebugInfo(enabled=True, server=server_url, status="connected")
 
 
@@ -303,6 +320,70 @@ def _resolve_suspended_breakpoint_log_interval_s() -> float:
                 env_value,
             )
     return 60.0
+
+
+def _resolve_deadlock_watchdog_timeout_s() -> float | None:
+    if _state.deadlock_watchdog_timeout_s is not None:
+        if _state.deadlock_watchdog_timeout_s <= 0:
+            return None
+        return _state.deadlock_watchdog_timeout_s
+
+    env_value = os.getenv("CIDELDILL_DEADLOCK_WATCHDOG_TIMEOUT_S")
+    if env_value is not None:
+        try:
+            timeout = float(env_value)
+            if timeout < 0:
+                raise ValueError
+            if timeout == 0:
+                return None
+            return timeout
+        except ValueError:
+            logger.warning(
+                "Ignoring invalid CIDELDILL_DEADLOCK_WATCHDOG_TIMEOUT_S=%r; "
+                "watchdog disabled",
+                env_value,
+            )
+    return None
+
+
+def _resolve_deadlock_watchdog_log_interval_s() -> float:
+    if _state.deadlock_watchdog_log_interval_s is not None:
+        return _state.deadlock_watchdog_log_interval_s
+
+    env_value = os.getenv("CIDELDILL_DEADLOCK_WATCHDOG_LOG_INTERVAL_S")
+    if env_value is not None:
+        try:
+            interval = float(env_value)
+            if interval <= 0:
+                raise ValueError
+            return interval
+        except ValueError:
+            logger.warning(
+                "Ignoring invalid CIDELDILL_DEADLOCK_WATCHDOG_LOG_INTERVAL_S=%r; "
+                "using default 60s",
+                env_value,
+            )
+    return 60.0
+
+
+def _new_debug_client(server_url: str) -> DebugClient:
+    kwargs: dict[str, Any] = {
+        "suspended_breakpoints_log_interval_s": _resolve_suspended_breakpoint_log_interval_s(),
+    }
+    timeout = _resolve_deadlock_watchdog_timeout_s()
+    if timeout is not None:
+        kwargs["deadlock_watchdog_timeout_s"] = timeout
+        kwargs["deadlock_watchdog_log_interval_s"] = _resolve_deadlock_watchdog_log_interval_s()
+    return DebugClient(server_url, **kwargs)
+
+
+def _close_client(client: DebugClient | None) -> None:
+    if client is None:
+        return
+    try:
+        client.close()
+    except Exception:
+        logger.debug("Failed to close debug client cleanly", exc_info=True)
 
 
 def _validate_localhost(server_url: str) -> None:
@@ -434,7 +515,7 @@ def debug_call(__name_or_func: Any, *args: Any, **kwargs: Any) -> Any:
 
     client = _state.client
     if client is None:
-        client = DebugClient(_resolve_server_url())
+        client = _new_debug_client(_resolve_server_url())
         _state.client = client
 
     method_name = alias or _resolve_callable_name(func, None)
@@ -513,7 +594,7 @@ async def async_debug_call(__name_or_func: Any, *args: Any, **kwargs: Any) -> An
 
     client = _state.client
     if client is None:
-        client = DebugClient(_resolve_server_url())
+        client = _new_debug_client(_resolve_server_url())
         _state.client = client
 
     method_name = alias or _resolve_callable_name(func, None)

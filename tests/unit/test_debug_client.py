@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+from contextlib import contextmanager
 
 import pytest
 
@@ -36,6 +37,51 @@ class _FakeClock:
 
     def sleep(self, seconds: float) -> None:
         self.now += seconds
+
+
+def test_debug_client_initializes_and_closes_deadlock_watchdog(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeWatchdog:
+        def __init__(self, timeout_s: float, log_interval_s: float = 60.0) -> None:
+            captured["timeout"] = timeout_s
+            captured["log_interval"] = log_interval_s
+            captured["closed"] = False
+
+        @contextmanager
+        def track(self, label: str):
+            captured.setdefault("labels", []).append(label)
+            yield
+
+        def close(self) -> None:
+            captured["closed"] = True
+
+    monkeypatch.setattr("cideldill_client.debug_client.DeadlockWatchdog", _FakeWatchdog)
+
+    client = DebugClient(
+        "http://localhost:5000",
+        deadlock_watchdog_timeout_s=2.5,
+        deadlock_watchdog_log_interval_s=8.0,
+    )
+    client.close()
+
+    assert captured["timeout"] == 2.5
+    assert captured["log_interval"] == 8.0
+    assert captured["closed"] is True
+
+
+def test_debug_client_rejects_negative_deadlock_watchdog_timeout() -> None:
+    with pytest.raises(ValueError, match="deadlock_watchdog_timeout_s"):
+        DebugClient("http://localhost:5000", deadlock_watchdog_timeout_s=-1.0)
+
+
+def test_debug_client_rejects_nonpositive_deadlock_watchdog_log_interval() -> None:
+    with pytest.raises(ValueError, match="deadlock_watchdog_log_interval_s"):
+        DebugClient(
+            "http://localhost:5000",
+            deadlock_watchdog_timeout_s=1.0,
+            deadlock_watchdog_log_interval_s=0.0,
+        )
 
 
 def test_record_call_start_resends_missing_cids(monkeypatch) -> None:

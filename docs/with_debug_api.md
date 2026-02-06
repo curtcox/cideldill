@@ -218,6 +218,30 @@ configure_debug(server_url="http://localhost:5174")
 with_debug("ON")
 ```
 
+### Deadlock Watchdog (Optional)
+
+You can enable an opt-in watchdog that logs full Python thread stack dumps when
+client operations stall beyond a timeout.
+
+```python
+from cideldill_client import configure_debug, with_debug
+
+configure_debug(
+    server_url="http://localhost:5174",
+    deadlock_watchdog_timeout_s=30.0,
+    deadlock_watchdog_log_interval_s=60.0,
+)
+with_debug("ON")
+```
+
+- `deadlock_watchdog_timeout_s`: seconds an active client operation can run before
+  a potential deadlock dump is logged (`0` disables, default disabled).
+- `deadlock_watchdog_log_interval_s`: minimum seconds between repeated dumps while
+  the stall persists.
+- Environment variable alternatives:
+  - `CIDELDILL_DEADLOCK_WATCHDOG_TIMEOUT_S`
+  - `CIDELDILL_DEADLOCK_WATCHDOG_LOG_INTERVAL_S`
+
 ### Environment Variable
 
 ```bash

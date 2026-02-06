@@ -117,6 +117,16 @@ configure_debug(server_url="http://localhost:5174")
 with_debug("ON")
 ```
 
+To enable deadlock diagnostics, add:
+
+```python
+configure_debug(
+    server_url="http://localhost:5174",
+    deadlock_watchdog_timeout_s=30.0,
+    deadlock_watchdog_log_interval_s=60.0,
+)
+```
+
 ### Start the Breakpoint Server
 
 ```bash

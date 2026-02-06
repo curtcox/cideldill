@@ -133,6 +133,61 @@ def test_configure_debug_rejects_negative_suspended_breakpoint_log_interval() ->
         )
 
 
+def test_configure_debug_sets_deadlock_watchdog_options(monkeypatch) -> None:
+    captured: dict[str, float] = {}
+
+    def fake_init(
+        self,
+        server_url: str,
+        timeout_s: float = 30.0,
+        retry_timeout_s: float = 60.0,
+        retry_sleep_s: float = 0.25,
+        suspended_breakpoints_log_interval_s: float = 60.0,
+        deadlock_watchdog_timeout_s: float | None = None,
+        deadlock_watchdog_log_interval_s: float = 60.0,
+    ) -> None:
+        del timeout_s, retry_timeout_s, retry_sleep_s
+        self._server_url = server_url
+        self._events_enabled = False
+        captured["suspended_interval"] = suspended_breakpoints_log_interval_s
+        if deadlock_watchdog_timeout_s is not None:
+            captured["timeout"] = deadlock_watchdog_timeout_s
+        captured["log_interval"] = deadlock_watchdog_log_interval_s
+
+    def noop_check(self) -> None:
+        return None
+
+    monkeypatch.setattr("cideldill_client.debug_client.DebugClient.__init__", fake_init)
+    monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
+
+    configure_debug(
+        server_url="http://localhost:5000",
+        deadlock_watchdog_timeout_s=7.5,
+        deadlock_watchdog_log_interval_s=11.0,
+    )
+    info = with_debug("ON")
+
+    assert info.is_enabled() is True
+    assert captured["timeout"] == 7.5
+    assert captured["log_interval"] == 11.0
+
+
+def test_configure_debug_rejects_negative_deadlock_watchdog_timeout() -> None:
+    with pytest.raises(ValueError, match="deadlock_watchdog_timeout_s"):
+        configure_debug(
+            server_url="http://localhost:5000",
+            deadlock_watchdog_timeout_s=-1.0,
+        )
+
+
+def test_configure_debug_rejects_nonpositive_deadlock_watchdog_log_interval() -> None:
+    with pytest.raises(ValueError, match="deadlock_watchdog_log_interval_s"):
+        configure_debug(
+            server_url="http://localhost:5000",
+            deadlock_watchdog_log_interval_s=0.0,
+        )
+
+
 def test_with_debug_first_call_requires_control_string() -> None:
     with_debug_module._state.first_call_seen = False
     with pytest.raises(ValueError, match="with_debug must be called"):
