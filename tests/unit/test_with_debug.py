@@ -194,6 +194,35 @@ def test_with_debug_first_call_requires_control_string() -> None:
         with_debug("maybe")
 
 
+def test_with_debug_no_args_defaults_to_off_when_env_missing(monkeypatch) -> None:
+    monkeypatch.delenv("CIDELDILL", raising=False)
+
+    info = with_debug()
+
+    assert info.is_enabled() is False
+    assert info.connection_status() == "disabled"
+
+
+def test_with_debug_no_args_uses_cideldill_env_value(monkeypatch) -> None:
+    def noop_check(self) -> None:
+        return None
+
+    monkeypatch.setenv("CIDELDILL", "ON")
+    monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
+    configure_debug(server_url="http://localhost:5000")
+
+    info = with_debug()
+
+    assert info.is_enabled() is True
+
+
+def test_with_debug_no_args_raises_for_invalid_env_value(monkeypatch) -> None:
+    monkeypatch.setenv("CIDELDILL", "maybe")
+
+    with pytest.raises(ValueError, match="with_debug must be called"):
+        with_debug()
+
+
 def test_with_debug_returns_original_when_off() -> None:
     """When debug is OFF, with_debug(obj) returns the original object unchanged (NOP)."""
     with_debug("OFF")

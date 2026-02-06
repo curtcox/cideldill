@@ -88,6 +88,10 @@ print(info.server_url())       # http://localhost:5174
 print(info.connection_status())  # connected
 ```
 
+You can also call `with_debug()` with no arguments. In that case it reads
+`CIDELDILL` from the environment (`ON`, `OFF`, or `VERBOSE`) and defaults to
+`OFF` if `CIDELDILL` is not set.
+
 ### Wrap Objects for Debugging
 
 ```python

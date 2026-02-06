@@ -47,6 +47,7 @@ _state = _DebugState()
 _state_lock = threading.Lock()
 _debug_call_registered: set[tuple[str, int]] = set()
 logger = logging.getLogger(__name__)
+_MISSING = object()
 
 
 def configure_debug(
@@ -77,8 +78,11 @@ def configure_debug(
             _state.deadlock_watchdog_log_interval_s = deadlock_watchdog_log_interval_s
 
 
-def with_debug(target: Any) -> Any:
+def with_debug(target: Any = _MISSING) -> Any:
     """Enable/disable debugging or wrap objects for debugging."""
+    if target is _MISSING:
+        target = os.environ.get("CIDELDILL", "OFF")
+
     alias_name: str | None = None
 
     if not _state.first_call_seen:
