@@ -118,11 +118,13 @@ if client is None:
     client = DebugClient(_resolve_server_url())
     _state.client = client
 
-method_name = alias or getattr(func, "__name__", None) or type(func).__qualname__ + ".__call__"
+method_name = alias or _resolve_callable_name(func, None)
 signature = compute_signature(func)
 ```
 
 ### Step 2: Build call site
+
+`_build_stack_trace` is defined in `debug_proxy.py` and already imported by `with_debug.py`.
 
 ```python
 call_site = {
@@ -136,9 +138,9 @@ call_site = {
 
 Reuse the existing `DebugClient.record_call_start` — it already serializes target, args, kwargs individually and handles CID negotiation.
 
-**New field in payload:** Add `call_type: "inline"` to distinguish from proxy calls.
+**`call_type` field in payload:** `call_type: "inline"` distinguishes inline breakpoints from proxy calls.
 
-This requires a small change to `DebugClient.record_call_start` and `_build_call_payload`:
+This is already implemented: `call_type` is a required keyword-only argument on both `DebugClient.record_call_start` and `_build_call_payload`:
 
 ```python
 def record_call_start(
@@ -150,18 +152,19 @@ def record_call_start(
     kwargs: dict[str, Any],
     call_site: dict[str, Any],
     signature: str | None = None,
-    call_type: str = "proxy",         # NEW PARAMETER
+    *,
+    call_type: str,
 ) -> dict[str, Any]:
 ```
 
-The `call_type` is passed through to `_build_call_payload` and included in the JSON payload. Server can ignore it today.
+All existing proxy callers pass `call_type="proxy"`. `debug_call` will pass `call_type="inline"`.
 
 ### Step 4: Execute action
 
 Reuse `DebugProxy._execute_action` logic, but extracted to a standalone function since we don't have a proxy instance. Factor out as a module-level helper:
 
 ```python
-def _execute_call_action(
+def execute_call_action(
     action: dict[str, Any],
     client: DebugClient,
     func: Callable,
@@ -184,15 +187,12 @@ def _execute_call_action(
             raise DebugProtocolError(f"Unknown replacement function: {function_name}")
         return replacement(*args, **kwargs)
     if action_type == "modify":
-        modified_args = action.get("modified_args", [])
-        modified_kwargs = action.get("modified_kwargs", {})
-        new_args = tuple(client.deserialize_payload_list(modified_args))
-        new_kwargs = client.deserialize_payload_dict(modified_kwargs)
+        new_args, new_kwargs = deserialize_modified_args(action, client)
         return func(*new_args, **new_kwargs)
     if action_type == "skip":
-        return _deserialize_skip_result(action, client)
+        return deserialize_fake_result(action, client)
     if action_type == "raise":
-        raise _deserialize_raise_exception(action)
+        raise deserialize_exception(action)
     raise DebugProtocolError(f"Unknown action: {action_type}")
 ```
 
@@ -202,14 +202,14 @@ Async variant is identical but uses `await client.async_poll(action)` and `await
 
 ```python
 try:
-    result = _execute_call_action(action, client, func, call_args, kwargs)
+    result = execute_call_action(action, client, func, call_args, kwargs)
 except Exception as exc:
     client.record_call_complete(call_id=call_id, status="exception", exception=exc)
     raise
 
 post_action = client.record_call_complete(call_id=call_id, status="success", result=result)
 if post_action:
-    _wait_for_post_completion(post_action, client)
+    wait_for_post_completion(post_action, client)
 
 return result
 ```
@@ -225,8 +225,8 @@ Several pieces of `DebugProxy` logic will be reused by `debug_call`. To avoid du
 | `DebugProxy._execute_action` | `execute_call_action(action, client, func, args, kwargs)` | `DebugProxy`, `debug_call` |
 | `DebugProxy._execute_action_async` | `execute_call_action_async(...)` | `AsyncDebugProxy`, `async_debug_call` |
 | `DebugProxy._deserialize_modified` | `deserialize_modified_args(action, client)` | above functions |
-| `DebugProxy._deserialize_fake_result` | `deserialize_skip_result(action, client)` | above functions |
-| `DebugProxy._deserialize_exception` | `deserialize_raise_exception(action)` | above functions |
+| `DebugProxy._deserialize_fake_result` | `deserialize_fake_result(action, client)` | above functions |
+| `DebugProxy._deserialize_exception` | `deserialize_exception(action)` | above functions |
 | `DebugProxy._wait_for_post_completion` | `wait_for_post_completion(action, client)` | `DebugProxy`, `debug_call` |
 | `DebugProxy._wait_for_post_completion_async` | `wait_for_post_completion_async(action, client)` | `AsyncDebugProxy`, `async_debug_call` |
 
@@ -234,45 +234,9 @@ Several pieces of `DebugProxy` logic will be reused by `debug_call`. To avoid du
 
 ---
 
-## Changes to DebugClient
+## Changes to DebugClient (DONE)
 
-### `_build_call_payload`
-
-Add required `call_type` parameter, include in payload:
-
-```python
-def _build_call_payload(
-    self,
-    method_name, target, target_cid, args, kwargs, call_site, signature,
-    call_type,    # REQUIRED
-):
-    ...
-    payload = {
-        ...
-        "call_type": call_type,
-    }
-    return payload, cid_to_obj
-```
-
-### `record_call_start`
-
-Add required `call_type` parameter, thread through to `_build_call_payload`:
-
-```python
-def record_call_start(
-    self, method_name, target, target_cid, args, kwargs, call_site,
-    signature,
-    call_type,    # REQUIRED
-):
-    ...
-    payload, cid_to_obj = self._build_call_payload(
-        effective_name, target, target_cid, args, kwargs, call_site, signature,
-        call_type=call_type,
-    )
-    ...
-```
-
-All existing callers in `DebugProxy._wrap_method` and `_wrap_async_method` updated to pass `call_type="proxy"` explicitly.
+`call_type` is now a required keyword-only argument on both `_build_call_payload` and `record_call_start`. All existing proxy callers pass `call_type="proxy"`. No further changes needed for `debug_call`; it will pass `call_type="inline"`.
 
 ---
 
@@ -382,15 +346,6 @@ if isinstance(func, (DebugProxy, AsyncDebugProxy)):
     func = object.__getattribute__(func, "_target")
 ```
 
-### func is already a DebugProxy
-
-If `f` is already a `DebugProxy`, `debug_call` should unwrap it to avoid double-interception:
-
-```python
-if isinstance(func, (DebugProxy, AsyncDebugProxy)):
-    func = object.__getattribute__(func, "_target")
-```
-
 ### Registration on first encounter
 
 `debug_call` targets can be called repeatedly (e.g., in loops). The callable should be registered with the server on first encounter so breakpoint matching and UI autocompletion work, but not re-registered on every iteration.
@@ -416,14 +371,11 @@ if reg_key not in _debug_call_registered:
     _debug_call_registered.add(reg_key)
 ```
 
-Cleared when debug is toggled OFF in `_set_debug_mode`:
+Cleared when debug is toggled OFF inside `with_debug()` (where `_state.enabled = False` is set):
 
 ```python
-def _set_debug_mode(enabled: bool) -> DebugInfo:
-    if not enabled:
-        ...
-        _debug_call_registered.clear()
-        ...
+# Inside with_debug(), in the OFF branch:
+_debug_call_registered.clear()
 ```
 
 ### debug_call before with_debug("ON")
@@ -436,9 +388,9 @@ def _set_debug_mode(enabled: bool) -> DebugInfo:
 
 | File | Change |
 |---|---|
-| `with_debug.py` | Add `debug_call`, `async_debug_call`, `_parse_debug_call_args`, `_debug_call_registered` set; clear set in `_set_debug_mode` |
-| `debug_proxy.py` | Extract action execution helpers to module-level functions; `DebugProxy` methods become wrappers; pass `call_type="proxy"` explicitly |
-| `debug_client.py` | Make `call_type` a required param on `record_call_start` and `_build_call_payload` |
+| `with_debug.py` | Add `debug_call`, `async_debug_call`, `_parse_debug_call_args`, `_debug_call_registered` set; clear set in the OFF branch of `with_debug()` |
+| `debug_proxy.py` | Extract action execution helpers to module-level functions; `DebugProxy` methods become wrappers |
+| `debug_client.py` | DONE — `call_type` is now a required keyword-only param; proxy callers pass `call_type="proxy"` |
 | `__init__.py` | Export `debug_call`, `async_debug_call` |
 
 ### No changes needed
