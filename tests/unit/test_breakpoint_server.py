@@ -629,6 +629,80 @@ def test_call_tree_links_registered_target_ref(server) -> None:
     assert f"ref:{process_key}:17" in body
 
 
+def test_breakpoint_history_links_registration_call_tree(server) -> None:
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    process_key = "process-1"
+
+    server.manager.record_call({
+        "call_id": "call-late",
+        "method_name": "with_debug.register",
+        "status": "registered",
+        "pretty_result": {"function_name": "demo_func"},
+        "process_pid": 123,
+        "process_start_time": 10.0,
+        "process_key": process_key,
+        "started_at": 10.0,
+        "completed_at": 10.0,
+    })
+    server.manager.record_call({
+        "call_id": "call-early",
+        "method_name": "with_debug.register",
+        "status": "registered",
+        "pretty_result": {"function_name": "demo_func"},
+        "process_pid": 123,
+        "process_start_time": 10.0,
+        "process_key": process_key,
+        "started_at": 5.0,
+        "completed_at": 5.0,
+    })
+
+    response = server.test_client().get("/breakpoint/demo_func/history")
+    assert response.status_code == 200
+    html = response.data.decode("utf-8")
+    assert f"/call-tree/{process_key}?selected=call-early" in html
+
+
+def test_object_ref_links_first_seen_call_tree(server) -> None:
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    process_key = "process-2"
+    client_ref = 99
+    server.manager.record_object_snapshot(
+        process_key,
+        client_ref,
+        {
+            "timestamp": 9.0,
+            "call_id": "call-late",
+            "method_name": "noop",
+            "role": "arg",
+            "cid": "deadbeef" * 8,
+            "pretty": "later",
+        },
+    )
+    server.manager.record_object_snapshot(
+        process_key,
+        client_ref,
+        {
+            "timestamp": 2.0,
+            "call_id": "call-early",
+            "method_name": "noop",
+            "role": "arg",
+            "cid": "feedface" * 8,
+            "pretty": "earlier",
+        },
+    )
+
+    response = server.test_client().get(f"/object/ref:{process_key}:{client_ref}")
+    assert response.status_code == 200
+    html = response.data.decode("utf-8")
+    assert f"/call-tree/{process_key}?selected=call-early" in html
+
+
 def test_frame_endpoint_renders_source_for_paused_execution(server) -> None:
     """Test GET /frame/<pause_id>/<frame_index> endpoint."""
     thread = threading.Thread(target=server.start, daemon=True)

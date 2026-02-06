@@ -1137,6 +1137,69 @@ class BreakpointServer:
                 return f"ref:{process_key}:{client_ref}"
             return f"ref:{client_ref}"
 
+        def _call_record_timestamp(record: dict[str, object]) -> float:
+            call_site = record.get("call_site")
+            if isinstance(call_site, dict):
+                ts = call_site.get("timestamp")
+                if ts is not None:
+                    try:
+                        return float(ts)
+                    except Exception:
+                        pass
+            for key in ("started_at", "completed_at"):
+                value = record.get(key)
+                if value is not None:
+                    try:
+                        return float(value)
+                    except Exception:
+                        continue
+            return 0.0
+
+        def _call_tree_link(process_key: str, call_id: object) -> str:
+            return (
+                f"/call-tree/{quote(str(process_key), safe='')}"
+                f"?selected={quote(str(call_id), safe='')}"
+            )
+
+        def _find_registration_call(function_name: str) -> tuple[str, str] | None:
+            best: tuple[float, str, str] | None = None
+            for record in self.manager.get_call_records():
+                if record.get("method_name") != "with_debug.register":
+                    continue
+                pretty_result = record.get("pretty_result")
+                if not isinstance(pretty_result, dict):
+                    continue
+                if pretty_result.get("function_name") != function_name:
+                    continue
+                process_key = record.get("process_key")
+                call_id = record.get("call_id") or record.get("id")
+                if not process_key or call_id is None:
+                    continue
+                ts = _call_record_timestamp(record)
+                if best is None or ts < best[0]:
+                    best = (ts, str(process_key), str(call_id))
+            if best is None:
+                return None
+            return best[1], best[2]
+
+        def _find_first_seen_call(histories: dict[str, list[dict[str, object]]]) -> tuple[str, str] | None:
+            best: tuple[float, str, str] | None = None
+            for process_key, history in histories.items():
+                for snapshot in history:
+                    call_id = snapshot.get("call_id")
+                    if call_id is None:
+                        continue
+                    ts = snapshot.get("timestamp") or 0
+                    try:
+                        ts_value = float(ts)
+                    except Exception:
+                        ts_value = 0.0
+                    if best is None or ts_value < best[0]:
+                        best = (ts_value, str(process_key), str(call_id))
+            if best is None:
+                return None
+            return best[1], best[2]
+
         def _normalize_stack_trace(call_site: object) -> list[dict[str, object]]:
             if not isinstance(call_site, dict):
                 return []
@@ -1801,6 +1864,18 @@ class BreakpointServer:
                 if meta.get("client_ref") == client_ref:
                     function_matches.append((name, meta))
 
+            first_seen_link = ""
+            first_seen = _find_first_seen_call(histories)
+            if first_seen:
+                first_process, first_call_id = first_seen
+                link = _call_tree_link(first_process, first_call_id)
+                first_seen_link = (
+                    "<div class='panel'>"
+                    "<h2>First Seen</h2>"
+                    f"<a class='row-link' href='{link}'>View first reference in call tree</a>"
+                    "</div>"
+                )
+
             snapshot_sections: list[str] = []
             for proc, history in histories.items():
                 if not history:
@@ -1902,12 +1977,14 @@ class BreakpointServer:
     <div class=\"panel\">
       <div class=\"mono\">{ref}</div>
     </div>
+    {first_seen}
     {functions}
     {snapshots}
   </div>
 </body>
 </html>""".format(
                 ref=html.escape(object_ref),
+                first_seen=first_seen_link,
                 functions=functions_html,
                 snapshots="".join(snapshot_sections),
             )
@@ -2251,10 +2328,15 @@ class BreakpointServer:
     const timelineIndexById = new Map();
     const nodeRowById = new Map();
     const nodeContainerById = new Map();
-    const state = { selectedId: timeline[0] || roots[0] || null, collapsed: new Set() };
 
     data.nodes.forEach((node) => { nodesById.set(node.id, node); });
     timeline.forEach((id, idx) => timelineIndexById.set(id, idx));
+
+    const params = new URLSearchParams(window.location.search);
+    const selectedParam = params.get('selected');
+    const fallbackSelected = timeline[0] || roots[0] || null;
+    const initialSelected = selectedParam && nodesById.has(selectedParam) ? selectedParam : fallbackSelected;
+    const state = { selectedId: initialSelected, collapsed: new Set() };
 
     function formatTs(ts) {
       if (!ts) return 'Unknown';
@@ -2725,6 +2807,16 @@ class BreakpointServer:
         def breakpoint_history_page(function_name: str):
             """Serve the breakpoint execution history page."""
             history = self.manager.get_execution_history(function_name)
+            registration_link = ""
+            registration = _find_registration_call(function_name)
+            if registration:
+                process_key, call_id = registration
+                link = _call_tree_link(process_key, call_id)
+                registration_link = (
+                    "<div class='toolbar'>"
+                    f"<a class='row-link' href='{link}'>View registration in call tree</a>"
+                    "</div>"
+                )
 
             template = """<!DOCTYPE html>
 <html lang='en'>
@@ -2849,6 +2941,7 @@ class BreakpointServer:
   <div class='container'>
     <a href="/" class="back-link">← Back to Breakpoints</a>
     <h1>Execution History: @@FUNCTION_NAME@@()</h1>
+    @@REGISTRATION_LINK@@
 
     <div class="toolbar">
         <input id="searchInput" class="search-input" type="search" placeholder="Filter rows (time, call, result, status)" autocomplete="off" />
@@ -3049,6 +3142,7 @@ class BreakpointServer:
                 page.replace("@@FUNCTION_NAME@@", html.escape(function_name))
                 .replace("@@FUNCTION_NAME_JSON@@", json.dumps(function_name))
                 .replace("@@HISTORY_JSON@@", json.dumps(history))
+                .replace("@@REGISTRATION_LINK@@", registration_link)
             )
 
             return page
