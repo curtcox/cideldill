@@ -2211,6 +2211,8 @@ class BreakpointServer:
     .object-link { color: #1976D2; text-decoration: none; font-weight: 600; }
     .object-link:hover { text-decoration: underline; }
     .stack-frame { padding: 6px 8px; border-radius: 6px; margin-bottom: 6px; background: #f9fafb; border: 1px solid #eee; }
+    .stack-frame-link { color: #1976D2; text-decoration: none; font-weight: 600; }
+    .stack-frame-link:hover { text-decoration: underline; }
     .empty-state { text-align: center; padding: 40px; color: #666; font-style: italic; }
     @media (max-width: 900px) {
       .layout { grid-template-columns: 1fr; }
@@ -2370,12 +2372,23 @@ class BreakpointServer:
       const processKey = node.process_key || '';
       const stackTrace = node.stack_trace || [];
       const stackHtml = stackTrace.length
-        ? stackTrace.map((frame) => `
-            <div class="stack-frame">
-              <div>${frame.function || 'unknown'} (${frame.filename || 'unknown'}:${frame.lineno || '?'})</div>
-              ${frame.code_context ? `<div>${frame.code_context}</div>` : ''}
-            </div>
-          `).join('')
+        ? stackTrace.map((frame, idx) => {
+            const label = `${frame.function || 'unknown'} (${frame.filename || 'unknown'}:${frame.lineno || '?'})`;
+            const labelHtml = escapeHtml(label);
+            const frameUrl = processKey && node.id
+              ? `/frame/call/${encodeURIComponent(processKey)}/${encodeURIComponent(node.id)}/${encodeURIComponent(idx)}`
+              : '';
+            const labelBlock = frameUrl
+              ? `<a class="stack-frame-link" href="${frameUrl}">${labelHtml}</a>`
+              : labelHtml;
+            const codeBlock = frame.code_context ? `<div>${escapeHtml(frame.code_context)}</div>` : '';
+            return `
+              <div class="stack-frame">
+                <div>${labelBlock}</div>
+                ${codeBlock}
+              </div>
+            `;
+          }).join('')
         : '<div class="empty-state">No stack trace recorded.</div>';
 
       const targetHtml = node.target ? `
@@ -2600,30 +2613,16 @@ class BreakpointServer:
 
             return template.replace("@@DATA_JSON@@", json.dumps(data))
 
-        @self.app.route('/frame/<pause_id>/<int:frame_index>', methods=['GET'])
-        def frame_view(pause_id: str, frame_index: int):
-            paused = self.manager.get_paused_execution(pause_id)
-            if not paused:
-                return jsonify({"error": "pause_not_found"}), 404
-
-            call_data = paused.get("call_data", {})
-            call_site = call_data.get("call_site") or {}
-            stack_trace = call_site.get("stack_trace") or []
-            if frame_index < 0 or frame_index >= len(stack_trace):
-                return jsonify({"error": "frame_not_found"}), 404
-
-            frame = stack_trace[frame_index]
-            file_path = frame.get("filename") or ""
-            line_no = frame.get("lineno") or 0
-            try:
-                line_no = int(line_no) if line_no else 0
-            except ValueError:
-                line_no = 0
-
+        def _render_frame_page(file_path: str, line_no: int):
             if not file_path:
                 return jsonify({"error": "file_not_available"}), 404
             if not os.path.isfile(file_path):
                 return jsonify({"error": "file_not_found"}), 404
+
+            try:
+                line_no = int(line_no) if line_no else 0
+            except ValueError:
+                line_no = 0
 
             with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
                 source = f.read()
@@ -2681,6 +2680,46 @@ class BreakpointServer:
             )
 
             return page
+
+        @self.app.route('/frame/<pause_id>/<int:frame_index>', methods=['GET'])
+        def frame_view(pause_id: str, frame_index: int):
+            paused = self.manager.get_paused_execution(pause_id)
+            if not paused:
+                return jsonify({"error": "pause_not_found"}), 404
+
+            call_data = paused.get("call_data", {})
+            call_site = call_data.get("call_site") or {}
+            stack_trace = call_site.get("stack_trace") or []
+            if frame_index < 0 or frame_index >= len(stack_trace):
+                return jsonify({"error": "frame_not_found"}), 404
+
+            frame = stack_trace[frame_index]
+            file_path = frame.get("filename") or ""
+            line_no = frame.get("lineno") or 0
+            return _render_frame_page(file_path, line_no)
+
+        @self.app.route('/frame/call/<process_key>/<call_id>/<int:frame_index>', methods=['GET'])
+        def frame_view_for_call(process_key: str, call_id: str, frame_index: int):
+            call_record = None
+            for record in self.manager.get_call_records():
+                if str(record.get("process_key")) != process_key:
+                    continue
+                record_id = record.get("call_id") or record.get("id")
+                if str(record_id) == call_id:
+                    call_record = record
+                    break
+            if not call_record:
+                return jsonify({"error": "call_not_found"}), 404
+
+            call_site = call_record.get("call_site") or {}
+            stack_trace = _normalize_stack_trace(call_site)
+            if frame_index < 0 or frame_index >= len(stack_trace):
+                return jsonify({"error": "frame_not_found"}), 404
+
+            frame = stack_trace[frame_index]
+            file_path = frame.get("filename") or ""
+            line_no = frame.get("lineno") or 0
+            return _render_frame_page(file_path, line_no)
 
         @self.app.route('/breakpoint/<function_name>/history', methods=['GET'])
         def breakpoint_history_page(function_name: str):

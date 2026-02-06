@@ -665,6 +665,79 @@ def test_frame_endpoint_returns_404_when_pause_missing(server) -> None:
     assert response.status_code == 404
 
 
+def test_frame_endpoint_renders_source_for_call_record(server) -> None:
+    """Test GET /frame/call/<process_key>/<call_id>/<frame_index> endpoint."""
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    process_pid = 9999
+    process_start_time = 1234.567
+    process_key = f"{process_start_time:.6f}+{process_pid}"
+    call_id = "call-1"
+
+    server.manager.record_call({
+        "call_id": call_id,
+        "method_name": "noop",
+        "status": "success",
+        "pretty_args": [],
+        "pretty_kwargs": {},
+        "signature": None,
+        "call_site": {
+            "timestamp": 1.0,
+            "stack_trace": [
+                {
+                    "filename": __file__,
+                    "lineno": 1,
+                    "function": "test_frame_endpoint_renders_source_for_call_record",
+                    "code_context": "def test_frame_endpoint_renders_source_for_call_record(server) -> None:",
+                }
+            ],
+        },
+        "process_pid": process_pid,
+        "process_start_time": process_start_time,
+        "process_key": process_key,
+        "started_at": 1.0,
+        "completed_at": 1.0,
+    })
+
+    response = server.test_client().get(f"/frame/call/{process_key}/{call_id}/0")
+    assert response.status_code == 200
+    assert b"<html" in response.data.lower()
+    assert b"test_breakpoint_server.py" in response.data
+
+
+def test_call_tree_stack_trace_frames_link_to_frame_page(server) -> None:
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    process_pid = 1111
+    process_start_time = 2222.333
+    process_key = f"{process_start_time:.6f}+{process_pid}"
+
+    server.manager.record_call({
+        "call_id": "call-link",
+        "method_name": "noop",
+        "status": "success",
+        "pretty_args": [],
+        "pretty_kwargs": {},
+        "signature": None,
+        "call_site": {"timestamp": 1.0, "stack_trace": [{"filename": "app.py", "lineno": 1, "function": "main"}]},
+        "process_pid": process_pid,
+        "process_start_time": process_start_time,
+        "process_key": process_key,
+        "started_at": 1.0,
+        "completed_at": 1.0,
+    })
+
+    response = server.test_client().get(f"/call-tree/{process_key}")
+    assert response.status_code == 200
+    html = response.data.decode("utf-8")
+    assert "/frame/call/" in html
+    assert "stack-frame-link" in html
+
+
 def test_call_start_returns_continue_when_no_breakpoint(server) -> None:
     """Test POST /api/call/start returns continue action."""
     thread = threading.Thread(target=server.start, daemon=True)
