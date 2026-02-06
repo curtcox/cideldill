@@ -78,6 +78,7 @@ class DebugProxy:
                 kwargs=kwargs,
                 call_site=call_site,
                 signature=compute_signature(method),
+                call_type="proxy",
             )
 
             call_id = action.get("call_id")
@@ -138,6 +139,7 @@ class DebugProxy:
                 kwargs=kwargs,
                 call_site=call_site,
                 signature=compute_signature(method),
+                call_type="proxy",
             )
 
             call_id = action.get("call_id")

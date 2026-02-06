@@ -171,11 +171,14 @@ class DebugClient:
         kwargs: dict[str, Any],
         call_site: dict[str, Any],
         signature: str | None = None,
+        *,
+        call_type: str,
     ) -> dict[str, Any]:
         alias_name = getattr(target, "_cideldill_alias_name", None)
         effective_name = alias_name or method_name
         payload, cid_to_obj = self._build_call_payload(
-            effective_name, target, target_cid, args, kwargs, call_site, signature
+            effective_name, target, target_cid, args, kwargs, call_site, signature,
+            call_type=call_type,
         )
         response = self._post_json_allowing_cid_errors("/api/call/start", payload)
         if response.get("error") == "cid_not_found":
@@ -302,6 +305,8 @@ class DebugClient:
         kwargs: dict[str, Any],
         call_site: dict[str, Any],
         signature: str | None,
+        *,
+        call_type: str,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         cid_to_obj: dict[str, Any] = {}
 
@@ -348,6 +353,7 @@ class DebugClient:
             "args": args_payload,
             "kwargs": kwargs_payload,
             "call_site": call_site,
+            "call_type": call_type,
             "process_pid": self._process_pid,
             "process_start_time": self._process_start_time,
         }
