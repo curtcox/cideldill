@@ -43,6 +43,7 @@ def test_debug_client_payload_includes_placeholder_for_unpicklable_arg():
         kwargs={},
         call_site={"timestamp": 0.0, "target_cid": "cid", "stack_trace": []},
         signature=None,
+        call_type="proxy",
     )
 
     arg_payload = payload["args"][0]

@@ -58,6 +58,57 @@ wrapped(3)
 - The alias (`run_task`) is registered for breakpoints.
 - Calls are reported under the alias name so server breakpoints can always stop the callable.
 
+## Inline Breakpoints With `debug_call`
+
+`debug_call` is a one-shot inline breakpoint. Instead of wrapping an object with a proxy,
+you wrap a single call site.
+
+```python
+from cideldill_client import with_debug, debug_call
+
+with_debug("ON")
+
+# Basic — intercept a single call
+y = debug_call(f, x, key=val)
+
+# With alias — register under a stable name
+y = debug_call("step_3", f, x, key=val)
+```
+
+- **When debug is OFF:** `f(x, key=val)` — immediate call, zero overhead, no server contact.
+- **When debug is ON:** full round-trip to the server. The server can continue, modify args,
+  skip the call, replace the function, or raise an exception.
+
+### Async Variant
+
+```python
+from cideldill_client import async_debug_call
+
+y = await async_debug_call(f, x)
+y = await async_debug_call("step_3", f, x)
+```
+
+When OFF the async variant awaits the result if the callable returns a coroutine.
+
+### Alias Detection
+
+The first positional argument is inspected:
+
+- If `str` — treated as an alias name; the second positional arg must be the callable.
+- If `callable` — no alias; the first positional arg is the callable.
+- Otherwise — `TypeError`.
+
+### Registration
+
+Callables are automatically registered with the server on first encounter so that
+breakpoint matching and UI autocompletion work. Repeated calls in a loop do not
+re-register. The registration set is cleared when debug is toggled OFF.
+
+### Proxy Unwrapping
+
+If the callable is already a `DebugProxy`, `debug_call` unwraps it to avoid
+double-interception.
+
 ## Limitations and Failure Behavior
 
 Some callables are executable when debug is OFF but cannot be reliably registered or

@@ -30,6 +30,121 @@ def _build_stack_trace(skip: int = 2) -> list[dict[str, Any]]:
     return trace
 
 
+# ---------------------------------------------------------------------------
+# Standalone action-execution helpers (used by both DebugProxy and debug_call)
+# ---------------------------------------------------------------------------
+
+
+def deserialize_modified_args(
+    action: dict[str, Any], client: DebugClient
+) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    modified_args = action.get("modified_args", [])
+    modified_kwargs = action.get("modified_kwargs", {})
+    args = tuple(client.deserialize_payload_list(modified_args))
+    kwargs = client.deserialize_payload_dict(modified_kwargs)
+    return args, kwargs
+
+
+def deserialize_fake_result(action: dict[str, Any], client: DebugClient) -> Any:
+    if "fake_result_data" in action:
+        return client.deserialize_payload_item({"data": action["fake_result_data"]})
+    if "fake_result" in action:
+        return action["fake_result"]
+    if "fake_result_cid" in action:
+        return client.deserialize_payload_item({"cid": action["fake_result_cid"]})
+    return None
+
+
+def deserialize_exception(action: dict[str, Any]) -> Exception:
+    exc_type = action.get("exception_type", "Exception")
+    message = action.get("exception_message", "")
+    exc_class = getattr(builtins, exc_type, Exception)
+    return exc_class(message)
+
+
+def execute_call_action(
+    action: dict[str, Any],
+    client: DebugClient,
+    func: Callable[..., Any],
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> Any:
+    """Execute the server's action directive for a call."""
+    while action.get("action") == "poll":
+        action = client.poll(action)
+
+    action_type = action.get("action")
+    if action_type == "continue":
+        return func(*args, **kwargs)
+    if action_type == "replace":
+        function_name = action.get("function_name")
+        if not function_name:
+            raise DebugProtocolError("Missing function_name for replace action")
+        replacement = get_function(function_name)
+        if replacement is None:
+            raise DebugProtocolError(f"Unknown replacement function: {function_name}")
+        return replacement(*args, **kwargs)
+    if action_type == "modify":
+        new_args, new_kwargs = deserialize_modified_args(action, client)
+        return func(*new_args, **new_kwargs)
+    if action_type == "skip":
+        return deserialize_fake_result(action, client)
+    if action_type == "raise":
+        raise deserialize_exception(action)
+    raise DebugProtocolError(f"Unknown action: {action_type}")
+
+
+async def execute_call_action_async(
+    action: dict[str, Any],
+    client: DebugClient,
+    func: Callable[..., Any],
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> Any:
+    """Async variant of execute_call_action."""
+    while action.get("action") == "poll":
+        action = await client.async_poll(action)
+
+    action_type = action.get("action")
+    if action_type == "continue":
+        return await func(*args, **kwargs)
+    if action_type == "replace":
+        function_name = action.get("function_name")
+        if not function_name:
+            raise DebugProtocolError("Missing function_name for replace action")
+        replacement = get_function(function_name)
+        if replacement is None:
+            raise DebugProtocolError(f"Unknown replacement function: {function_name}")
+        result = replacement(*args, **kwargs)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+    if action_type == "modify":
+        new_args, new_kwargs = deserialize_modified_args(action, client)
+        return await func(*new_args, **new_kwargs)
+    if action_type == "skip":
+        return deserialize_fake_result(action, client)
+    if action_type == "raise":
+        raise deserialize_exception(action)
+    raise DebugProtocolError(f"Unknown action: {action_type}")
+
+
+def wait_for_post_completion(action: dict[str, Any], client: DebugClient) -> None:
+    while action.get("action") == "poll":
+        action = client.poll(action)
+    action_type = action.get("action")
+    if action_type not in (None, "continue"):
+        raise DebugProtocolError(f"Unsupported post-completion action: {action_type}")
+
+
+async def wait_for_post_completion_async(action: dict[str, Any], client: DebugClient) -> None:
+    while action.get("action") == "poll":
+        action = await client.async_poll(action)
+    action_type = action.get("action")
+    if action_type not in (None, "continue"):
+        raise DebugProtocolError(f"Unsupported post-completion action: {action_type}")
+
+
 class DebugProxy:
     """Transparent proxy that intercepts calls for debugging."""
 
@@ -78,6 +193,7 @@ class DebugProxy:
                 kwargs=kwargs,
                 call_site=call_site,
                 signature=compute_signature(method),
+                call_type="proxy",
             )
 
             call_id = action.get("call_id")
@@ -138,6 +254,7 @@ class DebugProxy:
                 kwargs=kwargs,
                 call_site=call_site,
                 signature=compute_signature(method),
+                call_type="proxy",
             )
 
             call_id = action.get("call_id")
@@ -184,28 +301,7 @@ class DebugProxy:
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
     ) -> Any:
-        while action.get("action") == "poll":
-            action = self._client.poll(action)
-
-        action_type = action.get("action")
-        if action_type == "continue":
-            return method(*args, **kwargs)
-        if action_type == "replace":
-            function_name = action.get("function_name")
-            if not function_name:
-                raise DebugProtocolError("Missing function_name for replace action")
-            replacement = get_function(function_name)
-            if replacement is None:
-                raise DebugProtocolError(f"Unknown replacement function: {function_name}")
-            return replacement(*args, **kwargs)
-        if action_type == "modify":
-            new_args, new_kwargs = self._deserialize_modified(action)
-            return method(*new_args, **new_kwargs)
-        if action_type == "skip":
-            return self._deserialize_fake_result(action)
-        if action_type == "raise":
-            raise self._deserialize_exception(action)
-        raise DebugProtocolError(f"Unknown action: {action_type}")
+        return execute_call_action(action, self._client, method, args, kwargs)
 
     async def _execute_action_async(
         self,
@@ -214,55 +310,7 @@ class DebugProxy:
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
     ) -> Any:
-        while action.get("action") == "poll":
-            action = await self._client.async_poll(action)
-
-        action_type = action.get("action")
-        if action_type == "continue":
-            return await method(*args, **kwargs)
-        if action_type == "replace":
-            function_name = action.get("function_name")
-            if not function_name:
-                raise DebugProtocolError("Missing function_name for replace action")
-            replacement = get_function(function_name)
-            if replacement is None:
-                raise DebugProtocolError(f"Unknown replacement function: {function_name}")
-            result = replacement(*args, **kwargs)
-            if inspect.isawaitable(result):
-                return await result
-            return result
-        if action_type == "modify":
-            new_args, new_kwargs = self._deserialize_modified(action)
-            return await method(*new_args, **new_kwargs)
-        if action_type == "skip":
-            return self._deserialize_fake_result(action)
-        if action_type == "raise":
-            raise self._deserialize_exception(action)
-        raise DebugProtocolError(f"Unknown action: {action_type}")
-
-    def _deserialize_modified(
-        self, action: dict[str, Any]
-    ) -> tuple[tuple[Any, ...], dict[str, Any]]:
-        modified_args = action.get("modified_args", [])
-        modified_kwargs = action.get("modified_kwargs", {})
-        args = tuple(self._client.deserialize_payload_list(modified_args))
-        kwargs = self._client.deserialize_payload_dict(modified_kwargs)
-        return args, kwargs
-
-    def _deserialize_fake_result(self, action: dict[str, Any]) -> Any:
-        if "fake_result_data" in action:
-            return self._client.deserialize_payload_item({"data": action["fake_result_data"]})
-        if "fake_result" in action:
-            return action["fake_result"]
-        if "fake_result_cid" in action:
-            return self._client.deserialize_payload_item({"cid": action["fake_result_cid"]})
-        return None
-
-    def _deserialize_exception(self, action: dict[str, Any]) -> Exception:
-        exc_type = action.get("exception_type", "Exception")
-        message = action.get("exception_message", "")
-        exc_class = getattr(builtins, exc_type, Exception)
-        return exc_class(message)
+        return await execute_call_action_async(action, self._client, method, args, kwargs)
 
     def _intercept_dunder(self, name: str, *args: Any, **kwargs: Any) -> Any:
         attr = getattr(self._target, name)
@@ -380,18 +428,10 @@ class DebugProxy:
         return hash(self._target)
 
     def _wait_for_post_completion(self, action: dict[str, Any]) -> None:
-        while action.get("action") == "poll":
-            action = self._client.poll(action)
-        action_type = action.get("action")
-        if action_type not in (None, "continue"):
-            raise DebugProtocolError(f"Unsupported post-completion action: {action_type}")
+        wait_for_post_completion(action, self._client)
 
     async def _wait_for_post_completion_async(self, action: dict[str, Any]) -> None:
-        while action.get("action") == "poll":
-            action = await self._client.async_poll(action)
-        action_type = action.get("action")
-        if action_type not in (None, "continue"):
-            raise DebugProtocolError(f"Unsupported post-completion action: {action_type}")
+        await wait_for_post_completion_async(action, self._client)
 
 
 class AsyncDebugProxy(DebugProxy):

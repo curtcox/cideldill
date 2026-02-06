@@ -15,13 +15,21 @@ from urllib.parse import urlparse
 
 from .debug_client import DebugClient
 from .debug_info import DebugInfo
-from .debug_proxy import AsyncDebugProxy, DebugProxy, _build_stack_trace
-from .exceptions import DebugServerError
+from .debug_proxy import (
+    AsyncDebugProxy,
+    DebugProxy,
+    _build_stack_trace,
+    execute_call_action,
+    execute_call_action_async,
+    wait_for_post_completion,
+    wait_for_post_completion_async,
+)
+from .exceptions import DebugProtocolError, DebugServerError
 from .function_registry import compute_signature
 from .function_registry import register_function as register_local_function
 from .port_discovery import read_port_from_discovery_file
+from .serialization import compute_cid, set_serialization_error_reporter, set_verbose_serialization_warnings
 from .server_failure import exit_with_breakpoint_unavailable, exit_with_server_failure
-from .serialization import set_serialization_error_reporter, set_verbose_serialization_warnings
 
 
 @dataclass
@@ -35,6 +43,7 @@ class _DebugState:
 
 _state = _DebugState()
 _state_lock = threading.Lock()
+_debug_call_registered: set[tuple[str, int]] = set()
 logger = logging.getLogger(__name__)
 
 
@@ -195,6 +204,7 @@ def _set_debug_mode(enabled: bool) -> DebugInfo:
         with _state_lock:
             _state.enabled = False
             _state.client = None
+        _debug_call_registered.clear()
         set_serialization_error_reporter(None)
         return DebugInfo(enabled=False, server=None, status="disabled")
 
@@ -382,3 +392,185 @@ def _record_breakpoint_unavailable(
         )
     except Exception:
         return
+
+
+# ---------------------------------------------------------------------------
+# debug_call — inline breakpoints
+# ---------------------------------------------------------------------------
+
+
+def _parse_debug_call_args(
+    __name_or_func: Any, *args: Any
+) -> tuple[str | None, Any, tuple[Any, ...]]:
+    if isinstance(__name_or_func, str):
+        alias = __name_or_func
+        if not args or not callable(args[0]):
+            raise TypeError("debug_call with alias requires a callable as second argument")
+        func = args[0]
+        call_args = args[1:]
+    elif callable(__name_or_func):
+        alias = None
+        func = __name_or_func
+        call_args = args
+    else:
+        raise TypeError("debug_call expects a callable or (alias_str, callable, ...)")
+    return alias, func, call_args
+
+
+def debug_call(__name_or_func: Any, *args: Any, **kwargs: Any) -> Any:
+    """One-shot inline breakpoint.
+
+    When debug is OFF: ``f(*args, **kwargs)`` — immediate call, zero server contact.
+    When debug is ON: full round-trip to server with inspection/modification support.
+    """
+    alias, func, call_args = _parse_debug_call_args(__name_or_func, *args)
+
+    if not _is_debug_enabled():
+        return func(*call_args, **kwargs)
+
+    # Unwrap existing proxies
+    if isinstance(func, (DebugProxy, AsyncDebugProxy)):
+        func = object.__getattribute__(func, "_target")
+
+    client = _state.client
+    if client is None:
+        client = DebugClient(_resolve_server_url())
+        _state.client = client
+
+    method_name = alias or _resolve_callable_name(func, None)
+    signature = compute_signature(func)
+    target_cid = compute_cid(func)
+
+    # Register on first encounter
+    reg_key = (method_name, id(func))
+    if reg_key not in _debug_call_registered:
+        _register_callable_or_halt(
+            client, target=func, name=method_name, signature=signature,
+        )
+        _record_registration(
+            client, name=method_name, signature=signature,
+            alias_name=alias, target=func,
+        )
+        _debug_call_registered.add(reg_key)
+
+    call_site = {
+        "timestamp": time.time(),
+        "target_cid": target_cid,
+        "stack_trace": _build_stack_trace(skip=2),
+    }
+
+    action = client.record_call_start(
+        method_name=method_name,
+        target=func,
+        target_cid=target_cid,
+        args=call_args,
+        kwargs=kwargs,
+        call_site=call_site,
+        signature=signature,
+        call_type="inline",
+    )
+
+    call_id = action.get("call_id")
+    if not call_id:
+        raise DebugProtocolError("Missing call_id in response")
+
+    try:
+        result = execute_call_action(action, client, func, call_args, kwargs)
+    except Exception as exc:
+        try:
+            client.record_call_complete(
+                call_id=call_id, status="exception", exception=exc,
+            )
+        except DebugServerError:
+            logger.exception("Failed to report exception for debug_call (call_id=%s)", call_id)
+        raise
+
+    try:
+        post_action = client.record_call_complete(
+            call_id=call_id, status="success", result=result,
+        )
+        if post_action:
+            wait_for_post_completion(post_action, client)
+    except DebugServerError:
+        logger.exception("Failed to report completion for debug_call (call_id=%s)", call_id)
+
+    return result
+
+
+async def async_debug_call(__name_or_func: Any, *args: Any, **kwargs: Any) -> Any:
+    """Async variant of debug_call."""
+    alias, func, call_args = _parse_debug_call_args(__name_or_func, *args)
+
+    if not _is_debug_enabled():
+        result = func(*call_args, **kwargs)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
+    # Unwrap existing proxies
+    if isinstance(func, (DebugProxy, AsyncDebugProxy)):
+        func = object.__getattribute__(func, "_target")
+
+    client = _state.client
+    if client is None:
+        client = DebugClient(_resolve_server_url())
+        _state.client = client
+
+    method_name = alias or _resolve_callable_name(func, None)
+    signature = compute_signature(func)
+    target_cid = compute_cid(func)
+
+    # Register on first encounter
+    reg_key = (method_name, id(func))
+    if reg_key not in _debug_call_registered:
+        _register_callable_or_halt(
+            client, target=func, name=method_name, signature=signature,
+        )
+        _record_registration(
+            client, name=method_name, signature=signature,
+            alias_name=alias, target=func,
+        )
+        _debug_call_registered.add(reg_key)
+
+    call_site = {
+        "timestamp": time.time(),
+        "target_cid": target_cid,
+        "stack_trace": _build_stack_trace(skip=2),
+    }
+
+    action = client.record_call_start(
+        method_name=method_name,
+        target=func,
+        target_cid=target_cid,
+        args=call_args,
+        kwargs=kwargs,
+        call_site=call_site,
+        signature=signature,
+        call_type="inline",
+    )
+
+    call_id = action.get("call_id")
+    if not call_id:
+        raise DebugProtocolError("Missing call_id in response")
+
+    try:
+        result = await execute_call_action_async(action, client, func, call_args, kwargs)
+    except Exception as exc:
+        try:
+            client.record_call_complete(
+                call_id=call_id, status="exception", exception=exc,
+            )
+        except DebugServerError:
+            logger.exception("Failed to report exception for async_debug_call (call_id=%s)", call_id)
+        raise
+
+    try:
+        post_action = client.record_call_complete(
+            call_id=call_id, status="success", result=result,
+        )
+        if post_action:
+            await wait_for_post_completion_async(post_action, client)
+    except DebugServerError:
+        logger.exception("Failed to report completion for async_debug_call (call_id=%s)", call_id)
+
+    return result

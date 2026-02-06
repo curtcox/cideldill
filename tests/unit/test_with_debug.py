@@ -459,6 +459,8 @@ def test_with_debug_callable_object_uses_breakpoint_name(monkeypatch) -> None:
         kwargs,
         call_site,
         signature: str | None = None,
+        *,
+        call_type: str = "proxy",
     ):
         call_names.append(method_name)
         return {"action": "continue", "call_id": "1"}
@@ -527,6 +529,8 @@ def test_with_debug_alias_callable_object_uses_alias_on_call(monkeypatch) -> Non
         kwargs,
         call_site,
         signature: str | None = None,
+        *,
+        call_type: str = "proxy",
     ):
         call_names.append(method_name)
         return {"action": "continue", "call_id": "1"}
@@ -596,6 +600,8 @@ def test_with_debug_partial_callable_object_uses_callable_name(monkeypatch) -> N
         kwargs,
         call_site,
         signature: str | None = None,
+        *,
+        call_type: str = "proxy",
     ):
         call_names.append(method_name)
         return {"action": "continue", "call_id": "1"}
@@ -722,6 +728,8 @@ def test_with_debug_callable_breakpointed_even_if_serialization_minimal(monkeypa
         kwargs,
         call_site,
         signature: str | None = None,
+        *,
+        call_type: str = "proxy",
     ):
         call_names.append(method_name)
         return {"action": "continue", "call_id": "1"}
@@ -789,6 +797,8 @@ def test_with_debug_bound_method_of_unpicklable_instance(monkeypatch) -> None:
         kwargs,
         call_site,
         signature: str | None = None,
+        *,
+        call_type: str = "proxy",
     ):
         call_names.append(method_name)
         return {"action": "continue", "call_id": "1"}
@@ -863,6 +873,8 @@ def test_with_debug_lambda_with_unpicklable_capture(monkeypatch) -> None:
         kwargs,
         call_site,
         signature: str | None = None,
+        *,
+        call_type: str = "proxy",
     ):
         call_names.append(method_name)
         return {"action": "continue", "call_id": "1"}
@@ -908,6 +920,8 @@ def test_with_debug_async_callable_object_uses_alias(monkeypatch) -> None:
         kwargs,
         call_site,
         signature: str | None = None,
+        *,
+        call_type: str = "proxy",
     ):
         call_names.append(method_name)
         return {"action": "continue", "call_id": "1"}
