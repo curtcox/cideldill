@@ -870,7 +870,13 @@ class DebugClient:
         call_data = paused.get("call_data")
         method_name = "<unknown>"
         if isinstance(call_data, dict):
-            method_name = str(call_data.get("method_name", "<unknown>"))
+            method_name = str(
+                call_data.get("method_name")
+                or call_data.get("function_name")
+                or "<unknown>"
+            )
+        elif paused.get("method_name") or paused.get("function_name"):
+            method_name = str(paused.get("method_name") or paused.get("function_name"))
         pause_id = str(paused.get("id", "<unknown>"))
         paused_at = paused.get("paused_at")
         if isinstance(paused_at, (int, float)):
