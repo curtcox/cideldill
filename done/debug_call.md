@@ -389,8 +389,8 @@ All items covered. See `tests/unit/test_debug_call.py`.
 
 ---
 
-## Documentation Updates
+## Documentation Updates (ALL DONE)
 
-- `docs/with_debug_api.md`: Add `debug_call` / `async_debug_call` section.
-- `client/docs/usage.md`: Add inline breakpoint example to Quick Start.
-- `docs/breakpoints_web_ui.md`: Note that inline breakpoints appear in the call list with `call_type: "inline"`.
+- `docs/with_debug_api.md`: Added `debug_call` / `async_debug_call` section.
+- `client/docs/usage.md`: Added inline breakpoint example to Quick Start.
+- `docs/breakpoints_web_ui.md`: Added Call Types section noting `call_type: "inline"`.

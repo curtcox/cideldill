@@ -165,11 +165,15 @@ cd /path/to/cideldill/server && source venv/bin/activate
 python -m cideldill_server --port 5174
 
 # 3. In your application code:
-from cideldill_client import with_debug
+from cideldill_client import with_debug, debug_call
 with_debug("ON")
 
 # Wrap functions/objects you want to debug
 my_function = with_debug(my_function)
+
+# Or use inline breakpoints for one-off call sites
+result = debug_call(my_function, arg1, arg2)
+result = debug_call("step_3", my_function, arg1)  # with alias
 ```
 
 See also:
