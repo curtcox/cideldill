@@ -216,6 +216,49 @@ def test_with_debug_no_args_uses_cideldill_env_value(monkeypatch) -> None:
     assert info.is_enabled() is True
 
 
+def test_with_debug_no_args_uses_inline_cideldill_config(monkeypatch) -> None:
+    captured: dict[str, float | str] = {}
+
+    def fake_init(
+        self,
+        server_url: str,
+        timeout_s: float = 30.0,
+        retry_timeout_s: float = 60.0,
+        retry_sleep_s: float = 0.25,
+        suspended_breakpoints_log_interval_s: float = 60.0,
+        deadlock_watchdog_timeout_s: float | None = None,
+        deadlock_watchdog_log_interval_s: float = 60.0,
+    ) -> None:
+        del timeout_s, retry_timeout_s, retry_sleep_s, suspended_breakpoints_log_interval_s
+        self._server_url = server_url
+        self._events_enabled = False
+        captured["server_url"] = server_url
+        if deadlock_watchdog_timeout_s is not None:
+            captured["timeout"] = deadlock_watchdog_timeout_s
+        captured["log_interval"] = deadlock_watchdog_log_interval_s
+
+    def noop_check(self) -> None:
+        return None
+
+    monkeypatch.setenv("CIDELDILL", 'VERBOSE "http://localhost:5174" 30.0 60.0')
+    monkeypatch.setattr("cideldill_client.debug_client.DebugClient.__init__", fake_init)
+    monkeypatch.setattr("cideldill_client.debug_client.DebugClient.check_connection", noop_check)
+
+    info = with_debug()
+
+    assert info.is_enabled() is True
+    assert captured["server_url"] == "http://localhost:5174"
+    assert captured["timeout"] == 30.0
+    assert captured["log_interval"] == 60.0
+
+
+def test_with_debug_no_args_rejects_invalid_inline_cideldill_config(monkeypatch) -> None:
+    monkeypatch.setenv("CIDELDILL", 'ON "http://localhost:5174" 30.0 60.0 extra')
+
+    with pytest.raises(ValueError, match="Invalid CIDELDILL value"):
+        with_debug()
+
+
 def test_with_debug_no_args_raises_for_invalid_env_value(monkeypatch) -> None:
     monkeypatch.setenv("CIDELDILL", "maybe")
 

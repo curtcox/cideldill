@@ -6,6 +6,7 @@ import functools
 import inspect
 import logging
 import os
+import shlex
 import threading
 import time
 from dataclasses import dataclass
@@ -81,7 +82,7 @@ def configure_debug(
 def with_debug(target: Any = _MISSING) -> Any:
     """Enable/disable debugging or wrap objects for debugging."""
     if target is _MISSING:
-        target = os.environ.get("CIDELDILL", "OFF")
+        target = _resolve_target_from_cideldill_env()
 
     alias_name: str | None = None
 
@@ -290,6 +291,62 @@ def _record_registration(
 
 def _is_debug_enabled() -> bool:
     return _state.enabled
+
+
+def _resolve_target_from_cideldill_env() -> str:
+    raw_value = os.environ.get("CIDELDILL")
+    if raw_value is None or not raw_value.strip():
+        return "OFF"
+
+    try:
+        tokens = shlex.split(raw_value)
+    except ValueError as exc:
+        raise ValueError(f"Invalid CIDELDILL value {raw_value!r}: {exc}") from exc
+
+    if not tokens:
+        return "OFF"
+
+    mode = tokens[0].strip().upper()
+    if mode in {"ON", "OFF", "VERBOSE"}:
+        _apply_cideldill_inline_config(tokens, raw_value)
+        return mode
+    return tokens[0]
+
+
+def _apply_cideldill_inline_config(tokens: list[str], raw_value: str) -> None:
+    if len(tokens) <= 1:
+        return
+    if len(tokens) > 4:
+        raise ValueError(
+            "Invalid CIDELDILL value "
+            f"{raw_value!r}: expected MODE [SERVER_URL [DEADLOCK_TIMEOUT_S [DEADLOCK_LOG_INTERVAL_S]]]"
+        )
+
+    server_url = tokens[1]
+    deadlock_watchdog_timeout_s: float | None = None
+    deadlock_watchdog_log_interval_s: float | None = None
+
+    if len(tokens) >= 3:
+        try:
+            deadlock_watchdog_timeout_s = float(tokens[2])
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid CIDELDILL deadlock timeout {tokens[2]!r}: expected a float"
+            ) from exc
+
+    if len(tokens) >= 4:
+        try:
+            deadlock_watchdog_log_interval_s = float(tokens[3])
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid CIDELDILL deadlock log interval {tokens[3]!r}: expected a float"
+            ) from exc
+
+    configure_debug(
+        server_url=server_url,
+        deadlock_watchdog_timeout_s=deadlock_watchdog_timeout_s,
+        deadlock_watchdog_log_interval_s=deadlock_watchdog_log_interval_s,
+    )
 
 
 def _resolve_server_url() -> str:

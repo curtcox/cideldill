@@ -89,8 +89,19 @@ print(info.connection_status())  # connected
 ```
 
 You can also call `with_debug()` with no arguments. In that case it reads
-`CIDELDILL` from the environment (`ON`, `OFF`, or `VERBOSE`) and defaults to
-`OFF` if `CIDELDILL` is not set.
+`CIDELDILL` from the environment and defaults to `OFF` if `CIDELDILL` is not
+set.
+
+Supported formats:
+
+- `ON`, `OFF`, or `VERBOSE`
+- `MODE "SERVER_URL" DEADLOCK_TIMEOUT_S DEADLOCK_LOG_INTERVAL_S`
+
+Example:
+
+```bash
+export CIDELDILL='VERBOSE "http://localhost:5174" 30.0 60.0'
+```
 
 ### Wrap Objects for Debugging
 
