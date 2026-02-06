@@ -216,21 +216,9 @@ return result
 
 ---
 
-## Refactoring: Extract from DebugProxy
+## Refactoring: Extract from DebugProxy (DONE)
 
-Several pieces of `DebugProxy` logic will be reused by `debug_call`. To avoid duplication, extract these as module-level functions in `debug_proxy.py`:
-
-| Current location | Extracted function | Used by |
-|---|---|---|
-| `DebugProxy._execute_action` | `execute_call_action(action, client, func, args, kwargs)` | `DebugProxy`, `debug_call` |
-| `DebugProxy._execute_action_async` | `execute_call_action_async(...)` | `AsyncDebugProxy`, `async_debug_call` |
-| `DebugProxy._deserialize_modified` | `deserialize_modified_args(action, client)` | above functions |
-| `DebugProxy._deserialize_fake_result` | `deserialize_fake_result(action, client)` | above functions |
-| `DebugProxy._deserialize_exception` | `deserialize_exception(action)` | above functions |
-| `DebugProxy._wait_for_post_completion` | `wait_for_post_completion(action, client)` | `DebugProxy`, `debug_call` |
-| `DebugProxy._wait_for_post_completion_async` | `wait_for_post_completion_async(action, client)` | `AsyncDebugProxy`, `async_debug_call` |
-
-`DebugProxy` methods become thin wrappers calling these extracted functions with `self._client`.
+All helpers extracted as module-level functions in `debug_proxy.py`. `DebugProxy` methods are thin wrappers.
 
 ---
 
@@ -384,43 +372,20 @@ _debug_call_registered.clear()
 
 ---
 
-## File Change Summary
+## File Change Summary (ALL DONE)
 
-| File | Change |
-|---|---|
-| `with_debug.py` | Add `debug_call`, `async_debug_call`, `_parse_debug_call_args`, `_debug_call_registered` set; clear set in the OFF branch of `with_debug()` |
-| `debug_proxy.py` | Extract action execution helpers to module-level functions; `DebugProxy` methods become wrappers |
-| `debug_client.py` | DONE — `call_type` is now a required keyword-only param; proxy callers pass `call_type="proxy"` |
-| `__init__.py` | Export `debug_call`, `async_debug_call` |
-
-### No changes needed
-
-| File | Why |
-|---|---|
-| `serialization.py` / `serialization_common.py` | Existing serialize/deserialize reused as-is |
-| `custom_picklers.py` | No new types to register |
-| `function_registry.py` | Reused as-is for registration via existing `_register_callable_or_halt` |
-| `exceptions.py` | Existing exceptions cover all cases |
-| `server_failure.py` | Existing exit helpers sufficient |
+| File | Change | Status |
+|---|---|---|
+| `with_debug.py` | `debug_call`, `async_debug_call`, `_parse_debug_call_args`, `_debug_call_registered` | DONE |
+| `debug_proxy.py` | Extracted action helpers to module-level functions | DONE |
+| `debug_client.py` | `call_type` required keyword-only param | DONE |
+| `__init__.py` | Export `debug_call`, `async_debug_call` | DONE |
 
 ---
 
-## Testing Plan
+## Testing Plan (ALL DONE — 27 tests in test_debug_call.py)
 
-1. **OFF mode:** `debug_call(f, x)` and `debug_call("alias", f, x)` both return `f(x)` with no server contact.
-2. **ON mode, continue:** Server returns continue → `f(x)` executes normally.
-3. **ON mode, modify:** Server returns modified args → `f(new_x)`.
-4. **ON mode, skip:** Server returns fake result → `f` never called.
-5. **ON mode, replace:** Server names a replacement → replacement called.
-6. **ON mode, raise:** Server specifies exception → raised without calling `f`.
-7. **ON mode, poll:** Server returns poll → client polls until ready.
-8. **Async variants:** Mirror of all above with `async_debug_call`.
-9. **Alias parsing:** Verify `str` first arg → alias, callable first arg → no alias, non-callable non-string → TypeError.
-10. **DebugProxy unwrap:** `debug_call(wrapped_f, x)` unwraps before calling.
-11. **`call_type` field:** Verify `"inline"` in `debug_call` payload, `"proxy"` in DebugProxy payload.
-12. **Registration:** First `debug_call(f, x)` registers `f`; subsequent calls in a loop do not re-register.
-13. **Registration cleared on OFF:** `with_debug("OFF")` clears `_debug_call_registered`; next `with_debug("ON")` + `debug_call` re-registers.
-14. **Refactor regression:** Existing `DebugProxy` tests still pass after extraction and required `call_type`.
+All items covered. See `tests/unit/test_debug_call.py`.
 
 ---
 
