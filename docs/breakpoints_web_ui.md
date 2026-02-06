@@ -83,6 +83,17 @@ Priority order:
 3. Port discovery file (`~/.cideldill/port`)
 4. Default (`http://localhost:5174`)
 
+## Call Types
+
+Each call reported to the server includes a `call_type` field in the `/api/call/start`
+payload:
+
+- `"proxy"` — The call was intercepted by a `DebugProxy` (created via `with_debug`).
+- `"inline"` — The call was made through `debug_call` / `async_debug_call`.
+
+The web UI displays both types in the call list. Inline breakpoints behave identically
+to proxy breakpoints for pause/resume, modification, and replacement.
+
 ## API Endpoints
 
 - `POST /api/call/start` — Debug clients notify the server about a call.

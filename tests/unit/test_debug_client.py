@@ -53,6 +53,7 @@ def test_record_call_start_resends_missing_cids(monkeypatch) -> None:
         args=(),
         kwargs={},
         call_site={"timestamp": 0.0},
+        call_type="proxy",
     )
 
     assert action["action"] == "continue"
@@ -142,6 +143,7 @@ def test_record_call_start_includes_stable_client_refs(monkeypatch) -> None:
         args=(mutable,),
         kwargs={"same": mutable},
         call_site={"timestamp": 0.0},
+        call_type="proxy",
     )
 
     mutable.append("beta")
@@ -152,6 +154,7 @@ def test_record_call_start_includes_stable_client_refs(monkeypatch) -> None:
         args=(mutable,),
         kwargs={"same": mutable},
         call_site={"timestamp": 1.0},
+        call_type="proxy",
     )
 
     payload1, payload2 = captured
@@ -162,3 +165,57 @@ def test_record_call_start_includes_stable_client_refs(monkeypatch) -> None:
     assert payload1["kwargs"]["same"]["client_ref"] == ref1
     assert payload2["kwargs"]["same"]["client_ref"] == ref2
     assert payload1["target"]["client_ref"] != ref1
+
+
+def test_record_call_start_includes_call_type_in_payload(monkeypatch) -> None:
+    captured: list[dict] = []
+
+    def fake_post(self, path: str, payload: dict) -> dict:
+        captured.append(payload)
+        return {"call_id": "1-001", "action": "continue"}
+
+    monkeypatch.setattr(
+        "cideldill_client.debug_client.DebugClient._post_json_allowing_cid_errors",
+        fake_post,
+    )
+
+    client = DebugClient("http://localhost:5000")
+    target = {"x": 1}
+    target_cid = compute_cid(target)
+
+    client.record_call_start(
+        method_name="noop",
+        target=target,
+        target_cid=target_cid,
+        args=(),
+        kwargs={},
+        call_site={"timestamp": 0.0},
+        call_type="proxy",
+    )
+
+    assert captured[0]["call_type"] == "proxy"
+
+    client.record_call_start(
+        method_name="noop",
+        target=target,
+        target_cid=target_cid,
+        args=(),
+        kwargs={},
+        call_site={"timestamp": 0.0},
+        call_type="inline",
+    )
+
+    assert captured[1]["call_type"] == "inline"
+
+
+def test_record_call_start_requires_call_type() -> None:
+    client = DebugClient("http://localhost:5000")
+    with pytest.raises(TypeError):
+        client.record_call_start(
+            method_name="noop",
+            target={},
+            target_cid="abc",
+            args=(),
+            kwargs={},
+            call_site={"timestamp": 0.0},
+        )
