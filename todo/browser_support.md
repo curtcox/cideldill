@@ -838,7 +838,7 @@ None. All questions have been resolved. See the Resolved Decisions table above.
 - Implement proxy wrapping
 - Tests: #32–#89, #152–#158
 
-### Phase 5: JavaScript Client Sync Mode
+### Phase 5: JavaScript Client Sync Mode (Done)
 - Implement `debugCallSync` and `withDebugSync` with synchronous XHR
 - Implement log-only fallback mode
 - Tests: #135–#142, #159–#165
