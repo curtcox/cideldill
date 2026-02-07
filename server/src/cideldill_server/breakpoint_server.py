@@ -4409,8 +4409,15 @@ class BreakpointServer:
 
             result_cid = data.get("result_cid")
             result_data = data.get("result_data")
+            result_format = data.get("result_serialization_format")
+            result_item = None
             if result_cid and result_data:
-                self._cid_store.store(result_cid, base64.b64decode(result_data))
+                result_item = {"cid": result_cid, "data": result_data}
+                if result_format:
+                    result_item["serialization_format"] = result_format
+                error = store_payload([result_item])
+                if error:
+                    return jsonify(error), 400
 
             error = data.get("error")
             stdout = data.get("stdout") or ""
@@ -4419,7 +4426,20 @@ class BreakpointServer:
                 output = str(error)
                 is_error = True
             else:
-                output = str(result_value)
+                if result_cid:
+                    format_item = {"cid": result_cid}
+                    if result_format:
+                        format_item["serialization_format"] = result_format
+                    output_value = _format_payload_value(format_item)
+                    if isinstance(output_value, str):
+                        output = output_value
+                    else:
+                        try:
+                            output = json.dumps(output_value)
+                        except Exception:  # noqa: BLE001
+                            output = str(output_value)
+                else:
+                    output = str(result_value)
                 is_error = False
 
             input_expr = waiter.get("expr") if isinstance(waiter, dict) else ""

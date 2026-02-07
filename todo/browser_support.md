@@ -843,7 +843,7 @@ None. All questions have been resolved. See the Resolved Decisions table above.
 - Implement log-only fallback mode
 - Tests: #135–#142, #159–#165
 
-### Phase 6: JavaScript Client REPL
+### Phase 6: JavaScript Client REPL (Done)
 - Implement REPL polling during pause
 - Implement `eval()` scope construction with `$args`, `$this`, named params
 - Implement REPL result posting

@@ -290,6 +290,69 @@ function _parseDebugCallArgs(nameOrFunc, args) {{
   throw new TypeError('debugCall expects a function or (alias, function, ...)');
 }}
 
+function _extractParamNames(fn) {{
+  if (typeof fn !== 'function') return {{ names: [], restIndex: null }};
+  const src = String(fn);
+  let params = '';
+  const funcMatch = src.match(/^[\\s\\(]*function[^\\(]*\\(([^)]*)\\)/);
+  if (funcMatch) {{
+    params = funcMatch[1];
+  }} else {{
+    const arrowParen = src.match(/^\\s*(?:async\\s*)?\\(([^)]*)\\)\\s*=>/);
+    if (arrowParen) {{
+      params = arrowParen[1];
+    }} else {{
+      const arrowSingle = src.match(/^\\s*(?:async\\s*)?([A-Za-z_$][A-Za-z0-9_$]*)\\s*=>/);
+      if (arrowSingle) {{
+        params = arrowSingle[1];
+      }}
+    }}
+  }}
+  if (!params) return {{ names: [], restIndex: null }};
+  const parts = params.split(',');
+  const names = [];
+  let restIndex = null;
+  for (let i = 0; i < parts.length; i += 1) {{
+    let part = parts[i].trim();
+    if (!part) continue;
+    if (part.startsWith('...')) {{
+      part = part.slice(3).trim();
+      if (!part) continue;
+      if (restIndex === null) restIndex = names.length;
+    }}
+    if (part.includes('=')) {{
+      part = part.split('=')[0].trim();
+    }}
+    if (part.startsWith('{{') || part.startsWith('[')) continue;
+    if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(part)) continue;
+    if (part === '$args' || part === '$this' || part === 'expr') continue;
+    names.push(part);
+    if (restIndex !== null) break;
+  }}
+  return {{ names, restIndex }};
+}}
+
+function _buildReplContext(fn, args, thisArg) {{
+  const resolvedArgs = Array.isArray(args) ? args : [];
+  const info = _extractParamNames(fn);
+  const names = info.names || [];
+  const restIndex = info.restIndex;
+  const paramValues = [];
+  for (let i = 0; i < names.length; i += 1) {{
+    if (restIndex !== null && i === restIndex) {{
+      paramValues.push(resolvedArgs.slice(i));
+      break;
+    }}
+    paramValues.push(resolvedArgs[i]);
+  }}
+  return {{
+    args: resolvedArgs,
+    thisArg,
+    paramNames: names,
+    paramValues,
+  }};
+}}
+
 function _functionSignature(fn) {{
   try {{
     return fn.length;
@@ -378,9 +441,80 @@ function _xhrGetJson(path) {{
   return JSON.parse(text);
 }}
 
-async function _pollAction(action) {{
+function _extractPauseId(pollUrl) {{
+  if (!pollUrl) return null;
+  const parts = String(pollUrl).split('/');
+  return parts[parts.length - 1] || null;
+}}
+
+function _evaluateRepl(expr, context) {{
+  const args = context && Array.isArray(context.args) ? context.args : [];
+  const thisArg = context ? context.thisArg : null;
+  const paramNames = context && Array.isArray(context.paramNames) ? context.paramNames : [];
+  const paramValues = context && Array.isArray(context.paramValues) ? context.paramValues : [];
+  const safeNames = [];
+  const safeValues = [];
+  for (let i = 0; i < paramNames.length; i += 1) {{
+    const name = paramNames[i];
+    if (!name || name === '$args' || name === '$this' || name === 'expr') continue;
+    if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name)) continue;
+    safeNames.push(name);
+    safeValues.push(paramValues[i]);
+  }}
+  let fn;
+  try {{
+    fn = new Function('$args', '$this', 'expr', ...safeNames, 'return eval(expr);');
+  }} catch (err) {{
+    fn = new Function('$args', '$this', 'expr', 'return eval(expr);');
+    return fn(args, thisArg, String(expr || ''));
+  }}
+  return fn(args, thisArg, String(expr || ''), ...safeValues);
+}}
+
+async function _pollRepl(pauseId, context) {{
+  if (!pauseId) return;
+  const url = _resolveUrl(`/api/poll-repl/${{pauseId}}`);
+  while (true) {{
+    const response = await fetch(url, {{ method: 'GET' }});
+    const data = await response.json();
+    if (!data || !data.eval_id) return;
+
+    let result = null;
+    let error = null;
+    try {{
+      result = _evaluateRepl(data.expr || '', context);
+      if (result === undefined) result = null;
+    }} catch (err) {{
+      error = {{
+        name: err && err.name ? err.name : 'Error',
+        message: err && err.message ? err.message : String(err),
+      }};
+    }}
+
+    const payload = {{
+      eval_id: data.eval_id,
+      session_id: data.session_id,
+      pause_id: data.pause_id,
+    }};
+
+    if (error) {{
+      payload.error = error;
+    }} else {{
+      const resultItem = await _encodeJsonItem(result, {{ forceData: true }});
+      payload.result_cid = resultItem.cid;
+      payload.result_data = resultItem.data;
+      payload.result_serialization_format = 'json';
+    }}
+
+    await _postJson('/api/call/repl-result', payload);
+  }}
+}}
+
+async function _pollAction(action, replContext) {{
   let current = action;
   while (current && current.action === 'poll') {{
+    const pauseId = _extractPauseId(current.poll_url || current.pollUrl || current.pollURL);
+    await _pollRepl(pauseId, replContext);
     const pollUrl = _resolveUrl(current.poll_url || current.pollUrl || current.pollURL);
     const pollResponse = await fetch(pollUrl, {{ method: 'GET' }});
     const pollData = await pollResponse.json();
@@ -406,8 +540,8 @@ function _pollActionSync(action) {{
   return current;
 }}
 
-async function _executeAction(action, fn, args, kwargs) {{
-  let current = await _pollAction(action);
+async function _executeAction(action, fn, args, kwargs, replContext) {{
+  let current = await _pollAction(action, replContext);
   if (!current || current.action === 'continue' || !current.action) {{
     return await fn(...args, ...(kwargs ? [kwargs] : []));
   }}
@@ -610,7 +744,7 @@ function _wrapObject(target, alias) {{
       return async function(...args) {{
         const bound = (...callArgs) => value.apply(obj, callArgs);
         const name = alias ? `${{alias}}.${{String(prop)}}` : String(prop);
-        return await debugCall(name, bound, ...args);
+        return await _debugCallInternal(name, bound, args, obj, value);
       }};
     }}
   }});
@@ -635,8 +769,7 @@ function registerReplacement(name, fn) {{
   _replacementRegistry.set(name, fn);
 }}
 
-async function debugCall(nameOrFunc, ...args) {{
-  const [alias, fn, callArgs] = _parseDebugCallArgs(nameOrFunc, args);
+async function _debugCallInternal(alias, fn, callArgs, thisArg, paramSource = null) {{
   if (!_enabled) {{
     return await fn(...callArgs);
   }}
@@ -645,9 +778,13 @@ async function debugCall(nameOrFunc, ...args) {{
   if (_pageLoadTime === null) _pageLoadTime = _resolveTimeOriginSeconds();
 
   const methodName = alias || fn.name || 'anonymous';
-  await _registerFunctionIfNeeded(fn, methodName);
+  const sourceFn = paramSource || fn;
+  await _registerFunctionIfNeeded(sourceFn, methodName);
 
-  const targetItem = await _encodeJsonItem({{ name: methodName, length: fn.length }}, {{ forceData: true }});
+  const targetItem = await _encodeJsonItem(
+    {{ name: methodName, length: sourceFn.length }},
+    {{ forceData: true }}
+  );
   const argsItems = [];
   for (const value of callArgs) {{
     argsItems.push(await _encodeJsonItem(value));
@@ -669,15 +806,16 @@ async function debugCall(nameOrFunc, ...args) {{
     preferred_format: 'json',
   }};
 
+  const replContext = _buildReplContext(sourceFn, callArgs, thisArg);
   const action = await _postJson('/api/call/start', payload);
   const callId = action.call_id;
   if (!callId) throw new Error('Missing call_id');
 
   try {{
-    const result = await _executeAction(action, fn, callArgs, {{}});
+    const result = await _executeAction(action, fn, callArgs, {{}}, replContext);
     const postAction = await _sendCallComplete(callId, 'success', {{ result }});
     if (postAction && postAction.action === 'poll') {{
-      await _pollAction(postAction);
+      await _pollAction(postAction, replContext);
     }}
     return result;
   }} catch (err) {{
@@ -688,6 +826,11 @@ async function debugCall(nameOrFunc, ...args) {{
     }}
     throw err;
   }}
+}}
+
+async function debugCall(nameOrFunc, ...args) {{
+  const [alias, fn, callArgs] = _parseDebugCallArgs(nameOrFunc, args);
+  return await _debugCallInternal(alias, fn, callArgs, null);
 }}
 
 function debugCallSync(nameOrFunc, ...args) {{

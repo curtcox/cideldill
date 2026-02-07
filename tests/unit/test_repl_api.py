@@ -1,5 +1,6 @@
 """Unit tests for REPL API endpoints."""
 
+import hashlib
 import json
 import threading
 import time
@@ -89,6 +90,51 @@ def test_poll_repl_returns_pending_eval_request(server) -> None:
     thread.join(timeout=1.0)
     assert eval_response["status"] == 200
     assert eval_response["data"]["output"] == "2"
+    assert eval_response["data"]["is_error"] is False
+
+
+def test_repl_result_accepts_json_payload(server) -> None:
+    pause_id = server.manager.add_paused_execution(_pause_call_data())
+    session_id = server.manager.start_repl_session(pause_id)
+
+    eval_response = {}
+
+    def _post_eval() -> None:
+        nonlocal eval_response
+        resp = server.test_client().post(
+            f"/api/repl/{session_id}/eval",
+            data=json.dumps({"expr": "1 + 1"}),
+            content_type="application/json",
+        )
+        eval_response = {"status": resp.status_code, "data": json.loads(resp.data)}
+
+    thread = threading.Thread(target=_post_eval)
+    thread.start()
+    time.sleep(0.1)
+
+    poll = server.test_client().get(f"/api/poll-repl/{pause_id}")
+    poll_payload = json.loads(poll.data)
+
+    result_data = json.dumps(3)
+    result_cid = hashlib.sha512(result_data.encode("utf-8")).hexdigest()
+    result_payload = {
+        "eval_id": poll_payload["eval_id"],
+        "pause_id": pause_id,
+        "session_id": session_id,
+        "result_cid": result_cid,
+        "result_data": result_data,
+        "result_serialization_format": "json",
+    }
+    result = server.test_client().post(
+        "/api/call/repl-result",
+        data=json.dumps(result_payload),
+        content_type="application/json",
+    )
+    assert result.status_code == 200
+
+    thread.join(timeout=1.0)
+    assert eval_response["status"] == 200
+    assert eval_response["data"]["output"] == "3"
     assert eval_response["data"]["is_error"] is False
 
 
