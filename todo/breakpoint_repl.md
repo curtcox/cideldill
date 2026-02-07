@@ -8,6 +8,17 @@ arbitrary Python expressions in the context of the paused client process. The
 REPL transcript is recorded and linked from the relevant call tree node. Past
 sessions are browsable at `/repls` and individually at `/repl/{pid}-{timestamp}`.
 
+## Progress
+
+- [x] Phase 1: Server-side REPL session management (ReplManager in BreakpointManager)
+- [ ] Phase 2: Server-side API endpoints
+- [ ] Phase 3: Client-side eval support
+- [ ] Phase 4: Web UI — REPL session page
+- [ ] Phase 5: Web UI — sessions index page
+- [ ] Phase 6: Web UI — call stack page
+- [ ] Phase 7: Call tree integration
+- [ ] Phase 8: Paused execution card integration
+
 ---
 
 ## Concepts

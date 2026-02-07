@@ -42,6 +42,9 @@ class BreakpointManager:
         self._call_records: list[dict[str, Any]] = []
         self._com_errors: list[dict[str, Any]] = []
         self._object_history: dict[tuple[str, int | str], list[dict[str, Any]]] = {}
+        self._repl_sessions: dict[str, dict[str, Any]] = {}
+        self._repl_sessions_by_pause: dict[str, list[str]] = {}
+        self._repl_sessions_by_call: dict[str, list[str]] = {}
         self._com_error_limit = 500
         self._lock = threading.Lock()
         # Default behavior when a breakpoint is hit: "stop" or "go"
@@ -241,6 +244,7 @@ class BreakpointManager:
             self._resume_actions[pause_id] = action
             # Remove from paused list
             self._paused_executions.pop(pause_id, None)
+            self._close_repl_sessions_for_pause(pause_id)
 
     def get_resume_action(self, pause_id: str) -> Optional[dict[str, Any]]:
         """Get the resume action for a paused execution.
@@ -465,3 +469,149 @@ class BreakpointManager:
             if limit is not None:
                 return sorted_history[:limit]
             return sorted_history
+
+    def start_repl_session(self, pause_id: str, *, now: float | None = None) -> str:
+        """Start a REPL session for a paused execution."""
+        with self._lock:
+            paused = self._paused_executions.get(pause_id)
+            if paused is None:
+                raise KeyError(pause_id)
+
+            call_data = paused.get("call_data", {}) if isinstance(paused, dict) else {}
+            pid = call_data.get("process_pid")
+            if pid is None:
+                raise KeyError("process_pid")
+
+            started_at = float(time.time() if now is None else now)
+            session_id = self._unique_repl_session_id(int(pid), started_at)
+
+            session = {
+                "session_id": session_id,
+                "pause_id": pause_id,
+                "pid": int(pid),
+                "started_at": started_at,
+                "closed_at": None,
+                "function_name": call_data.get("method_name") or call_data.get("function_name"),
+                "call_id": call_data.get("call_id"),
+                "process_key": call_data.get("process_key"),
+                "transcript": [],
+            }
+            self._repl_sessions[session_id] = session
+            self._repl_sessions_by_pause.setdefault(pause_id, []).append(session_id)
+            call_id = session.get("call_id")
+            if isinstance(call_id, str):
+                self._repl_sessions_by_call.setdefault(call_id, []).append(session_id)
+            return session_id
+
+    def _unique_repl_session_id(self, pid: int, started_at: float) -> str:
+        session_id = f"{pid}-{started_at:.6f}"
+        while session_id in self._repl_sessions:
+            started_at += 0.001
+            session_id = f"{pid}-{started_at:.6f}"
+        return session_id
+
+    def get_repl_session(self, session_id: str) -> Optional[dict[str, Any]]:
+        with self._lock:
+            session = self._repl_sessions.get(session_id)
+            if session is None:
+                return None
+            return dict(session)
+
+    def list_repl_sessions(
+        self,
+        *,
+        search: str | None = None,
+        status: str | None = None,
+        from_ts: float | None = None,
+        to_ts: float | None = None,
+    ) -> list[dict[str, Any]]:
+        if status not in {None, "active", "closed"}:
+            raise ValueError("status must be active, closed, or None")
+        search_text = (search or "").lower().strip()
+        with self._lock:
+            sessions = list(self._repl_sessions.values())
+
+        def _match(session: dict[str, Any]) -> bool:
+            if status == "active" and session.get("closed_at") is not None:
+                return False
+            if status == "closed" and session.get("closed_at") is None:
+                return False
+            started_at = session.get("started_at")
+            if from_ts is not None and isinstance(started_at, (int, float)):
+                if float(started_at) < float(from_ts):
+                    return False
+            if to_ts is not None and isinstance(started_at, (int, float)):
+                if float(started_at) > float(to_ts):
+                    return False
+            if not search_text:
+                return True
+            function_name = str(session.get("function_name") or "").lower()
+            if search_text in function_name:
+                return True
+            for entry in session.get("transcript", []):
+                input_text = str(entry.get("input") or "").lower()
+                output_text = str(entry.get("output") or "").lower()
+                stdout_text = str(entry.get("stdout") or "").lower()
+                if (
+                    search_text in input_text
+                    or search_text in output_text
+                    or search_text in stdout_text
+                ):
+                    return True
+            return False
+
+        filtered = [dict(session) for session in sessions if _match(session)]
+        filtered.sort(key=lambda item: float(item.get("started_at") or 0), reverse=True)
+        return filtered
+
+    def append_repl_transcript(
+        self,
+        session_id: str,
+        input_text: str,
+        output: str,
+        stdout: str,
+        is_error: bool,
+        *,
+        result_cid: str | None = None,
+    ) -> int:
+        with self._lock:
+            session = self._repl_sessions.get(session_id)
+            if session is None:
+                raise KeyError(session_id)
+            if session.get("closed_at") is not None:
+                raise RuntimeError("session closed")
+            transcript = session.setdefault("transcript", [])
+            index = len(transcript)
+            transcript.append({
+                "index": index,
+                "input": input_text,
+                "output": output,
+                "stdout": stdout,
+                "is_error": bool(is_error),
+                "result_cid": result_cid,
+                "timestamp": time.time(),
+            })
+            return index
+
+    def close_repl_session(self, session_id: str) -> None:
+        with self._lock:
+            session = self._repl_sessions.get(session_id)
+            if session is None:
+                raise KeyError(session_id)
+            if session.get("closed_at") is None:
+                session["closed_at"] = time.time()
+
+    def _close_repl_sessions_for_pause(self, pause_id: str) -> None:
+        session_ids = self._repl_sessions_by_pause.get(pause_id, [])
+        for session_id in session_ids:
+            session = self._repl_sessions.get(session_id)
+            if session and session.get("closed_at") is None:
+                session["closed_at"] = time.time()
+
+    def get_repl_sessions_for_pause(self, pause_id: str) -> list[str]:
+        with self._lock:
+            return list(self._repl_sessions_by_pause.get(pause_id, []))
+
+    def get_repl_sessions_for_call(self, call_id: str) -> list[str]:
+        with self._lock:
+            return list(self._repl_sessions_by_call.get(call_id, []))
