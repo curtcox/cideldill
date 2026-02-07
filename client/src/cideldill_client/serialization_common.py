@@ -620,7 +620,7 @@ class Serializer:
 
     def __init__(self, cache: Optional[CIDCache] = None) -> None:
         self._cache = cache or CIDCache()
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     def serialize(self, obj: Any) -> SerializedObject:
         """Serialize an object and compute its CID."""
