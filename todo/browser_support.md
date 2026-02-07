@@ -849,7 +849,7 @@ None. All questions have been resolved. See the Resolved Decisions table above.
 - Implement REPL result posting
 - Tests: #143–#151
 
-### Phase 7: Integration Testing
+### Phase 7: Integration Testing (Done)
 - End-to-end tests with real server and simulated browser client
 - REPL and sync mode round trips
 - Tests: #90–#101, #166–#171
