@@ -63,16 +63,74 @@ stack frame where the breakpoint was hit.
 
 When a breakpoint pauses and the client is polling `wait_for_resume_action`, it
 currently only handles resume/skip/modify/raise actions. We extend this to also
-handle `{"action": "repl_eval", "expr": "..."}` actions:
+handle `{"action": "repl_eval", "expr": "...", "session_id": "..."}` actions:
 
 1. Client receives `repl_eval` action.
-2. Client evaluates `expr` using `eval()` in the frame's `locals`/`globals`.
-3. Client POSTs the result (or error) back to the server.
-4. Client continues polling for the next action (does NOT resume execution).
+2. Client evaluates `expr` in a background thread (see Eval Threading below).
+3. Evaluation uses the frame's `globals` merged with a **session-local namespace
+   dict** as `locals`. Assignments via `exec()` persist in the session namespace
+   and are visible to subsequent evals in the same session.
+4. `sys.stdout` and `sys.stderr` are redirected to a `StringIO` during eval.
+   Captured output is included in the result alongside the return value.
+5. Client POSTs the result (or error + captured stdout) back to the server.
+6. Client continues polling for the next action (does NOT resume execution).
 
 This means the client stays paused and can handle an arbitrary number of
 `repl_eval` actions before eventually receiving a `continue`/`skip`/`raise`
 action that actually resumes execution.
+
+### Eval Threading and Timeout
+
+Each eval runs in a daemon thread with a default 30-second timeout (configurable
+per-server). If the timeout is reached:
+
+- The eval is marked as timed out and an error is returned to the user.
+- The thread is abandoned (Python cannot forcibly kill threads). It may continue
+  running in the background. This is a known limitation.
+- The session remains active for further evals.
+
+The threading approach ensures the client's polling loop is never blocked by a
+long-running or infinite eval.
+
+### Eval / Exec Strategy
+
+The client uses `compile(expr, "<repl>", "eval")` first. If that succeeds,
+`eval()` is used and the return value is captured. If `compile(..., "eval")`
+raises `SyntaxError`, the client falls back to `compile(expr, "<repl>", "exec")`
+and uses `exec()`. In the `exec` case there is no return value, but stdout
+output and side effects (assignments, imports) are captured.
+
+Multi-line expressions (function definitions, for loops) are supported. The UI
+uses a textarea with Shift+Enter for newlines. The client uses
+`code.compile_command()` (from the standard library `code` module) to detect
+incomplete multi-line input, matching the behavior of Python's interactive
+console.
+
+### Session-Local Namespace
+
+Each REPL session maintains a namespace dict on the client side, keyed by
+`session_id`. This dict is passed as the `locals` parameter to `eval()`/`exec()`,
+layered on top of the frame's actual locals:
+
+```python
+effective_locals = {**frame_locals, **session_namespace}
+# After exec(), new names are written back to session_namespace
+```
+
+When multiple sessions share the same paused execution (concurrent browser tabs),
+each has its own session namespace. Assignments in session A are NOT visible in
+session B. However, mutations to shared mutable objects (e.g., `my_list.append(1)`)
+ARE visible across sessions since they modify the same underlying objects.
+
+### Stdout/Stderr Capture
+
+During eval, `sys.stdout` and `sys.stderr` are temporarily redirected to
+`StringIO` instances. After eval completes:
+
+- If there is captured stdout and a return value, both are included in the result.
+- If there is only stdout (e.g., from `print()`), that is the output.
+- If there is only a return value, `repr(value)` is the output.
+- Stderr is merged with stdout in the captured output.
 
 ### Multi-Action Polling Change
 
@@ -104,7 +162,9 @@ resumes. We need to change this so:
             "index": int,
             "input": str,        # User expression
             "output": str,       # repr() of result or error message
+            "stdout": str,       # Captured stdout/stderr output (may be empty)
             "is_error": bool,
+            "result_cid": str | None,  # CID of serialized result (None if serialization failed)
             "timestamp": float,  # When this exchange happened
         },
     ],
@@ -114,9 +174,15 @@ resumes. We need to change this so:
 ### Storage
 
 REPL sessions are stored in `BreakpointManager` (in-memory dict keyed by
-`session_id`). If persistence across server restarts is needed later, sessions
-can be serialized to the CAS store or a dedicated SQLite table, but in-memory
-is consistent with how paused executions and call records are stored today.
+`session_id`). Sessions do NOT survive server restarts — this is consistent
+with how paused executions and call records are stored today, and active
+sessions become invalid on restart since the client breakpoint is also lost.
+SQLite persistence for historical transcripts could be added later if needed.
+
+Eval results are stored as `repr()` strings in the transcript for display.
+Additionally, results are serialized to CIDs in the CAS store when
+serialization succeeds (graceful degradation). This allows deep inspection
+via the object browser for results that can be pickled.
 
 ---
 
@@ -198,12 +264,17 @@ links to the associated `/repl/{pid}-{timestamp}` pages. The call record in
 
 ### `/callstack/{pause_id}` — Call Stack Page
 
+Shows the call stack **at the moment the breakpoint was hit** (the stack trace
+already captured in the paused execution's `call_site.stack_trace`). The stack
+is static — it does not change while paused.
+
 - Header: "Call Stack for {function_name}"
 - Link back to REPL session(s) associated with this pause.
 - Full stack trace display (reuse existing frame view pattern from `/frame/`):
   - Each frame shows: filename, line number, function name, code context.
   - Frames are clickable to expand/collapse source context.
-- Local variables for each frame (if available from the client).
+- Does NOT show local variable values (use the REPL to inspect variables).
+  Local variables display can be added as a follow-up if needed.
 - Link to the call tree node.
 
 ### Call Tree Node Integration
@@ -245,13 +316,17 @@ one call, all are listed.
 
 1. Modify `wait_for_resume_action` loop in client to also poll
    `/api/poll-repl/{pause_id}` for eval requests.
-2. When an eval request is received:
-   - Capture the frame's `locals()` and `globals()` at the breakpoint site.
-   - Run `eval(expr, globals, locals)` in a try/except.
-   - POST result/error to `/api/call/repl-result`.
-3. For statement execution (assignments, imports): use `exec()` when `eval()`
-   raises `SyntaxError`, then re-eval to capture the result. Track exec'd
-   names in a session-local namespace dict.
+2. Implement session-local namespace management:
+   - Dict per session_id, keyed by session_id, stored on the client.
+   - Merged with frame locals/globals for each eval call.
+   - Assignments persist in the session namespace across evals.
+3. Implement eval execution:
+   - Try `compile(expr, "<repl>", "eval")` first, fall back to `exec` mode.
+   - Use `code.compile_command()` for multi-line input detection.
+   - Run eval/exec in a daemon thread with 30s timeout (configurable).
+   - Redirect `sys.stdout`/`sys.stderr` to `StringIO` during eval.
+   - POST result + captured stdout/stderr to `/api/call/repl-result`.
+   - Optionally serialize result to CID for object browser inspection.
 4. Continue polling — do NOT resume execution until a terminal action arrives.
 
 ### Phase 4: Web UI — REPL Session Page
@@ -380,6 +455,74 @@ test_client_resumes_only_on_terminal_action
 test_client_handles_eval_during_polling_loop
 test_eval_with_multiline_expression
 test_eval_timeout_protection_for_infinite_loops
+```
+
+### Unit Tests — Session Namespace
+
+```
+test_namespace_assignment_persists_across_evals
+test_namespace_import_persists_across_evals
+test_namespace_overlays_frame_locals
+test_namespace_does_not_shadow_frame_locals_initially
+test_namespace_assignment_shadows_frame_local_in_later_eval
+test_namespace_isolated_between_sessions_on_same_pause
+test_namespace_mutation_of_shared_mutable_object_visible_across_sessions
+test_namespace_cleared_when_session_closes
+test_namespace_function_definition_via_exec_callable_in_later_eval
+test_namespace_class_definition_via_exec_usable_in_later_eval
+test_namespace_del_variable_removes_from_namespace
+```
+
+### Unit Tests — Stdout/Stderr Capture
+
+```
+test_eval_print_captured_in_stdout_field
+test_eval_stderr_captured_in_stdout_field
+test_eval_print_plus_return_value_both_in_result
+test_eval_print_only_no_return_value
+test_eval_return_value_only_no_stdout
+test_eval_no_stdout_no_return_value_shows_none
+test_eval_multiline_stdout_captured_completely
+test_eval_stdout_redirect_restored_after_eval
+test_eval_stdout_redirect_restored_after_exception
+test_eval_nested_print_in_function_call_captured
+```
+
+### Unit Tests — Eval Threading and Timeout
+
+```
+test_eval_runs_in_background_thread
+test_eval_timeout_returns_error_message
+test_eval_timeout_does_not_block_polling_loop
+test_eval_timeout_session_remains_active_after_timeout
+test_eval_timeout_configurable_per_server
+test_eval_fast_expression_completes_before_timeout
+test_eval_abandoned_thread_does_not_crash_client
+test_eval_concurrent_request_waits_for_previous
+```
+
+### Unit Tests — Multi-line Input
+
+```
+test_multiline_function_definition_and_call
+test_multiline_for_loop
+test_multiline_if_else
+test_multiline_class_definition
+test_multiline_try_except
+test_multiline_with_statement
+test_compile_command_detects_incomplete_input
+test_compile_command_detects_complete_input
+test_single_line_still_works
+```
+
+### Unit Tests — Result CID Storage
+
+```
+test_eval_result_stored_as_cid_when_serializable
+test_eval_result_cid_none_when_not_serializable
+test_eval_result_cid_viewable_in_object_browser
+test_eval_error_result_has_no_cid
+test_transcript_entry_includes_result_cid_field
 ```
 
 ### Unit Tests — Call Stack Page
@@ -518,6 +661,7 @@ test_eval_expression_that_modifies_mutable_argument
 test_session_id_with_large_pid
 test_session_id_with_high_precision_timestamp
 test_start_session_race_condition_same_pid_timestamp
+test_start_session_collision_retries_with_1ms_bump
 test_close_session_while_eval_in_flight
 test_resume_breakpoint_while_eval_in_flight
 test_server_restart_loses_in_memory_sessions
@@ -528,87 +672,70 @@ test_repls_page_with_hundreds_of_sessions_performance
 test_transcript_with_hundreds_of_entries_performance
 test_eval_in_nested_breakpoint_scope
 test_callstack_page_for_deeply_nested_stack
+test_start_repl_on_already_resumed_breakpoint_returns_409
+test_stdout_redirect_thread_safety_during_concurrent_eval
+test_eval_expression_that_modifies_sys_stdout_directly
+test_eval_expression_that_spawns_threads
+test_abandoned_timeout_thread_eventual_completion
+test_session_namespace_not_leaked_to_other_sessions
+test_eval_result_cid_graceful_degradation_unpicklable
+test_concurrent_sessions_interleaved_evals_correct_transcripts
 ```
 
 ---
 
+## Resolved Decisions
+
+1. **Exec vs Eval scope isolation**: Yes. Maintain a session-local namespace
+   dict per session that is passed as the `locals` parameter to both `eval()`
+   and `exec()`, merged with the frame's actual locals. Assignments persist
+   across evals within the same session.
+
+2. **Stdout/stderr capture**: Yes. Redirect `sys.stdout` and `sys.stderr` to
+   `StringIO` during eval. Include captured output in the result. If there is
+   both a return value and stdout output, show both.
+
+3. **Security**: Yes. The REPL has full access to the client process. Same
+   trust model as pdb/gdb. Document this.
+
+4. **Timeout for eval**: Default 30 seconds, configurable per-server. Client
+   runs eval in a daemon thread so the polling loop is never blocked. On
+   timeout, the eval is abandoned (thread cannot be killed — known limitation)
+   and an error is returned to the user.
+
+5. **Multi-line input**: Yes. UI textarea supports Shift+Enter for newlines.
+   Client uses `code.compile_command()` for incomplete input detection.
+
+6. **Persistence**: No. Sessions are in-memory only. Active sessions become
+   invalid on server restart (client breakpoint is also lost). SQLite
+   persistence for historical transcripts can be added later.
+
+7. **REPL for already-resumed breakpoints**: No. The REPL requires a live
+   paused execution. Past breakpoints are viewable only through their existing
+   execution history pages.
+
+8. **Eval result serialization**: Store `repr()` in the transcript for display.
+   Also store serialized result as a CID in the CAS store when serialization
+   succeeds (graceful degradation). Failed serialization is silently skipped.
+
+9. **Concurrent sessions on same pause**: Yes, allowed. Each session has its
+   own transcript and its own session-local namespace dict. Mutations to shared
+   mutable objects (e.g., `my_list.append(1)`) are visible across sessions
+   since they modify the same underlying objects in the frame.
+
+10. **Call stack local variables**: Start without local variables in the
+    callstack page (frame metadata only, matching existing `/frame/` route).
+    The REPL is the primary way to inspect variables. Locals display can be
+    added as a follow-up.
+
+11. **Callstack shows static snapshot**: The `/callstack/{pause_id}` page shows
+    the call stack at the moment the breakpoint was hit. This is the stack trace
+    already captured in `call_site.stack_trace`. Static, not live.
+
+12. **Session ID uniqueness**: Use microsecond-precision timestamps
+    (`time.time()` float). Add check-and-retry with 1ms bump if collision
+    detected.
+
 ## Open Questions
 
-1. **Exec vs Eval scope isolation**: When the user runs `exec("x = 42")` in the
-   REPL, should `x` be visible in subsequent `eval()` calls? If yes, we need a
-   persistent namespace dict per session that overlays the frame locals. If no,
-   assignments are fire-and-forget. **Proposed answer**: Yes, maintain a
-   session-local namespace dict that is passed as the `locals` parameter to both
-   `eval()` and `exec()`, merged with the frame's actual locals.
-
-2. **Stdout/stderr capture**: If the user's expression calls `print()`, should
-   the output appear in the REPL transcript? **Proposed answer**: Yes, redirect
-   `sys.stdout` and `sys.stderr` to a `StringIO` during eval and include
-   captured output in the result. If there is both a return value and stdout
-   output, show both.
-
-3. **Security**: `eval()`/`exec()` of arbitrary code in the client process is
-   inherently unsafe. Is this acceptable given the debugger is a dev tool
-   running on a trusted local network? **Proposed answer**: Yes. Document that
-   the REPL has full access to the client process. This is the same trust model
-   as any debugger (pdb, gdb, etc.).
-
-4. **Timeout for eval**: What should the timeout be for client-side eval? Too
-   short and complex expressions fail. Too long and infinite loops hang the
-   session. **Proposed answer**: Default 30 seconds, configurable per-server.
-   On timeout, the eval is abandoned and an error is returned to the user.
-   The client should run eval in a thread so the polling loop isn't blocked.
-
-5. **Multi-line input**: Should the REPL support multi-line expressions
-   (e.g., function definitions, for loops)? **Proposed answer**: Yes. The UI
-   textarea supports Shift+Enter for newlines. The client uses
-   `compile(expr, "<repl>", "exec")` to detect whether more input is needed
-   (like the standard Python REPL's `code.InteractiveConsole`).
-
-6. **Persistence**: Should REPL sessions survive server restarts?
-   **Proposed answer**: No, not in the initial implementation. Sessions are
-   in-memory, consistent with paused executions. Active sessions become
-   invalid on restart since the client breakpoint is also lost. Could add
-   SQLite persistence for historical transcripts later.
-
-7. **REPL for already-resumed breakpoints**: Can a user start a REPL session
-   for a breakpoint that has already been resumed? **Proposed answer**: No.
-   The REPL requires a live paused execution. Past breakpoints are viewable
-   only through their existing execution history pages.
-
-8. **Eval result serialization**: Should eval results be stored in the CAS
-   store as CIDs, or just as `repr()` strings in the transcript?
-   **Proposed answer**: Store `repr()` in the transcript for display. Optionally
-   also store the serialized result as a CID for deep inspection via the
-   object browser, but only if serialization succeeds (graceful degradation).
-
-9. **Concurrent REPL sessions on same pause**: If two browser tabs open REPLs
-   for the same paused execution, they share the client-side namespace. Evals
-   from either session execute in the same process. Should we allow this?
-   **Proposed answer**: Yes, allow it. Each session has its own transcript,
-   but they share the underlying client state. Document this behavior. The
-   session-local namespace dicts are per-session, but mutations to the frame's
-   actual locals are visible across sessions.
-
-10. **Call stack local variables**: Should `/callstack/{pause_id}` show local
-    variable values for each frame? This requires the client to serialize and
-    send frame locals. **Proposed answer**: Start without local variables in
-    the call stack page (just show frame metadata like the existing `/frame/`
-    route). Add locals display as a follow-up if needed — the REPL itself
-    serves as the primary way to inspect variables.
-
-11. **`/repl` page link to `/callstack`**: The requirement says "The /repl page
-    should include a link to a /callstack page." Does `/callstack` show the
-    call stack at the moment the breakpoint was hit, or the current call stack?
-    **Proposed answer**: The call stack at the moment the breakpoint was hit.
-    This is the stack trace already captured in the paused execution's
-    `call_site.stack_trace`. The stack is static — it doesn't change while
-    paused.
-
-12. **Session ID uniqueness**: The format `{pid}-{timestamp}` could
-    theoretically collide if two sessions start at the exact same millisecond
-    for the same PID (e.g., two browser tabs clicking simultaneously). Should
-    we add a disambiguator? **Proposed answer**: Use microsecond-precision
-    timestamps (`time.time()` gives float with ~microsecond precision).
-    Collisions are astronomically unlikely. If paranoid, add a check-and-retry
-    with a 1ms bump.
+None. All questions have been resolved.
