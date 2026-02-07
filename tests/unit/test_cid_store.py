@@ -22,8 +22,8 @@ def test_store_many_raises_on_mismatch() -> None:
     store = CIDStore()
     good_data = b"good"
     bad_data = b"bad"
-    good_cid = hashlib.sha256(good_data).hexdigest()
-    bad_cid = "0" * 64
+    good_cid = hashlib.sha512(good_data).hexdigest()
+    bad_cid = "0" * 128
 
     with pytest.raises(DebugCIDMismatchError):
         store.store_many({good_cid: good_data, bad_cid: bad_data})
@@ -33,8 +33,8 @@ def test_stats_reports_counts_and_size() -> None:
     store = CIDStore()
     data_one = b"one"
     data_two = b"two"
-    cid_one = hashlib.sha256(data_one).hexdigest()
-    cid_two = hashlib.sha256(data_two).hexdigest()
+    cid_one = hashlib.sha512(data_one).hexdigest()
+    cid_two = hashlib.sha512(data_two).hexdigest()
 
     store.store(cid_one, data_one)
     store.store(cid_two, data_two)

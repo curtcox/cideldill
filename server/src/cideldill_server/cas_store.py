@@ -80,9 +80,9 @@ class CASStore:
             data: The data to compute CID for.
 
         Returns:
-            SHA256 hash as hexadecimal string.
+            SHA-512 hash as hexadecimal string.
         """
-        return hashlib.sha256(data).hexdigest()
+        return hashlib.sha512(data).hexdigest()
 
     def store(self, data: Any) -> str:
         """Store data in CAS and return its CID.

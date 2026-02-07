@@ -449,7 +449,7 @@ def deserialize(data: bytes) -> Any:
 def compute_cid(obj: Any) -> str:
     """Compute the CID for any Python object."""
     pickled = _safe_dumps(obj)
-    return hashlib.sha256(pickled).hexdigest()
+    return hashlib.sha512(pickled).hexdigest()
 
 
 @dataclass
@@ -518,7 +518,7 @@ class Serializer:
         self._acquire_lock(obj)
         try:
             pickled = _safe_dumps(obj)
-            cid = hashlib.sha256(pickled).hexdigest()
+            cid = hashlib.sha512(pickled).hexdigest()
             if self._cache.is_sent(cid):
                 return SerializedObject(cid=cid, data=None, data_base64=None)
             self._cache.mark_sent(cid)
@@ -532,7 +532,7 @@ class Serializer:
         self._acquire_lock(obj)
         try:
             pickled = _safe_dumps(obj)
-            cid = hashlib.sha256(pickled).hexdigest()
+            cid = hashlib.sha512(pickled).hexdigest()
             data_base64 = base64.b64encode(pickled).decode("ascii")
             return SerializedObject(cid=cid, data=pickled, data_base64=data_base64)
         finally:
@@ -548,5 +548,5 @@ class Serializer:
     def verify_cid(data_base64: str, expected_cid: str) -> bool:
         """Verify that data matches the expected CID."""
         pickled = base64.b64decode(data_base64)
-        actual_cid = hashlib.sha256(pickled).hexdigest()
+        actual_cid = hashlib.sha512(pickled).hexdigest()
         return actual_cid == expected_cid

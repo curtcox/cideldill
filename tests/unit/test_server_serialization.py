@@ -1,9 +1,9 @@
 from cideldill_server.serialization import CIDCache, Serializer, compute_cid, deserialize, serialize
 
 
-def test_compute_cid_returns_64_char_hex():
+def test_compute_cid_returns_128_char_hex():
     cid = compute_cid({"a": 1})
-    assert len(cid) == 64
+    assert len(cid) == 128
     int(cid, 16)
 
 

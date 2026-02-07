@@ -12,9 +12,10 @@ as the existing Python client. This is **additive** — the Python client is unc
 
 1. **Reuse existing server endpoints** (`/api/call/start`, `/api/call/complete`,
    `/api/poll/<pause_id>`, `/api/functions`, `/api/breakpoints`, `/api/call/event`).
-2. **Page URL replaces PID** — browsers have no OS process ID. The page's
-   `window.location.href` serves as the process identifier for grouping and
-   correlation.
+2. **Page URL replaces PID in the UI** — browsers have no OS process ID. The
+   page's `window.location.href` is shown as the human-readable process
+   identifier. Internally, the server still keys browser processes as
+   `(process_pid=0, process_start_time=<timeOrigin>)` for uniqueness.
 3. **JSON serialization** — browsers cannot produce dill pickles. A
    `serialization_format` field on every payload tells the server how to
    interpret `data` fields (`"dill"` for existing Python traffic, `"json"` for
@@ -23,8 +24,8 @@ as the existing Python client. This is **additive** — the Python client is unc
    that returns the client library JS, so any page can include it with a single
    `<script>` tag.
 5. **Minimal server changes** — the server already stores and renders JSON
-   "pretty" snapshots; JSON-serialized payloads just skip the dill
-   decode/CID-store step and flow directly into the existing pretty-print path.
+   "pretty" snapshots; JSON-serialized payloads skip the dill decode step but
+   still store raw JSON bytes in the CID store for deduplication.
 
 ---
 
@@ -74,9 +75,11 @@ so it can be loaded via:
 import { withDebug, debugCall, debugCallSync } from 'http://localhost:5174/api/debug-client.js';
 ```
 
-The server URL in the `<script src>` is hardcoded to the server's address
-(default `http://localhost:5174`). The server injects its own URL into the
-served JavaScript.
+When served by the breakpoint server, the JS includes an injected
+`SERVER_URL` constant set to the server's own origin. If the constant is
+missing (e.g., the JS is bundled separately), the client falls back to
+auto-detecting from the `<script src>`. `configure({serverUrl})` overrides
+both.
 
 #### 1.2 State Management
 
@@ -85,7 +88,7 @@ Mirrors the Python `_DebugState`:
 ```javascript
 // Internal state (not exported)
 let _enabled = false;
-let _serverUrl = null;    // auto-detected from script src
+let _serverUrl = null;    // injected SERVER_URL or auto-detected from script src
 let _pageUrl = null;      // window.location.href at enable time
 let _pageLoadTime = null; // performance.timeOrigin or Date.now() at enable time
 let _clientRefCounter = 0;
@@ -128,7 +131,7 @@ name and falls back to **log-only mode**: the call is recorded on the server
 (fire-and-forget POST to `/api/call/start` + `/api/call/complete`) but is
 never paused at breakpoints.
 
-**Log-only triggers (exhaustive list):**
+**Log-only triggers (common list; may vary by engine):**
 - `Symbol.toPrimitive`, `Symbol.iterator`, `Symbol.asyncIterator`
 - `valueOf`, `toString`, `toJSON`
 - `[Symbol.hasInstance]`, `[Symbol.toStringTag]`
@@ -172,7 +175,7 @@ approach:
 
 #### 1.5 Process Identity
 
-Instead of `(process_pid, process_start_time)`, the browser client sends:
+Instead of a real OS PID, the browser client sends:
 
 | Field | Value | Purpose |
 |-------|-------|---------|
@@ -182,7 +185,8 @@ Instead of `(process_pid, process_start_time)`, the browser client sends:
 
 The server's `_process_key` function already accepts any integer PID and float
 timestamp, so `0 + <timeOrigin>` produces a unique key per page load. The
-`page_url` field is additional metadata for display purposes.
+`page_url` field is additional metadata for display purposes (shown in the UI
+instead of a PID).
 
 #### 1.6 Call Site Information
 
@@ -315,7 +319,7 @@ optional `serialization_format` field:
   (format field on each nested item: `target.serialization_format`, etc.)
 - `/api/call/complete` — `result_data`, `exception_data`
   (format field at top level: `result_serialization_format`,
-  `exception_serialization_format`)
+  `exception_serialization_format` since these are not nested items)
 - `/api/functions` — `function_data`
   (format field at top level: `function_serialization_format`)
 - `/api/call/event` — `result_data`, `exception_data`
@@ -421,10 +425,12 @@ Python repr formatting.
 
 ## Serialization Format Specifier — Detailed Placement
 
-The `serialization_format` field appears at the **payload item level** (not
-the top-level request), because a single request could theoretically mix
-formats (e.g., a Python proxy passing a JSON-serialized value from a browser
-callback):
+The `serialization_format` field appears at the **payload item level** for
+requests that contain multiple data items (e.g., `/api/call/start`). For
+endpoints where the payload only includes a single result/exception blob
+(`call/complete` and `call/event`), the format is specified with the
+top-level `result_serialization_format` / `exception_serialization_format`
+fields for clarity.
 
 ```json
 {
@@ -799,7 +805,7 @@ None. All questions have been resolved. See the Resolved Decisions table above.
 
 ## Implementation Phases
 
-### Phase 0: SHA-512 Migration
+### Phase 0: SHA-512 Migration (Done)
 - Update Python `serialization_common.py` to use SHA-512 for `compute_cid`
 - Update Python `Serializer.serialize` and `verify_cid` to use SHA-512
 - Add server-side CID validation on all endpoints that receive data

@@ -39,7 +39,7 @@ class CIDStore:
         import hashlib
         import time
 
-        actual_cid = hashlib.sha256(data).hexdigest()
+        actual_cid = hashlib.sha512(data).hexdigest()
         if actual_cid != cid:
             raise DebugCIDMismatchError(f"CID mismatch: expected {cid}, got {actual_cid}")
 
@@ -61,7 +61,7 @@ class CIDStore:
         now = time.time()
         with self._lock:
             for cid, data in items.items():
-                actual_cid = hashlib.sha256(data).hexdigest()
+                actual_cid = hashlib.sha512(data).hexdigest()
                 if actual_cid != cid:
                     raise DebugCIDMismatchError(
                         f"CID mismatch: expected {cid}, got {actual_cid}"

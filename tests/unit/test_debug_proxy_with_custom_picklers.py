@@ -43,7 +43,7 @@ def test_debug_proxy_wraps_unpicklable_object():
     proxy = DebugProxy(target, client, lambda: True)
 
     assert hasattr(proxy, "cid")
-    assert len(proxy.cid) == 64
+    assert len(proxy.cid) == 128
 
 
 def test_debug_proxy_methods_work_on_unpicklable():
