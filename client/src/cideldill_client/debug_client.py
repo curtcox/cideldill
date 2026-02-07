@@ -438,11 +438,20 @@ class DebugClient:
         expr: str,
         frame: Any | None,
     ) -> dict[str, Any]:
-        if code.compile_command(expr, "<repl>", "exec") is None:
+        try:
+            if code.compile_command(expr, "<repl>", "exec") is None:
+                return {
+                    "result": "",
+                    "stdout": "",
+                    "error": "SyntaxError: incomplete input",
+                    "result_cid": None,
+                    "result_data": None,
+                }
+        except SyntaxError as exc:
             return {
                 "result": "",
                 "stdout": "",
-                "error": "SyntaxError: incomplete input",
+                "error": f"SyntaxError: {exc}",
                 "result_cid": None,
                 "result_data": None,
             }
