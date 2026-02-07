@@ -46,12 +46,14 @@ Client (DebugClient, paused in wait_for_resume_action loop)
     │  Evaluates expression in the paused frame's locals/globals
     │  Serializes result to CID if possible
     │  POST /api/call/repl-result  {
+    │      "eval_id": "...",
     │      "pause_id": "...",
     │      "session_id": "...",
-    │      "result": "repr string",
+    │      "result": "repr string or empty for exec-mode",
     │      "stdout": "captured output",
     │      "error": null,
-    │      "result_cid": "abc123..." or null
+    │      "result_cid": "abc123..." or null,
+    │      "result_data": "base64-encoded bytes or null"
     │  }
     │
     ▼
@@ -150,12 +152,30 @@ ARE visible across sessions since they modify the same underlying objects.
 ### Stdout/Stderr Capture
 
 During eval, `sys.stdout` and `sys.stderr` are temporarily redirected to
-`StringIO` instances. After eval completes:
+`StringIO` instances. Stderr is merged with stdout in the captured output.
 
-- If there is captured stdout and a return value, both are included in the result.
-- If there is only stdout (e.g., from `print()`), that is the output.
-- If there is only a return value, `repr(value)` is the output.
-- Stderr is merged with stdout in the captured output.
+**What the client sends** (data model, not display logic):
+
+- `result` field: For eval mode, `repr(return_value)`. For exec mode, empty
+  string `""` (exec has no return value). For errors, empty string.
+- `stdout` field: All captured stdout/stderr output. May be empty string.
+- `error` field: Error message string, or `null` if no error.
+
+**How the server stores it** in the transcript:
+
+- `output` = `error` if error is not null, else `result`. (Server renames
+  `result`/`error` → `output`/`is_error`.)
+- `stdout` = `stdout` from client (stored as-is).
+- `is_error` = `true` if `error` was not null.
+
+**How the UI displays it:**
+
+- If `is_error`: show `output` in error styling.
+- Else if `output` is non-empty and `stdout` is non-empty: show both
+  (stdout first, then `>>> result`).
+- Else if `output` is non-empty: show `output` (eval result).
+- Else if `stdout` is non-empty: show `stdout` (exec with print).
+- Else: show nothing (pure exec like `x = 42` with no output).
 
 ### In-Flight Eval on Breakpoint Resume
 
@@ -178,12 +198,16 @@ exists only in the client process. The flow:
 1. Client evaluates the expression, gets a Python object.
 2. Client calls `repr()` for the transcript display string.
 3. Client attempts to serialize the object via dill (same as existing call
-   result serialization). If successful, produces a CID.
-4. Client includes `result_cid` in the `/api/call/repl-result` POST.
-5. Server stores the CID mapping in the CAS store and records `result_cid`
-   in the transcript entry.
-6. If serialization fails (unpicklable object), `result_cid` is `null`.
-   This is not an error — the `repr()` string is always available.
+   result serialization). If successful, produces a CID and base64-encoded
+   serialized bytes.
+4. Client includes both `result_cid` and `result_data` (base64-encoded bytes)
+   in the `/api/call/repl-result` POST. This matches the existing pattern
+   used by `call_complete` which sends both `result_cid` and `result_data`.
+5. Server stores the serialized data in the CAS store keyed by `result_cid`,
+   and records `result_cid` in the transcript entry.
+6. If serialization fails (unpicklable object), both `result_cid` and
+   `result_data` are `null`. This is not an error — the `repr()` string
+   is always available for display.
 
 ### Dual Polling Loop
 
@@ -280,7 +304,7 @@ via the object browser for results that can be pickled.
 | Route | Method | Purpose |
 |-------|--------|---------|
 | `/api/poll-repl/{pause_id}` | GET | Client polls for pending eval requests. Returns `{"eval_id": "...", "session_id": "...", "expr": "..."}` or `{"eval_id": null}` if none pending. |
-| `/api/call/repl-result` | POST | Client posts eval result. Body: `{"eval_id": "...", "pause_id": "...", "session_id": "...", "result": "repr", "stdout": "captured output", "error": "msg or null", "result_cid": "cid or null"}`. |
+| `/api/call/repl-result` | POST | Client posts eval result. Body: `{"eval_id": "...", "pause_id": "...", "session_id": "...", "result": "repr or empty", "stdout": "captured output", "error": "msg or null", "result_cid": "cid or null", "result_data": "base64 bytes or null"}`. |
 
 Eval request queuing is internal to the server (in-memory queue per pause_id),
 not a separate HTTP endpoint.
@@ -404,8 +428,10 @@ one call, all are listed.
      `compile(expr, "<repl>", "exec")` mode.
    - Run eval/exec in a daemon thread with 30s timeout (configurable).
    - Redirect `sys.stdout`/`sys.stderr` to `StringIO` during eval.
-   - Serialize result to CID via dill (graceful degradation if unpicklable).
-   - POST result + stdout + error + result_cid to `/api/call/repl-result`.
+   - Serialize result to CID + base64 data via dill (graceful degradation
+     if unpicklable — send null for both result_cid and result_data).
+   - POST eval_id + result + stdout + error + result_cid + result_data to
+     `/api/call/repl-result`.
 4. Continue polling — do NOT resume execution until a terminal action arrives.
 
 ### Phase 4: Web UI — REPL Session Page
@@ -508,7 +534,10 @@ test_post_repl_close_nonexistent_returns_404
 test_poll_repl_returns_pending_eval_request_with_eval_id
 test_poll_repl_returns_null_eval_id_when_no_requests
 test_call_repl_result_posts_result_with_stdout_and_cid
+test_call_repl_result_includes_result_data_base64
 test_call_repl_result_posts_error_back
+test_call_repl_result_maps_error_to_output_and_is_error
+test_call_repl_result_maps_result_to_output_when_no_error
 test_call_repl_result_unblocks_waiting_eval_request
 test_call_repl_result_for_closed_session_returns_409
 test_post_repl_eval_blocks_until_client_responds
@@ -570,11 +599,14 @@ test_eval_stderr_captured_in_stdout_field
 test_eval_print_plus_return_value_both_in_result
 test_eval_print_only_no_return_value
 test_eval_return_value_only_no_stdout
-test_eval_no_stdout_no_return_value_shows_none
+test_eval_exec_no_stdout_no_return_value_shows_empty
 test_eval_multiline_stdout_captured_completely
 test_eval_stdout_redirect_restored_after_eval
 test_eval_stdout_redirect_restored_after_exception
 test_eval_nested_print_in_function_call_captured
+test_eval_exec_mode_result_is_empty_string
+test_eval_mode_result_is_repr_of_return_value
+test_eval_expression_returning_none_result_is_none_string
 ```
 
 ### Unit Tests — Eval Threading and Timeout
