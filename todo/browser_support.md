@@ -831,7 +831,7 @@ None. All questions have been resolved. See the Resolved Decisions table above.
 - Build the JS client library with `withDebug`, `debugCall`, `configure`
 - Tests: #23–#27
 
-### Phase 4: JavaScript Client Core (Async)
+### Phase 4: JavaScript Client Core (Async) (Done)
 - Implement JSON serialization with SHA-512 CID
 - Implement call protocol (call/start, poll, call/complete)
 - Implement function registration and replacement registry
