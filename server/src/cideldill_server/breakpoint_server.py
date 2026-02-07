@@ -99,6 +99,12 @@ HTML_TEMPLATE = """
             color: #f57c00;
             margin-bottom: 10px;
         }
+        .paused-meta {
+            margin: -4px 0 10px;
+            font-size: 0.85em;
+            color: #6b5a2b;
+            word-break: break-word;
+        }
         .call-data {
             background-color: #f8f8f8;
             padding: 10px;
@@ -707,6 +713,9 @@ HTML_TEMPLATE = """
             const signature = callData.signature || null;
             const prettyResult = callData.pretty_result;
             const replSessions = Array.isArray(paused.repl_sessions) ? paused.repl_sessions : [];
+            const pageUrl = callData.page_url;
+            const processPid = callData.process_pid;
+            const processLabel = (processPid === 0 && pageUrl) ? `JS ${pageUrl}` : `PID ${processPid}`;
 
             const renderArgs = () => {
                 const argsBlock = JSON.stringify({ args: prettyArgs, kwargs: prettyKwargs }, null, 2);
@@ -801,6 +810,7 @@ ${escapeHtml(formatPretty(prettyResult))}</div>`;
                     <div class="paused-header">
                         ⏸️ ${escapeHtml(displayName)}() - Paused at ${pausedAt}
                     </div>
+                    <div class="paused-meta">${escapeHtml(processLabel || '')}</div>
                     ${renderArgs()}
                     ${renderStack()}
                     ${renderResult()}
@@ -950,6 +960,18 @@ class BreakpointServer:
                 )
                 print(log_line)
             return response
+
+        @self.app.after_request
+        def add_cors_headers(response):
+            if request.path.startswith("/api/"):
+                response.headers["Access-Control-Allow-Origin"] = "*"
+                response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+                response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+            return response
+
+        @self.app.route('/api/<path:_path>', methods=['OPTIONS'])
+        def api_options(_path: str):
+            return ("", 204)
 
         def next_call_id() -> str:
             with self._call_seq_lock:
@@ -2561,6 +2583,7 @@ class BreakpointServer:
                 process_key = record["process_key"]
                 process_pid = record["process_pid"]
                 process_start_time = record["process_start_time"]
+                page_url = record.get("page_url")
                 started_at = record.get("started_at") or 0
                 completed_at = record.get("completed_at") or started_at
 
@@ -2570,11 +2593,14 @@ class BreakpointServer:
                         "process_key": process_key,
                         "process_pid": process_pid,
                         "process_start_time": process_start_time,
+                        "page_url": page_url,
                         "call_count": 0,
                         "first_call": started_at,
                         "last_call": completed_at,
                     }
                     summaries[process_key] = summary
+                elif page_url and not summary.get("page_url"):
+                    summary["page_url"] = page_url
 
                 summary["call_count"] = int(summary.get("call_count", 0)) + 1
                 summary["first_call"] = min(
@@ -2595,16 +2621,20 @@ class BreakpointServer:
             for item in processes:
                 process_key = str(item.get("process_key"))
                 pid = item.get("process_pid", "unknown")
+                page_url = item.get("page_url")
                 start_time = item.get("process_start_time")
                 start_text = _format_ts(start_time)
                 first_call = _format_ts(item.get("first_call"))
                 last_call = _format_ts(item.get("last_call"))
                 call_count = item.get("call_count", 0)
                 link = f"/call-tree/{quote(process_key, safe='')}"
+                process_label = str(pid)
+                if pid == 0 and page_url:
+                    process_label = f"JS {page_url}"
                 rows.append(
                     "<tr>"
                     f"<td class='mono'>{html.escape(start_text)}</td>"
-                    f"<td class='mono'>{html.escape(str(pid))}</td>"
+                    f"<td class='mono'>{html.escape(process_label)}</td>"
                     f"<td class='mono'>{call_count}</td>"
                     f"<td class='mono'>{html.escape(first_call)}</td>"
                     f"<td class='mono'>{html.escape(last_call)}</td>"
@@ -2617,7 +2647,7 @@ class BreakpointServer:
                 "<table>"
                 "<thead><tr>"
                 "<th>Process Start</th>"
-                "<th>PID</th>"
+                "<th>Process</th>"
                 "<th>Calls</th>"
                 "<th>First Call</th>"
                 "<th>Last Call</th>"
@@ -2799,6 +2829,7 @@ class BreakpointServer:
                 "process_key": process_key,
                 "process_pid": records[0].get("process_pid"),
                 "process_start_time": records[0].get("process_start_time"),
+                "page_url": records[0].get("page_url"),
                 "call_count": len(records),
             }
 
@@ -4481,6 +4512,7 @@ class BreakpointServer:
                 for key, value in kwargs.items()
                 if isinstance(value, dict)
             }
+            page_url = data.get("page_url")
             call_data = {
                 "method_name": method_name,
                 "target": target if isinstance(target, dict) else None,
@@ -4491,6 +4523,7 @@ class BreakpointServer:
                 "pretty_kwargs": pretty_kwargs,
                 "signature": data.get("signature"),
                 "call_site": data.get("call_site"),
+                "page_url": page_url,
                 "preferred_format": preferred_format,
                 "process_pid": int(process_pid),
                 "process_start_time": float(process_start_time),
@@ -4742,6 +4775,7 @@ class BreakpointServer:
                 "pretty_kwargs": data.get("pretty_kwargs", {}),
                 "signature": data.get("signature"),
                 "call_site": call_site,
+                "page_url": data.get("page_url"),
                 "process_pid": int(process_pid),
                 "process_start_time": float(process_start_time),
                 "process_key": process_key,

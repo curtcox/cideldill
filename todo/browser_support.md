@@ -820,7 +820,7 @@ None. All questions have been resolved. See the Resolved Decisions table above.
 - Update `_format_payload_value` to pretty-print JSON payloads
 - Tests: #1–#12, #28–#31, #130–#134
 
-### Phase 2: Server Process Identity + CORS
+### Phase 2: Server Process Identity + CORS (Done)
 - Store and display `page_url` field
 - Add CORS headers to all `/api/*` endpoints
 - Handle OPTIONS preflight
