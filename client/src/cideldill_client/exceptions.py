@@ -47,6 +47,10 @@ class DebugTimeoutError(DebugError):
     """Raised when polling the debug server times out."""
 
 
+class DebugDeadlockError(DebugError):
+    """Raised when a lock acquisition times out, indicating a potential deadlock."""
+
+
 class DebugProtocolError(DebugError):
     """Raised when the debug protocol response is malformed."""
 
@@ -61,4 +65,3 @@ class DebugCIDNotFoundError(DebugError):
 
 class DebugCIDMismatchError(DebugError):
     """Raised when CID data does not match its claimed hash."""
-

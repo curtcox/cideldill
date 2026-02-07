@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from . import serialization_common as _common
-from .exceptions import DebugSerializationError
+from .exceptions import DebugDeadlockError, DebugSerializationError
 
 try:
     from .custom_picklers import (
@@ -45,6 +45,7 @@ def _configure() -> None:
         auto_register_for_pickling,
         UnpicklablePlaceholder,
         DebugSerializationError,
+        DebugDeadlockError,
         report_serialization_error=_reporter,
         logger_name=__name__,
         module_key="object_module",

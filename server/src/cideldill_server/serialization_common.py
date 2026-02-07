@@ -79,6 +79,7 @@ def _default_auto_register_for_pickling(obj: Any, protocol: int | None = None) -
 
 auto_register_for_pickling = _default_auto_register_for_pickling
 DebugSerializationError: type[Exception] = Exception
+DebugDeadlockError: type[Exception] = Exception
 ReportSerializationError: Callable[[dict[str, Any]], None] | None = None
 
 
@@ -86,6 +87,7 @@ def configure_picklers(
     auto_register: Any,
     placeholder_cls: type[UnpicklablePlaceholder] | None = None,
     debug_serialization_error: type[Exception] | None = None,
+    debug_deadlock_error: type[Exception] | None = None,
     report_serialization_error: Callable[[dict[str, Any]], None] | None = None,
     logger_name: str | None = None,
     module_key: str | None = None,
@@ -94,6 +96,7 @@ def configure_picklers(
     global auto_register_for_pickling
     global _unpicklable_placeholder_cls
     global DebugSerializationError
+    global DebugDeadlockError
     global ReportSerializationError
     global logger
     global _module_key
@@ -103,6 +106,8 @@ def configure_picklers(
         _unpicklable_placeholder_cls = placeholder_cls
     if debug_serialization_error is not None:
         DebugSerializationError = debug_serialization_error
+    if debug_deadlock_error is not None:
+        DebugDeadlockError = debug_deadlock_error
     if report_serialization_error is not None:
         ReportSerializationError = report_serialization_error
     if logger_name is not None:
@@ -492,13 +497,26 @@ class CIDCache:
 class Serializer:
     """Serialize objects with CID-based deduplication."""
 
-    def __init__(self, cache: Optional[CIDCache] = None) -> None:
+    def __init__(self, cache: Optional[CIDCache] = None, *, lock_timeout_s: float = 30.0) -> None:
         self._cache = cache or CIDCache()
         self._lock = threading.RLock()
+        self._lock_timeout_s = lock_timeout_s
+
+    def _acquire_lock(self, obj: Any) -> None:
+        acquired = self._lock.acquire(timeout=self._lock_timeout_s)
+        if not acquired:
+            raise DebugDeadlockError(
+                "Serializer lock deadlock detected while serializing "
+                f"{type(obj).__name__}. This usually means a DebugProxy object "
+                "was encountered during argument serialization, causing "
+                "re-entrant record_call_start. Avoid passing DebugProxy-wrapped "
+                "objects as arguments to async_debug_call or other proxied methods."
+            )
 
     def serialize(self, obj: Any) -> SerializedObject:
         """Serialize an object and compute its CID."""
-        with self._lock:
+        self._acquire_lock(obj)
+        try:
             pickled = _safe_dumps(obj)
             cid = hashlib.sha256(pickled).hexdigest()
             if self._cache.is_sent(cid):
@@ -506,14 +524,19 @@ class Serializer:
             self._cache.mark_sent(cid)
             data_base64 = base64.b64encode(pickled).decode("ascii")
             return SerializedObject(cid=cid, data=pickled, data_base64=data_base64)
+        finally:
+            self._lock.release()
 
     def force_serialize_with_data(self, obj: Any) -> SerializedObject:
         """Serialize an object without consulting the cache."""
-        with self._lock:
+        self._acquire_lock(obj)
+        try:
             pickled = _safe_dumps(obj)
             cid = hashlib.sha256(pickled).hexdigest()
             data_base64 = base64.b64encode(pickled).decode("ascii")
             return SerializedObject(cid=cid, data=pickled, data_base64=data_base64)
+        finally:
+            self._lock.release()
 
     @staticmethod
     def deserialize_base64(data_base64: str) -> Any:

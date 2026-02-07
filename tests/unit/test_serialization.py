@@ -1,6 +1,7 @@
 import threading
 from unittest.mock import AsyncMock
 
+from cideldill_client.exceptions import DebugDeadlockError
 from cideldill_client.serialization import CIDCache, Serializer, compute_cid, deserialize, serialize
 
 
@@ -56,3 +57,24 @@ def test_serializer_allows_reentrant_serialize_in_repr():
     thread.join(1.0)
 
     assert not thread.is_alive(), "serialize deadlocked on re-entrant __repr__"
+
+
+def test_serializer_raises_deadlock_error_on_lock_timeout():
+    serializer = Serializer(lock_timeout_s=0.01)
+    serializer._lock.acquire()
+    try:
+        errors: list[Exception] = []
+
+        def run() -> None:
+            try:
+                serializer.serialize({"ok": True})
+            except Exception as exc:  # noqa: BLE001 - capture for assertion
+                errors.append(exc)
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        thread.join(1.0)
+        assert not thread.is_alive(), "serialize did not return after lock timeout"
+        assert errors and isinstance(errors[0], DebugDeadlockError)
+    finally:
+        serializer._lock.release()
