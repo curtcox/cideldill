@@ -31,18 +31,25 @@ as the existing Python client. This is **additive** — the Python client is unc
 ## Architecture Overview
 
 ```
-┌─────────────────────────┐          ┌───────────────────────────┐
-│   Browser Page          │          │   Breakpoint Server       │
-│                         │          │                           │
-│  <script src=           │  HTTP    │  /api/debug-client.js     │
-│   "/api/debug-client.js"│◄─────── │  (serves JS library)      │
-│  ></script>             │          │                           │
-│                         │          │                           │
-│  cideldill.withDebug()  │──POST──►│  /api/call/start          │
-│  cideldill.debugCall()  │──POST──►│  /api/call/complete       │
-│                         │◄──GET───│  /api/poll/<id>           │
-│                         │──POST──►│  /api/functions            │
-└─────────────────────────┘          └───────────────────────────┘
+┌─────────────────────────────┐          ┌───────────────────────────┐
+│   Browser Page              │          │   Breakpoint Server       │
+│                             │          │                           │
+│  <script src=               │  HTTP    │  /api/debug-client.js     │
+│   "/api/debug-client.js"    │◄─────── │  (serves JS library)      │
+│  ></script>                 │          │                           │
+│                             │          │                           │
+│  cideldill.withDebug("ON")  │          │                           │
+│  cideldill.withDebug(obj)   │          │                           │
+│  cideldill.withDebugSync()  │          │                           │
+│  cideldill.debugCall()      │──POST──►│  /api/call/start          │
+│  cideldill.debugCallSync()  │──POST──►│  /api/call/complete       │
+│                             │◄──GET───│  /api/poll/<id>           │
+│                             │──POST──►│  /api/functions            │
+│                             │◄──GET───│  /api/poll-repl/<id>      │
+│                             │──POST──►│  /api/call/repl-result    │
+│  cideldill.registerReplacement()       │                           │
+│    (client-side only)       │          │                           │
+└─────────────────────────────┘          └───────────────────────────┘
 ```
 
 ---
@@ -99,6 +106,7 @@ let _registeredFunctions = new Set(); // function keys already registered
 | `debugCallSync(fn, ...args)` | `debugCallSync(fn, ...args) → result` | Synchronous inline breakpoint |
 | `debugCallSync(alias, fn, ...args)` | `debugCallSync("name", fn, ...args) → result` | Synchronous inline breakpoint with alias |
 | `configure(options)` | `configure({serverUrl, ...}) → void` | Set server URL if not auto-detected |
+| `registerReplacement(name, fn)` | `registerReplacement(name, fn) → void` | Register a named JS function for `action: "replace"` (client-side only, does not POST to server) |
 
 **Async vs. sync:** The browser client supports both modes:
 - **Async (default):** `debugCall` and proxy methods return `Promise`. Uses
@@ -112,13 +120,22 @@ When debugging is OFF:
 - `debugCall(fn, ...args)` returns `Promise.resolve(fn(...args))`
 - `debugCallSync(fn, ...args)` returns `fn(...args)` directly (zero overhead)
 
-**Logging vs. interception trade-off:** In contexts where the sync/async
-nature of the original call cannot be preserved (e.g., a synchronous function
-wrapped via async proxy), the client **implicitly** falls back to
-**log-only mode**: the call is recorded on the server for the call tree, but
-the call is not paused at breakpoints. This preserves the original call's
-execution semantics. There is no explicit opt-in for log-only mode — it is
-always automatic based on the calling context.
+**Log-only mode:** The async proxy (`withDebug`) intercepts method calls
+via a `Proxy` `get` handler. Certain property accesses are invoked by the
+JavaScript runtime itself and **must** return synchronous values — the proxy
+cannot return a Promise for these. The proxy detects these cases by property
+name and falls back to **log-only mode**: the call is recorded on the server
+(fire-and-forget POST to `/api/call/start` + `/api/call/complete`) but is
+never paused at breakpoints.
+
+**Log-only triggers (exhaustive list):**
+- `Symbol.toPrimitive`, `Symbol.iterator`, `Symbol.asyncIterator`
+- `valueOf`, `toString`, `toJSON`
+- `[Symbol.hasInstance]`, `[Symbol.toStringTag]`
+
+For all other method calls, the async proxy returns a `Promise` and full
+breakpoint interception applies. There is no explicit opt-in for log-only
+mode — it is always automatic based on the property name.
 
 #### 1.4 Serialization
 
@@ -140,10 +157,18 @@ approach:
      "serialization_format": "json"
    }
    ```
-3. **CID** is computed as SHA-512 of the canonical JSON string (using the
-   Web Crypto API: `crypto.subtle.digest("SHA-512", ...)`). All CIDs in
+3. **CID** is computed as SHA-512 of the canonical JSON string. All CIDs in
    the system (both Python dill payloads and browser JSON payloads) use
    SHA-512. The server always validates CIDs against the data it receives.
+
+   **Async path (`debugCall`):** Uses `crypto.subtle.digest("SHA-512", ...)`
+   (Web Crypto API, returns a Promise).
+
+   **Sync path (`debugCallSync`):** `crypto.subtle.digest` is async and
+   cannot be used synchronously. The sync path uses a bundled pure-JavaScript
+   SHA-512 implementation (e.g., a minimal self-contained function included
+   in `debug-client.js`). This is slower than Web Crypto but necessary for
+   synchronous CID computation.
 
 #### 1.5 Process Identity
 
@@ -234,6 +259,36 @@ in v1. This avoids the complexity of source parsing.
 **Error handling:** If `eval()` throws, the error is captured and sent back
 to the server as an error result, just like the Python REPL.
 
+#### 1.9 Replacement Function Registry (Client-Side)
+
+The browser client maintains a **local** registry of named JavaScript
+functions that can serve as replacements when the server returns
+`action: "replace"`. This is distinct from the Python client's
+`register_function`, which POSTs to the server — the JS replacement
+registry is purely client-side.
+
+```javascript
+const _replacementRegistry = new Map(); // name -> function
+
+cideldill.registerReplacement = function(name, fn) {
+  _replacementRegistry.set(name, fn);
+};
+```
+
+**Note:** The name `registerReplacement` (not `registerFunction`) is used
+to avoid confusion with the Python client's `register_function` which has
+different semantics (posts to the server's `/api/functions` endpoint).
+
+When the server returns `action: "replace"` with `function_name: "myAlt"`,
+the browser client:
+
+1. Looks up `"myAlt"` in `_replacementRegistry`.
+2. **Validates the signature:** checks that the replacement's `Function.length`
+   matches the original function's parameter count. On mismatch, logs a
+   warning and falls back to calling the original function.
+3. If found and compatible, calls the replacement with the original arguments.
+4. If not found, falls back to calling the original function and logs a warning.
+
 ---
 
 ### 2. Server Changes
@@ -257,9 +312,15 @@ optional `serialization_format` field:
 **Affected payloads:**
 
 - `/api/call/start` — `target.data`, `args[*].data`, `kwargs.*.data`
+  (format field on each nested item: `target.serialization_format`, etc.)
 - `/api/call/complete` — `result_data`, `exception_data`
+  (format field at top level: `result_serialization_format`,
+  `exception_serialization_format`)
 - `/api/functions` — `function_data`
+  (format field at top level: `function_serialization_format`)
 - `/api/call/event` — `result_data`, `exception_data`
+  (format field at top level: `result_serialization_format`,
+  `exception_serialization_format`)
 
 When `serialization_format` is `"json"`:
 - The `data` field contains a JSON string (not base64).
@@ -331,32 +392,7 @@ The server stores `preferred_format` with the call data so that when a
 breakpoint is resumed with modifications, the response is encoded in the
 format the client understands.
 
-#### 2.7 Replacement Function Registry
-
-When `action: "replace"` is returned to a browser client, the replacement
-`function_name` refers to a JavaScript function that the page has previously
-registered via `cideldill.registerFunction(name, fn)`. The browser client
-maintains a local registry of named functions:
-
-```javascript
-const _replacementRegistry = new Map(); // name -> function
-
-cideldill.registerFunction = function(name, fn) {
-  _replacementRegistry.set(name, fn);
-};
-```
-
-When the server returns `action: "replace"` with `function_name: "myAlt"`,
-the browser client:
-
-1. Looks up `"myAlt"` in `_replacementRegistry`.
-2. **Validates the signature:** checks that the replacement's `Function.length`
-   matches the original function's parameter count. On mismatch, logs a
-   warning and falls back to calling the original function.
-3. If found and compatible, calls the replacement with the original arguments.
-4. If not found, falls back to calling the original function and logs a warning.
-
-#### 2.8 CORS Headers
+#### 2.7 CORS Headers
 
 The breakpoint server must add CORS headers so that pages on different origins
 can call the API. The `/api/debug-client.js` endpoint also needs CORS for
@@ -368,14 +404,14 @@ the breakpoint server is a development tool running locally.
 
 ---
 
-### 3. Web UI Changes
+### 3. Web UI Changes (Server-Side)
 
-#### 3.1 Client Type Indicator
+#### UI: Client Type Indicator
 
 Paused executions and call tree entries from browser clients show a browser
 icon (or "JS" label) next to the page URL instead of a PID.
 
-#### 3.2 JSON Value Display
+#### UI: JSON Value Display
 
 When the server detects a JSON-serialized payload, the object browser and
 call detail views render JSON with syntax highlighting instead of attempting
@@ -425,7 +461,7 @@ Tests are organized by component. Each test name follows the project's
 `test_*.py` naming convention. Tests use TDD (red-green-refactor) per
 CLAUDE.md.
 
-### 3.1 Server: Serialization Format Handling
+### T1. Server: Serialization Format Handling
 
 These test the server's ability to accept and store JSON-serialized payloads.
 
@@ -444,7 +480,7 @@ These test the server's ability to accept and store JSON-serialized payloads.
 | 11 | `test_json_cid_matches_sha512_of_utf8_json_string` | Server validates that provided CID matches SHA-512 of the JSON data bytes |
 | 12 | `test_invalid_serialization_format_rejected` | `serialization_format: "xml"` → 400 error |
 
-### 3.2 Server: Process Identity with Page URL
+### T2. Server: Process Identity with Page URL
 
 | # | Test | What It Verifies |
 |---|------|-------------------|
@@ -455,7 +491,7 @@ These test the server's ability to accept and store JSON-serialized payloads.
 | 17 | `test_different_page_loads_get_different_process_keys` | Two requests with `pid=0` but different `process_start_time` get different keys |
 | 18 | `test_same_page_reload_gets_new_process_key` | Same URL with different `process_start_time` (reload) creates a new process key |
 
-### 3.3 Server: CORS Support
+### T3. Server: CORS Support
 
 | # | Test | What It Verifies |
 |---|------|-------------------|
@@ -464,7 +500,7 @@ These test the server's ability to accept and store JSON-serialized payloads.
 | 21 | `test_cors_allows_content_type_json` | Preflight response includes `Access-Control-Allow-Headers: Content-Type` |
 | 22 | `test_debug_client_js_has_cors_headers` | `/api/debug-client.js` response includes CORS headers |
 
-### 3.4 Server: JavaScript Client Endpoint
+### T4. Server: JavaScript Client Endpoint
 
 | # | Test | What It Verifies |
 |---|------|-------------------|
@@ -474,7 +510,7 @@ These test the server's ability to accept and store JSON-serialized payloads.
 | 26 | `test_debug_client_js_defines_cideldill_namespace` | Returned JS defines `cideldill` global (parseable, no syntax errors) |
 | 27 | `test_debug_client_js_is_cacheable` | Response includes appropriate cache headers (ETag or Cache-Control) |
 
-### 3.5 Server: Pretty-Print JSON Payloads
+### T5. Server: Pretty-Print JSON Payloads
 
 | # | Test | What It Verifies |
 |---|------|-------------------|
@@ -483,7 +519,7 @@ These test the server's ability to accept and store JSON-serialized payloads.
 | 30 | `test_breakpoint_history_shows_json_args` | `/api/breakpoints/<name>/history` renders JSON args readably |
 | 31 | `test_object_browser_renders_json_objects` | `/objects` page displays JSON-serialized objects with JSON highlighting |
 
-### 3.6 JavaScript Client: Core API
+### T6. JavaScript Client: Core API
 
 These tests run in a simulated browser environment (e.g., jsdom or by testing
 the JS against a live test server from Python using subprocess + a headless
@@ -504,7 +540,7 @@ browser, or by unit-testing the JS functions directly).
 | 42 | `test_js_debug_call_propagates_exceptions` | If `fn` throws, the promise rejects with the same error |
 | 43 | `test_js_configure_sets_server_url` | `cideldill.configure({serverUrl: "..."})` overrides auto-detection |
 
-### 3.7 JavaScript Client: Serialization
+### T7. JavaScript Client: Serialization
 
 | # | Test | What It Verifies |
 |---|------|-------------------|
@@ -521,70 +557,71 @@ browser, or by unit-testing the JS functions directly).
 | 54 | `test_js_cid_computation_matches_server` | CID computed in JS (SHA-512 of JSON UTF-8) matches what server computes for same JSON string |
 | 55 | `test_js_cid_cache_deduplication` | Second serialization of same object omits data (cache hit) |
 | 56 | `test_js_placeholder_structure_matches_server_expectation` | JS placeholder objects have the fields the server expects |
+| 57 | `test_js_sync_sha512_matches_async_sha512` | Pure-JS sync SHA-512 produces same hex as `crypto.subtle.digest` for same input |
 
-### 3.8 JavaScript Client: Process Identity
-
-| # | Test | What It Verifies |
-|---|------|-------------------|
-| 57 | `test_js_sends_pid_zero` | All payloads have `process_pid: 0` |
-| 58 | `test_js_sends_page_load_time` | `process_start_time` is set from `performance.timeOrigin` |
-| 59 | `test_js_sends_page_url` | All payloads include `page_url` field |
-| 60 | `test_js_page_url_reflects_current_location` | `page_url` matches `window.location.href` |
-
-### 3.9 JavaScript Client: Call Stack Parsing
+### T8. JavaScript Client: Process Identity
 
 | # | Test | What It Verifies |
 |---|------|-------------------|
-| 61 | `test_js_parses_chrome_stack_trace` | Chrome-format stack traces are parsed into `{filename, lineno, function}` |
-| 62 | `test_js_parses_firefox_stack_trace` | Firefox-format stack traces are parsed |
-| 63 | `test_js_parses_safari_stack_trace` | Safari-format stack traces are parsed |
-| 64 | `test_js_stack_trace_with_anonymous_functions` | Anonymous functions get a sensible placeholder name |
-| 65 | `test_js_stack_trace_with_eval` | `eval()` frames are handled without crashing |
+| 58 | `test_js_sends_pid_zero` | All payloads have `process_pid: 0` |
+| 59 | `test_js_sends_page_load_time` | `process_start_time` is set from `performance.timeOrigin` |
+| 60 | `test_js_sends_page_url` | All payloads include `page_url` field |
+| 61 | `test_js_page_url_reflects_current_location` | `page_url` matches `window.location.href` |
 
-### 3.10 JavaScript Client: Polling
-
-| # | Test | What It Verifies |
-|---|------|-------------------|
-| 66 | `test_js_polls_when_action_is_poll` | Client enters poll loop when server returns `action: "poll"` |
-| 67 | `test_js_stops_polling_when_ready` | Poll loop exits when server returns `status: "ready"` |
-| 68 | `test_js_respects_poll_interval` | Polls at the interval specified by server |
-| 69 | `test_js_times_out_after_timeout_ms` | After `timeout_ms`, client stops polling and continues |
-| 70 | `test_js_handles_poll_network_error` | Network error during poll does not crash; retries or times out |
-
-### 3.11 JavaScript Client: Action Handling
+### T9. JavaScript Client: Call Stack Parsing
 
 | # | Test | What It Verifies |
 |---|------|-------------------|
-| 71 | `test_js_action_continue_executes_normally` | `action: "continue"` → function runs, result returned |
-| 72 | `test_js_action_modify_uses_modified_args` | `action: "modify"` → function called with modified args from server |
-| 73 | `test_js_action_skip_returns_fake_result` | `action: "skip"` → function not called, fake result returned |
-| 74 | `test_js_action_raise_throws_exception` | `action: "raise"` → promise rejects with specified error |
-| 75 | `test_js_action_replace_calls_replacement` | `action: "replace"` → looks up registered replacement and calls it |
-| 76 | `test_js_sends_call_complete_after_success` | After function returns, POST to `/api/call/complete` with `status: "success"` |
-| 77 | `test_js_sends_call_complete_after_exception` | After function throws, POST to `/api/call/complete` with `status: "exception"` |
-| 78 | `test_js_handles_after_breakpoint_poll` | If call_complete returns `action: "poll"`, client polls again |
+| 62 | `test_js_parses_chrome_stack_trace` | Chrome-format stack traces are parsed into `{filename, lineno, function}` |
+| 63 | `test_js_parses_firefox_stack_trace` | Firefox-format stack traces are parsed |
+| 64 | `test_js_parses_safari_stack_trace` | Safari-format stack traces are parsed |
+| 65 | `test_js_stack_trace_with_anonymous_functions` | Anonymous functions get a sensible placeholder name |
+| 66 | `test_js_stack_trace_with_eval` | `eval()` frames are handled without crashing |
 
-### 3.12 JavaScript Client: Function Registration
+### T10. JavaScript Client: Polling
 
 | # | Test | What It Verifies |
 |---|------|-------------------|
-| 79 | `test_js_registers_function_on_first_call` | First intercepted call POSTs to `/api/functions` |
-| 80 | `test_js_does_not_re_register_same_function` | Second call to same function skips registration |
-| 81 | `test_js_registration_includes_function_name` | Registration payload has `function_name` |
-| 82 | `test_js_registration_includes_signature_if_available` | If function has `.length` or `.toString()`, signature is included |
+| 67 | `test_js_polls_when_action_is_poll` | Client enters poll loop when server returns `action: "poll"` |
+| 68 | `test_js_stops_polling_when_ready` | Poll loop exits when server returns `status: "ready"` |
+| 69 | `test_js_respects_poll_interval` | Polls at the interval specified by server |
+| 70 | `test_js_times_out_after_timeout_ms` | After `timeout_ms`, client stops polling and continues |
+| 71 | `test_js_handles_poll_network_error` | Network error during poll does not crash; retries or times out |
 
-### 3.13 JavaScript Client: Proxy Behavior
+### T11. JavaScript Client: Action Handling
 
 | # | Test | What It Verifies |
 |---|------|-------------------|
-| 83 | `test_js_proxy_preserves_this_binding` | Method called on proxy has correct `this` |
-| 84 | `test_js_proxy_handles_constructor_calls` | `new Proxy(...)` doesn't break if target is a class |
-| 85 | `test_js_proxy_toString_returns_original` | `proxy.toString()` returns the original's toString |
-| 86 | `test_js_proxy_property_access_not_async` | Non-function property reads are synchronous |
-| 87 | `test_js_proxy_handles_symbol_methods` | `Symbol.iterator`, `Symbol.toPrimitive` are forwarded |
-| 88 | `test_js_proxy_wrapping_with_alias` | `withDebug(["myName", obj])` uses "myName" as function prefix |
+| 72 | `test_js_action_continue_executes_normally` | `action: "continue"` → function runs, result returned |
+| 73 | `test_js_action_modify_uses_modified_args` | `action: "modify"` → function called with modified args from server |
+| 74 | `test_js_action_skip_returns_fake_result` | `action: "skip"` → function not called, fake result returned |
+| 75 | `test_js_action_raise_throws_exception` | `action: "raise"` → promise rejects with specified error |
+| 76 | `test_js_action_replace_calls_replacement` | `action: "replace"` → looks up registered replacement and calls it |
+| 77 | `test_js_sends_call_complete_after_success` | After function returns, POST to `/api/call/complete` with `status: "success"` |
+| 78 | `test_js_sends_call_complete_after_exception` | After function throws, POST to `/api/call/complete` with `status: "exception"` |
+| 79 | `test_js_handles_after_breakpoint_poll` | If call_complete returns `action: "poll"`, client polls again |
 
-### 3.14 Integration: Browser Client ↔ Server Round Trip
+### T12. JavaScript Client: Function Registration
+
+| # | Test | What It Verifies |
+|---|------|-------------------|
+| 80 | `test_js_registers_function_on_first_call` | First intercepted call POSTs to `/api/functions` |
+| 81 | `test_js_does_not_re_register_same_function` | Second call to same function skips registration |
+| 82 | `test_js_registration_includes_function_name` | Registration payload has `function_name` |
+| 83 | `test_js_registration_includes_signature_if_available` | If function has `.length` or `.toString()`, signature is included |
+
+### T13. JavaScript Client: Proxy Behavior
+
+| # | Test | What It Verifies |
+|---|------|-------------------|
+| 84 | `test_js_proxy_preserves_this_binding` | Method called on proxy has correct `this` |
+| 85 | `test_js_proxy_handles_constructor_calls` | `new Proxy(...)` doesn't break if target is a class |
+| 86 | `test_js_proxy_toString_is_log_only` | `proxy.toString()` triggers log-only mode, returns sync result |
+| 87 | `test_js_proxy_property_access_not_async` | Non-function property reads are synchronous |
+| 88 | `test_js_proxy_handles_symbol_methods` | `Symbol.iterator`, `Symbol.toPrimitive` are forwarded via log-only |
+| 89 | `test_js_proxy_wrapping_with_alias` | `withDebug(["myName", obj])` uses "myName" as function prefix |
+
+### T14. Integration: Browser Client ↔ Server Round Trip
 
 These tests start a real server and exercise the JS client against it.
 They can use a headless browser (Playwright/Puppeteer) or simulate the
@@ -592,42 +629,42 @@ JS client's HTTP calls from Python.
 
 | # | Test | What It Verifies |
 |---|------|-------------------|
-| 89 | `test_browser_client_registers_and_calls_through_server` | Full round trip: enable → wrap → call → server sees call |
-| 90 | `test_browser_client_pauses_at_breakpoint` | Set breakpoint → browser call pauses → appears in `/api/paused` |
-| 91 | `test_browser_client_resumes_after_continue` | Paused browser call resumes when continued from UI/API |
-| 92 | `test_browser_client_modify_args` | Server modifies args → browser client receives and uses modified args |
-| 93 | `test_browser_client_skip_returns_fake_result` | Server sets skip → browser client receives fake result |
-| 94 | `test_browser_client_and_python_client_coexist` | Both a Python and browser client connect; both appear in call tree with correct identifiers |
-| 95 | `test_browser_call_tree_shows_page_url` | Call tree page displays page URL for browser-originated calls |
-| 96 | `test_browser_breakpoint_history_shows_json_values` | History view renders JSON-serialized args readably |
-| 97 | `test_browser_client_handles_server_restart` | If server restarts, browser client re-enables cleanly |
-| 98 | `test_browser_client_handles_server_unreachable` | Calls proceed (or fail gracefully) when server is down |
-| 99 | `test_multiple_browser_tabs_get_unique_process_keys` | Two page loads with different load times → different process keys |
-| 100 | `test_debug_client_js_served_from_running_server` | `GET /api/debug-client.js` from a running server returns valid JS |
+| 90 | `test_browser_client_registers_and_calls_through_server` | Full round trip: enable → wrap → call → server sees call |
+| 91 | `test_browser_client_pauses_at_breakpoint` | Set breakpoint → browser call pauses → appears in `/api/paused` |
+| 92 | `test_browser_client_resumes_after_continue` | Paused browser call resumes when continued from UI/API |
+| 93 | `test_browser_client_modify_args` | Server modifies args → browser client receives and uses modified args |
+| 94 | `test_browser_client_skip_returns_fake_result` | Server sets skip → browser client receives fake result |
+| 95 | `test_browser_client_and_python_client_coexist` | Both a Python and browser client connect; both appear in call tree with correct identifiers |
+| 96 | `test_browser_call_tree_shows_page_url` | Call tree page displays page URL for browser-originated calls |
+| 97 | `test_browser_breakpoint_history_shows_json_values` | History view renders JSON-serialized args readably |
+| 98 | `test_browser_client_handles_server_restart` | If server restarts, browser client re-enables cleanly |
+| 99 | `test_browser_client_handles_server_unreachable` | Calls proceed (or fail gracefully) when server is down |
+| 100 | `test_multiple_browser_tabs_get_unique_process_keys` | Two page loads with different load times → different process keys |
+| 101 | `test_debug_client_js_served_from_running_server` | `GET /api/debug-client.js` from a running server returns valid JS |
 
-### 3.15 Edge Cases and Error Handling
+### T15. Edge Cases and Error Handling
 
 | # | Test | What It Verifies |
 |---|------|-------------------|
-| 101 | `test_js_call_start_with_empty_args` | `debugCall(fn)` with no args works |
-| 102 | `test_js_call_start_with_large_payload` | Very large JSON object is handled (not truncated silently) |
-| 103 | `test_js_call_start_with_deeply_nested_object` | 50+ levels of nesting produce placeholder, not stack overflow |
-| 104 | `test_js_concurrent_calls_do_not_interfere` | Two simultaneous `debugCall` invocations maintain separate call IDs |
-| 105 | `test_js_rapid_enable_disable_cycle` | ON → OFF → ON rapidly does not leave stale state |
-| 106 | `test_server_rejects_json_data_with_dill_format` | `serialization_format: "dill"` with non-base64 data → appropriate error |
-| 107 | `test_server_rejects_invalid_json_in_json_format` | `serialization_format: "json"` with unparseable data → appropriate error |
-| 108 | `test_js_handles_server_500_response` | Server error during call/start → call proceeds (or rejects) gracefully |
-| 109 | `test_js_handles_network_timeout` | fetch timeout → call proceeds (or rejects) gracefully |
-| 110 | `test_js_wrapping_null_or_undefined` | `withDebug(null)` returns null, `withDebug(undefined)` returns undefined |
-| 111 | `test_js_debug_call_with_async_function` | `debugCall(asyncFn, arg)` correctly awaits the async function |
-| 112 | `test_js_debug_call_with_generator_function` | `debugCall(generatorFn)` handles or rejects gracefully |
-| 113 | `test_js_proxy_method_returning_promise` | If proxied method returns Promise, it is properly awaited and result reported |
-| 114 | `test_json_serialization_of_date_objects` | `Date` objects serialize to ISO string |
-| 115 | `test_json_serialization_of_regexp` | `RegExp` objects serialize to string representation |
-| 116 | `test_json_serialization_of_error_objects` | `Error` objects serialize with message and stack |
-| 117 | `test_json_serialization_of_map_and_set` | `Map` and `Set` serialize to array-of-entries / array |
-| 118 | `test_json_serialization_of_typed_arrays` | `Uint8Array` etc. serialize to regular arrays |
-| 119 | `test_json_serialization_of_nan_and_infinity` | `NaN`, `Infinity`, `-Infinity` serialize to string markers |
+| 102 | `test_js_call_start_with_empty_args` | `debugCall(fn)` with no args works |
+| 103 | `test_js_call_start_with_large_payload` | Very large JSON object is handled (not truncated silently) |
+| 104 | `test_js_call_start_with_deeply_nested_object` | 50+ levels of nesting produce placeholder, not stack overflow |
+| 105 | `test_js_concurrent_calls_do_not_interfere` | Two simultaneous `debugCall` invocations maintain separate call IDs |
+| 106 | `test_js_rapid_enable_disable_cycle` | ON → OFF → ON rapidly does not leave stale state |
+| 107 | `test_server_rejects_json_data_with_dill_format` | `serialization_format: "dill"` with non-base64 data → appropriate error |
+| 108 | `test_server_rejects_invalid_json_in_json_format` | `serialization_format: "json"` with unparseable data → appropriate error |
+| 109 | `test_js_handles_server_500_response` | Server error during call/start → call proceeds (or rejects) gracefully |
+| 110 | `test_js_handles_network_timeout` | fetch timeout → call proceeds (or rejects) gracefully |
+| 111 | `test_js_wrapping_null_or_undefined` | `withDebug(null)` returns null, `withDebug(undefined)` returns undefined |
+| 112 | `test_js_debug_call_with_async_function` | `debugCall(asyncFn, arg)` correctly awaits the async function |
+| 113 | `test_js_debug_call_with_generator_function` | `debugCall(generatorFn)` handles or rejects gracefully |
+| 114 | `test_js_proxy_method_returning_promise` | If proxied method returns Promise, it is properly awaited and result reported |
+| 115 | `test_json_serialization_of_date_objects` | `Date` objects serialize to ISO string |
+| 116 | `test_json_serialization_of_regexp` | `RegExp` objects serialize to string representation |
+| 117 | `test_json_serialization_of_error_objects` | `Error` objects serialize with message and stack |
+| 118 | `test_json_serialization_of_map_and_set` | `Map` and `Set` serialize to array-of-entries / array |
+| 119 | `test_json_serialization_of_typed_arrays` | `Uint8Array` etc. serialize to regular arrays |
+| 120 | `test_json_serialization_of_nan_and_infinity` | `NaN`, `Infinity`, `-Infinity` serialize to string markers |
 
 ---
 
@@ -638,7 +675,7 @@ These were originally open questions. All have been resolved:
 | # | Question | Decision |
 |---|----------|----------|
 | 1 | Proxy wrapping vs. debugCall-only | Ship both. Only fall back to log-only mode when sync/async nature cannot be preserved. |
-| 2 | How `action: "replace"` works in browser | Replacement is a JS function registered earlier by the page via `cideldill.registerFunction(name, fn)`. |
+| 2 | How `action: "replace"` works in browser | Replacement is a JS function registered earlier by the page via `cideldill.registerReplacement(name, fn)`. |
 | 3 | ES module support | Yes. The library supports both `<script>` tag and `import` from ES modules. |
 | 4 | CORS policy | `Access-Control-Allow-Origin: *` on all `/api/*` endpoints. Acceptable for a local dev tool. |
 | 5 | Browser REPL | Implement it. Uses `eval()` in page context. Everything runs on localhost; security is not a concern. |
@@ -659,95 +696,98 @@ These were originally open questions. All have been resolved:
 ## Additional Tests (from resolved decisions)
 
 The following tests cover the new features introduced by the resolved decisions.
-They continue the numbering from the original 119 tests.
+They continue the numbering from the original 120 tests.
 
-### 3.16 SHA-512 CID Migration
-
-| # | Test | What It Verifies |
-|---|------|-------------------|
-| 120 | `test_python_client_uses_sha512_for_cid` | Python serializer computes CID using SHA-512 |
-| 121 | `test_server_validates_cid_against_sha512_hash` | Server rejects payload where CID does not match SHA-512 of data |
-| 122 | `test_server_returns_cid_mismatch_error` | Server returns `{"error": "cid_mismatch", ...}` with both CIDs on mismatch |
-| 123 | `test_cid_validation_applies_to_dill_format` | CID validation applies to `serialization_format: "dill"` payloads too |
-| 124 | `test_cid_validation_applies_to_json_format` | CID validation applies to `serialization_format: "json"` payloads |
-| 125 | `test_cid_validation_on_call_complete` | `/api/call/complete` validates result_cid and exception_cid |
-| 126 | `test_cid_validation_on_call_event` | `/api/call/event` validates CIDs |
-| 127 | `test_js_computes_sha512_cid` | JavaScript client uses `crypto.subtle.digest("SHA-512", ...)` for CID |
-| 128 | `test_python_and_js_sha512_agree_on_same_json_bytes` | Python `hashlib.sha512` and JS `crypto.subtle.digest` produce same hex for same UTF-8 input |
-
-### 3.17 Server: Preferred Format
+### T16. SHA-512 CID Migration
 
 | # | Test | What It Verifies |
 |---|------|-------------------|
-| 129 | `test_call_start_stores_preferred_format` | `preferred_format` from request is stored with call data |
-| 130 | `test_modify_action_uses_json_for_json_client` | When `preferred_format: "json"`, modified args in resume action are JSON |
-| 131 | `test_modify_action_uses_dill_for_dill_client` | When `preferred_format: "dill"` (or absent), modified args are dill |
-| 132 | `test_skip_action_uses_preferred_format` | `action: "skip"` returns fake result in client's preferred format |
-| 133 | `test_preferred_format_defaults_to_dill` | Missing `preferred_format` defaults to `"dill"` |
+| 121 | `test_python_client_uses_sha512_for_cid` | Python serializer computes CID using SHA-512 |
+| 122 | `test_server_validates_cid_against_sha512_hash` | Server rejects payload where CID does not match SHA-512 of data |
+| 123 | `test_server_returns_cid_mismatch_error` | Server returns `{"error": "cid_mismatch", ...}` with both CIDs on mismatch |
+| 124 | `test_cid_validation_applies_to_dill_format` | CID validation applies to `serialization_format: "dill"` payloads too |
+| 125 | `test_cid_validation_applies_to_json_format` | CID validation applies to `serialization_format: "json"` payloads |
+| 126 | `test_cid_validation_on_call_complete` | `/api/call/complete` validates result_cid and exception_cid |
+| 127 | `test_cid_validation_on_call_event` | `/api/call/event` validates CIDs |
+| 128 | `test_js_computes_sha512_cid` | JavaScript client uses `crypto.subtle.digest("SHA-512", ...)` for CID |
+| 129 | `test_python_and_js_sha512_agree_on_same_json_bytes` | Python `hashlib.sha512` and JS `crypto.subtle.digest` produce same hex for same UTF-8 input |
 
-### 3.18 JavaScript Client: Synchronous Mode
-
-| # | Test | What It Verifies |
-|---|------|-------------------|
-| 134 | `test_js_debug_call_sync_returns_result_directly` | `debugCallSync(fn, arg)` returns the result, not a Promise |
-| 135 | `test_js_debug_call_sync_sends_call_start` | Sync mode POSTs to `/api/call/start` via XHR |
-| 136 | `test_js_debug_call_sync_polls_synchronously` | Sync polling uses synchronous XHR at poll interval |
-| 137 | `test_js_debug_call_sync_when_off` | When OFF, `debugCallSync(fn, arg)` returns `fn(arg)` directly |
-| 138 | `test_js_debug_call_sync_propagates_exceptions` | Sync mode throws on function error (not a rejected Promise) |
-| 139 | `test_js_debug_call_sync_with_alias` | `debugCallSync("name", fn, arg)` uses alias as method_name |
-| 140 | `test_js_with_debug_sync_wraps_methods_synchronously` | `withDebugSync(obj)` proxy methods return values, not Promises |
-| 141 | `test_js_with_debug_sync_polls_at_breakpoint` | Sync proxy enters synchronous poll loop when paused at breakpoint |
-
-### 3.19 JavaScript Client: REPL Support
+### T17. Server: Preferred Format
 
 | # | Test | What It Verifies |
 |---|------|-------------------|
-| 142 | `test_js_polls_for_repl_requests_during_pause` | While paused, client checks `/api/poll-repl/<pause_id>` |
-| 143 | `test_js_evaluates_repl_expression_via_eval` | REPL request expression is evaluated with `eval()` |
-| 144 | `test_js_repl_has_access_to_function_args` | REPL scope includes the intercepted function's arguments |
-| 145 | `test_js_repl_has_access_to_this_binding` | REPL scope includes `$this` for the call's `this` context |
-| 146 | `test_js_repl_has_dollar_args_array` | REPL scope has `$args` array as a fallback for unnamed params |
-| 147 | `test_js_repl_posts_result_to_server` | REPL result is POSTed to `/api/call/repl-result` |
-| 148 | `test_js_repl_handles_eval_error` | If `eval()` throws, error is sent back as error result |
-| 149 | `test_js_repl_handles_undefined_result` | `eval()` returning `undefined` is serialized as `null` |
-| 150 | `test_js_repl_multiple_expressions` | Multiple REPL requests during a single pause are handled sequentially |
+| 130 | `test_call_start_stores_preferred_format` | `preferred_format` from request is stored with call data |
+| 131 | `test_modify_action_uses_json_for_json_client` | When `preferred_format: "json"`, modified args in resume action are JSON |
+| 132 | `test_modify_action_uses_dill_for_dill_client` | When `preferred_format: "dill"` (or absent), modified args are dill |
+| 133 | `test_skip_action_uses_preferred_format` | `action: "skip"` returns fake result in client's preferred format |
+| 134 | `test_preferred_format_defaults_to_dill` | Missing `preferred_format` defaults to `"dill"` |
 
-### 3.20 JavaScript Client: Replacement Function Registry
+### T18. JavaScript Client: Synchronous Mode
 
 | # | Test | What It Verifies |
 |---|------|-------------------|
-| 151 | `test_js_register_function_stores_in_registry` | `cideldill.registerFunction("name", fn)` stores the function |
-| 152 | `test_js_replace_action_calls_registered_function` | `action: "replace"` with `function_name: "myAlt"` calls the registered fn |
-| 153 | `test_js_replace_action_fallback_when_not_registered` | Unregistered replacement falls back to original + warning |
-| 154 | `test_js_replace_action_passes_original_args` | Replacement function receives the original arguments |
-| 155 | `test_js_replace_action_result_sent_to_call_complete` | Replacement function's result is sent in `/api/call/complete` |
-| 156 | `test_js_replace_action_validates_signature_match` | Replacement with matching `Function.length` proceeds normally |
-| 157 | `test_js_replace_action_rejects_signature_mismatch` | Replacement with different `Function.length` falls back to original + warning |
+| 135 | `test_js_debug_call_sync_returns_result_directly` | `debugCallSync(fn, arg)` returns the result, not a Promise |
+| 136 | `test_js_debug_call_sync_sends_call_start` | Sync mode POSTs to `/api/call/start` via XHR |
+| 137 | `test_js_debug_call_sync_polls_synchronously` | Sync polling uses synchronous XHR at poll interval |
+| 138 | `test_js_debug_call_sync_when_off` | When OFF, `debugCallSync(fn, arg)` returns `fn(arg)` directly |
+| 139 | `test_js_debug_call_sync_propagates_exceptions` | Sync mode throws on function error (not a rejected Promise) |
+| 140 | `test_js_debug_call_sync_with_alias` | `debugCallSync("name", fn, arg)` uses alias as method_name |
+| 141 | `test_js_with_debug_sync_wraps_methods_synchronously` | `withDebugSync(obj)` proxy methods return values, not Promises |
+| 142 | `test_js_with_debug_sync_polls_at_breakpoint` | Sync proxy enters synchronous poll loop when paused at breakpoint |
 
-### 3.21 JavaScript Client: Log-Only Mode
-
-| # | Test | What It Verifies |
-|---|------|-------------------|
-| 158 | `test_js_log_only_mode_records_call_on_server` | Log-only call sends `/api/call/start` and `/api/call/complete` |
-| 159 | `test_js_log_only_mode_does_not_pause` | Log-only call ignores `action: "poll"` and proceeds |
-| 160 | `test_js_log_only_mode_preserves_sync_semantics` | Sync function wrapped via async proxy in log-only mode stays sync |
-| 161 | `test_js_log_only_mode_records_result` | Call result is sent to server even in log-only mode |
-
-### 3.22 Integration: REPL Round Trip
+### T19. JavaScript Client: REPL Support
 
 | # | Test | What It Verifies |
 |---|------|-------------------|
-| 162 | `test_browser_repl_eval_roundtrip` | Server sends REPL expr → browser evals → server receives result |
-| 163 | `test_browser_repl_access_call_args` | REPL expression can read the paused call's arguments |
-| 164 | `test_browser_repl_error_displayed_in_server` | `eval()` error is shown in server REPL UI |
+| 143 | `test_js_polls_for_repl_requests_during_pause` | While paused, client checks `/api/poll-repl/<pause_id>` |
+| 144 | `test_js_evaluates_repl_expression_via_eval` | REPL request expression is evaluated with `eval()` |
+| 145 | `test_js_repl_has_access_to_function_args` | REPL scope includes the intercepted function's arguments |
+| 146 | `test_js_repl_has_access_to_this_binding` | REPL scope includes `$this` for the call's `this` context |
+| 147 | `test_js_repl_has_dollar_args_array` | REPL scope has `$args` array as a fallback for unnamed params |
+| 148 | `test_js_repl_posts_result_to_server` | REPL result is POSTed to `/api/call/repl-result` |
+| 149 | `test_js_repl_handles_eval_error` | If `eval()` throws, error is sent back as error result |
+| 150 | `test_js_repl_handles_undefined_result` | `eval()` returning `undefined` is serialized as `null` |
+| 151 | `test_js_repl_multiple_expressions` | Multiple REPL requests during a single pause are handled sequentially |
 
-### 3.23 Integration: Sync Mode Round Trip
+### T20. JavaScript Client: Replacement Function Registry
 
 | # | Test | What It Verifies |
 |---|------|-------------------|
-| 165 | `test_sync_browser_client_pauses_at_breakpoint` | `debugCallSync` pauses; call appears in `/api/paused` |
-| 166 | `test_sync_browser_client_resumes` | Paused sync call resumes when continued via API |
-| 167 | `test_sync_browser_client_modify_args` | Sync client receives and uses modified args from server |
+| 152 | `test_js_register_replacement_stores_in_registry` | `cideldill.registerReplacement("name", fn)` stores the function |
+| 153 | `test_js_replace_action_calls_registered_function` | `action: "replace"` with `function_name: "myAlt"` calls the registered fn |
+| 154 | `test_js_replace_action_fallback_when_not_registered` | Unregistered replacement falls back to original + warning |
+| 155 | `test_js_replace_action_passes_original_args` | Replacement function receives the original arguments |
+| 156 | `test_js_replace_action_result_sent_to_call_complete` | Replacement function's result is sent in `/api/call/complete` |
+| 157 | `test_js_replace_action_validates_signature_match` | Replacement with matching `Function.length` proceeds normally |
+| 158 | `test_js_replace_action_rejects_signature_mismatch` | Replacement with different `Function.length` falls back to original + warning |
+
+### T21. JavaScript Client: Log-Only Mode
+
+| # | Test | What It Verifies |
+|---|------|-------------------|
+| 159 | `test_js_log_only_mode_records_call_on_server` | Log-only call sends `/api/call/start` and `/api/call/complete` |
+| 160 | `test_js_log_only_mode_does_not_pause` | Log-only call ignores `action: "poll"` and proceeds |
+| 161 | `test_js_log_only_valueOf_triggers_log_only` | `valueOf` on async proxy triggers log-only mode, returns sync |
+| 162 | `test_js_log_only_toString_triggers_log_only` | `toString` on async proxy triggers log-only mode, returns sync |
+| 163 | `test_js_log_only_toPrimitive_triggers_log_only` | `Symbol.toPrimitive` on async proxy triggers log-only mode |
+| 164 | `test_js_log_only_toJSON_triggers_log_only` | `toJSON` on async proxy triggers log-only mode, returns sync |
+| 165 | `test_js_log_only_mode_records_result` | Call result is sent to server even in log-only mode |
+
+### T22. Integration: REPL Round Trip
+
+| # | Test | What It Verifies |
+|---|------|-------------------|
+| 166 | `test_browser_repl_eval_roundtrip` | Server sends REPL expr → browser evals → server receives result |
+| 167 | `test_browser_repl_access_call_args` | REPL expression can read the paused call's arguments |
+| 168 | `test_browser_repl_error_displayed_in_server` | `eval()` error is shown in server REPL UI |
+
+### T23. Integration: Sync Mode Round Trip
+
+| # | Test | What It Verifies |
+|---|------|-------------------|
+| 169 | `test_sync_browser_client_pauses_at_breakpoint` | `debugCallSync` pauses; call appears in `/api/paused` |
+| 170 | `test_sync_browser_client_resumes` | Paused sync call resumes when continued via API |
+| 171 | `test_sync_browser_client_modify_args` | Sync client receives and uses modified args from server |
 
 ---
 
@@ -764,7 +804,7 @@ None. All questions have been resolved. See the Resolved Decisions table above.
 - Update Python `Serializer.serialize` and `verify_cid` to use SHA-512
 - Add server-side CID validation on all endpoints that receive data
 - No backward compatibility period — clean switch from SHA-256 to SHA-512
-- Tests: #120–#128
+- Tests: #121–#129
 
 ### Phase 1: Server-Side JSON Format Support
 - Add `serialization_format` handling to `/api/call/start`, `/api/call/complete`,
@@ -772,7 +812,7 @@ None. All questions have been resolved. See the Resolved Decisions table above.
 - Add `preferred_format` handling to call data
 - Update CID store to handle JSON data storage
 - Update `_format_payload_value` to pretty-print JSON payloads
-- Tests: #1–#12, #28–#31, #129–#133
+- Tests: #1–#12, #28–#31, #130–#134
 
 ### Phase 2: Server Process Identity + CORS
 - Store and display `page_url` field
@@ -790,27 +830,27 @@ None. All questions have been resolved. See the Resolved Decisions table above.
 - Implement call protocol (call/start, poll, call/complete)
 - Implement function registration and replacement registry
 - Implement proxy wrapping
-- Tests: #32–#88, #151–#157
+- Tests: #32–#89, #152–#158
 
 ### Phase 5: JavaScript Client Sync Mode
 - Implement `debugCallSync` and `withDebugSync` with synchronous XHR
 - Implement log-only fallback mode
-- Tests: #134–#141, #158–#161
+- Tests: #135–#142, #159–#165
 
 ### Phase 6: JavaScript Client REPL
 - Implement REPL polling during pause
 - Implement `eval()` scope construction with `$args`, `$this`, named params
 - Implement REPL result posting
-- Tests: #142–#150
+- Tests: #143–#151
 
 ### Phase 7: Integration Testing
 - End-to-end tests with real server and simulated browser client
 - REPL and sync mode round trips
-- Tests: #89–#100, #162–#167
+- Tests: #90–#101, #166–#171
 
 ### Phase 8: Edge Cases and Hardening
 - Handle all error and edge case scenarios
-- Tests: #101–#119
+- Tests: #102–#120
 
 ---
 
