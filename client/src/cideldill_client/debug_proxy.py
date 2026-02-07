@@ -68,10 +68,11 @@ def execute_call_action(
     func: Callable[..., Any],
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
+    frame: Any | None = None,
 ) -> Any:
     """Execute the server's action directive for a call."""
     while action.get("action") == "poll":
-        action = client.poll(action)
+        action = client.poll(action, frame=frame)
 
     action_type = action.get("action")
     if action_type == "continue":
@@ -100,10 +101,11 @@ async def execute_call_action_async(
     func: Callable[..., Any],
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
+    frame: Any | None = None,
 ) -> Any:
     """Async variant of execute_call_action."""
     while action.get("action") == "poll":
-        action = await client.async_poll(action)
+        action = await client.async_poll(action, frame=frame)
 
     action_type = action.get("action")
     if action_type == "continue":
@@ -129,17 +131,21 @@ async def execute_call_action_async(
     raise DebugProtocolError(f"Unknown action: {action_type}")
 
 
-def wait_for_post_completion(action: dict[str, Any], client: DebugClient) -> None:
+def wait_for_post_completion(action: dict[str, Any], client: DebugClient, frame: Any | None = None) -> None:
     while action.get("action") == "poll":
-        action = client.poll(action)
+        action = client.poll(action, frame=frame)
     action_type = action.get("action")
     if action_type not in (None, "continue"):
         raise DebugProtocolError(f"Unsupported post-completion action: {action_type}")
 
 
-async def wait_for_post_completion_async(action: dict[str, Any], client: DebugClient) -> None:
+async def wait_for_post_completion_async(
+    action: dict[str, Any],
+    client: DebugClient,
+    frame: Any | None = None,
+) -> None:
     while action.get("action") == "poll":
-        action = await client.async_poll(action)
+        action = await client.async_poll(action, frame=frame)
     action_type = action.get("action")
     if action_type not in (None, "continue"):
         raise DebugProtocolError(f"Unsupported post-completion action: {action_type}")
@@ -201,7 +207,8 @@ class DebugProxy:
                 raise DebugProtocolError("Missing call_id in response")
 
             try:
-                result = self._execute_action(action, method, args, kwargs)
+                frame = inspect.currentframe()
+                result = self._execute_action(action, method, args, kwargs, frame=frame)
             except Exception as exc:  # noqa: BLE001 - re-raise after reporting
                 try:
                     self._client.record_call_complete(
@@ -224,7 +231,8 @@ class DebugProxy:
                     result=result,
                 )
                 if post_action:
-                    self._wait_for_post_completion(post_action)
+                    frame = inspect.currentframe()
+                    self._wait_for_post_completion(post_action, frame=frame)
             except DebugServerError:
                 logger.exception(
                     "Failed to report call completion to debug server "
@@ -262,7 +270,8 @@ class DebugProxy:
                 raise DebugProtocolError("Missing call_id in response")
 
             try:
-                result = await self._execute_action_async(action, method, args, kwargs)
+                frame = inspect.currentframe()
+                result = await self._execute_action_async(action, method, args, kwargs, frame=frame)
             except Exception as exc:  # noqa: BLE001 - re-raise after reporting
                 try:
                     self._client.record_call_complete(
@@ -284,7 +293,8 @@ class DebugProxy:
                     result=result,
                 )
                 if post_action:
-                    await self._wait_for_post_completion_async(post_action)
+                    frame = inspect.currentframe()
+                    await self._wait_for_post_completion_async(post_action, frame=frame)
             except DebugServerError:
                 logger.exception(
                     "Failed to report call completion to debug server (call_id=%s status=success)",
@@ -300,8 +310,10 @@ class DebugProxy:
         method: Callable[..., Any],
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
+        *,
+        frame: Any | None = None,
     ) -> Any:
-        return execute_call_action(action, self._client, method, args, kwargs)
+        return execute_call_action(action, self._client, method, args, kwargs, frame=frame)
 
     async def _execute_action_async(
         self,
@@ -309,8 +321,10 @@ class DebugProxy:
         method: Callable[..., Any],
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
+        *,
+        frame: Any | None = None,
     ) -> Any:
-        return await execute_call_action_async(action, self._client, method, args, kwargs)
+        return await execute_call_action_async(action, self._client, method, args, kwargs, frame=frame)
 
     def _intercept_dunder(self, name: str, *args: Any, **kwargs: Any) -> Any:
         attr = getattr(self._target, name)
@@ -427,11 +441,11 @@ class DebugProxy:
     def __hash__(self) -> int:
         return hash(self._target)
 
-    def _wait_for_post_completion(self, action: dict[str, Any]) -> None:
-        wait_for_post_completion(action, self._client)
+    def _wait_for_post_completion(self, action: dict[str, Any], *, frame: Any | None = None) -> None:
+        wait_for_post_completion(action, self._client, frame=frame)
 
-    async def _wait_for_post_completion_async(self, action: dict[str, Any]) -> None:
-        await wait_for_post_completion_async(action, self._client)
+    async def _wait_for_post_completion_async(self, action: dict[str, Any], *, frame: Any | None = None) -> None:
+        await wait_for_post_completion_async(action, self._client, frame=frame)
 
 
 class AsyncDebugProxy(DebugProxy):

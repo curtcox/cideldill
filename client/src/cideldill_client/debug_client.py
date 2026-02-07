@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import code
+import io
 import logging
 import os
 import threading
@@ -11,7 +13,7 @@ import traceback
 import weakref
 from collections import OrderedDict
 from collections.abc import Iterable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from typing import Any
 
 import requests
@@ -58,6 +60,7 @@ class DebugClient:
         suspended_breakpoints_log_interval_s: float = 60.0,
         deadlock_watchdog_timeout_s: float | None = None,
         deadlock_watchdog_log_interval_s: float = 60.0,
+        repl_eval_timeout_s: float = 30.0,
     ) -> None:
         if deadlock_watchdog_timeout_s is not None and deadlock_watchdog_timeout_s < 0:
             raise ValueError("deadlock_watchdog_timeout_s must be >= 0")
@@ -81,6 +84,10 @@ class DebugClient:
         self._client_ref_cache_limit = 10_000
         self._process_pid, self._process_start_time = _get_process_identity()
         self._events_enabled = False
+        self._repl_namespaces: dict[str, dict[str, Any]] = {}
+        self._repl_eval_lock = threading.Lock()
+        self._repl_eval_inflight = False
+        self._repl_eval_timeout_s = float(repl_eval_timeout_s)
         self._deadlock_watchdog = self._build_deadlock_watchdog(
             deadlock_watchdog_timeout_s=deadlock_watchdog_timeout_s,
             deadlock_watchdog_log_interval_s=deadlock_watchdog_log_interval_s,
@@ -280,7 +287,7 @@ class DebugClient:
                 )
             return None
 
-    def poll(self, action: dict[str, Any]) -> dict[str, Any]:
+    def poll(self, action: dict[str, Any], frame: Any | None = None) -> dict[str, Any]:
         with self._watch_deadlock("poll"):
             poll_url = action.get("poll_url")
             interval_ms = action.get("poll_interval_ms", 100)
@@ -288,11 +295,14 @@ class DebugClient:
             if not poll_url:
                 raise DebugProtocolError("Missing poll_url for poll action")
 
+            pause_id = self._extract_pause_id(poll_url)
             deadline = time.time() + (timeout_ms / 1000.0)
             while time.time() < deadline:
                 response = self._get_json(poll_url)
                 status = response.get("status")
                 if status == "waiting":
+                    if pause_id:
+                        self._poll_repl_requests(pause_id, frame)
                     self._log_suspended_breakpoints_if_due(poll_url)
                     time.sleep(interval_ms / 1000.0)
                     continue
@@ -309,7 +319,7 @@ class DebugClient:
             self._log_suspended_breakpoints_if_due(poll_url)
             return action
 
-    async def async_poll(self, action: dict[str, Any]) -> dict[str, Any]:
+    async def async_poll(self, action: dict[str, Any], frame: Any | None = None) -> dict[str, Any]:
         with self._watch_deadlock("async_poll"):
             poll_url = action.get("poll_url")
             interval_ms = action.get("poll_interval_ms", 100)
@@ -317,11 +327,14 @@ class DebugClient:
             if not poll_url:
                 raise DebugProtocolError("Missing poll_url for poll action")
 
+            pause_id = self._extract_pause_id(poll_url)
             deadline = time.time() + (timeout_ms / 1000.0)
             while time.time() < deadline:
                 response = self._get_json(poll_url)
                 status = response.get("status")
                 if status == "waiting":
+                    if pause_id:
+                        self._poll_repl_requests(pause_id, frame)
                     self._log_suspended_breakpoints_if_due(poll_url)
                     await asyncio.sleep(interval_ms / 1000.0)
                     continue
@@ -337,6 +350,186 @@ class DebugClient:
             )
             self._log_suspended_breakpoints_if_due(poll_url)
             return action
+
+    def _extract_pause_id(self, poll_url: str) -> str | None:
+        if not poll_url:
+            return None
+        if "/api/poll/" not in poll_url:
+            return None
+        return poll_url.rsplit("/", 1)[-1] or None
+
+    def _poll_repl_requests(self, pause_id: str, frame: Any | None) -> None:
+        with self._repl_eval_lock:
+            if self._repl_eval_inflight:
+                return
+        response = self._get_json(f"/api/poll-repl/{pause_id}")
+        eval_id = response.get("eval_id")
+        if not eval_id:
+            return
+        session_id = response.get("session_id")
+        expr = response.get("expr")
+        if not isinstance(session_id, str) or not isinstance(expr, str):
+            return
+        self._start_repl_eval(eval_id, pause_id, session_id, expr, frame)
+
+    def _start_repl_eval(
+        self,
+        eval_id: str,
+        pause_id: str,
+        session_id: str,
+        expr: str,
+        frame: Any | None,
+    ) -> None:
+        with self._repl_eval_lock:
+            if self._repl_eval_inflight:
+                return
+            self._repl_eval_inflight = True
+        thread = threading.Thread(
+            target=self._run_repl_eval,
+            args=(eval_id, pause_id, session_id, expr, frame),
+            daemon=True,
+        )
+        thread.start()
+
+    def _run_repl_eval(
+        self,
+        eval_id: str,
+        pause_id: str,
+        session_id: str,
+        expr: str,
+        frame: Any | None,
+    ) -> None:
+        result_payload: dict[str, Any] = {}
+
+        def _worker() -> None:
+            nonlocal result_payload
+            result_payload = self._evaluate_repl_expression(session_id, expr, frame)
+
+        eval_thread = threading.Thread(target=_worker, daemon=True)
+        eval_thread.start()
+        eval_thread.join(timeout=self._repl_eval_timeout_s)
+        if eval_thread.is_alive():
+            result_payload = {
+                "result": "",
+                "stdout": "",
+                "error": "TimeoutError: evaluation timed out",
+                "result_cid": None,
+                "result_data": None,
+            }
+
+        payload = {
+            "eval_id": eval_id,
+            "pause_id": pause_id,
+            "session_id": session_id,
+            "result": result_payload.get("result", ""),
+            "stdout": result_payload.get("stdout", ""),
+            "error": result_payload.get("error"),
+            "result_cid": result_payload.get("result_cid"),
+            "result_data": result_payload.get("result_data"),
+        }
+        self._post_repl_result(payload)
+
+        with self._repl_eval_lock:
+            self._repl_eval_inflight = False
+
+    def _evaluate_repl_expression(
+        self,
+        session_id: str,
+        expr: str,
+        frame: Any | None,
+    ) -> dict[str, Any]:
+        if code.compile_command(expr, "<repl>", "exec") is None:
+            return {
+                "result": "",
+                "stdout": "",
+                "error": "SyntaxError: incomplete input",
+                "result_cid": None,
+                "result_data": None,
+            }
+
+        frame_globals = frame.f_globals if frame is not None else {}
+        frame_locals = dict(frame.f_locals) if frame is not None else {}
+        session_namespace = self._repl_namespaces.setdefault(session_id, {})
+        locals_dict = dict(frame_locals)
+        locals_dict.update(session_namespace)
+
+        stdout_buffer = io.StringIO()
+        value = None
+        is_eval_mode = False
+        try:
+            with redirect_stdout(stdout_buffer), redirect_stderr(stdout_buffer):
+                try:
+                    code_obj = compile(expr, "<repl>", "eval")
+                    value = eval(code_obj, frame_globals, locals_dict)
+                    is_eval_mode = True
+                except SyntaxError:
+                    code_obj = compile(expr, "<repl>", "exec")
+                    exec(code_obj, frame_globals, locals_dict)
+                    is_eval_mode = False
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "result": "",
+                "stdout": stdout_buffer.getvalue(),
+                "error": f"{type(exc).__name__}: {exc}",
+                "result_cid": None,
+                "result_data": None,
+            }
+
+        self._update_repl_namespace(session_id, locals_dict, frame_locals)
+
+        result_text = repr(value) if is_eval_mode else ""
+        result_cid = None
+        result_data = None
+        if is_eval_mode and value is not None:
+            serialized = self._serializer.serialize(value)
+            result_cid = serialized.cid
+            result_data = serialized.data_base64
+
+        return {
+            "result": result_text,
+            "stdout": stdout_buffer.getvalue(),
+            "error": None,
+            "result_cid": result_cid,
+            "result_data": result_data,
+        }
+
+    def _update_repl_namespace(
+        self,
+        session_id: str,
+        locals_dict: dict[str, Any],
+        frame_locals: dict[str, Any],
+    ) -> None:
+        session_namespace = self._repl_namespaces.setdefault(session_id, {})
+        for name, value in locals_dict.items():
+            if name == "__builtins__":
+                continue
+            if name in session_namespace or name not in frame_locals:
+                session_namespace[name] = value
+            elif frame_locals.get(name) != value:
+                session_namespace[name] = value
+        for name in list(session_namespace):
+            if name not in locals_dict:
+                session_namespace.pop(name, None)
+
+    def _post_repl_result(self, payload: dict[str, Any]) -> None:
+        with self._watch_deadlock("repl_result"):
+            try:
+                response = requests.post(
+                    f"{self._server_url}/api/call/repl-result",
+                    json=payload,
+                    timeout=self._timeout_s,
+                )
+            except requests.RequestException as exc:
+                logger.warning("Failed to post repl result: %s", exc)
+                return
+            if response.status_code == 409:
+                return
+            if response.status_code >= 400:
+                logger.warning(
+                    "REPL result rejected: %s %s",
+                    response.status_code,
+                    response.text,
+                )
 
     def deserialize_payload_item(self, item: dict[str, Any]) -> Any:
         if "data" in item:
