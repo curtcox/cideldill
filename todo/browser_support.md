@@ -854,7 +854,7 @@ None. All questions have been resolved. See the Resolved Decisions table above.
 - REPL and sync mode round trips
 - Tests: #90–#101, #166–#171
 
-### Phase 8: Edge Cases and Hardening
+### Phase 8: Edge Cases and Hardening (Done)
 - Handle all error and edge case scenarios
 - Tests: #102–#120
 

@@ -101,8 +101,24 @@ function _sleep(ms) {{
 }}
 
 function _safeJson(value) {{
-  const seen = new WeakSet();
-  return JSON.stringify(value, (key, val) => {{
+  const seen = new WeakMap();
+  const maxDepth = 50;
+  const placeholder = (val, reason) => {{
+    let typeName = 'Object';
+    try {{
+      typeName = val && val.constructor ? val.constructor.name : 'Object';
+    }} catch (err) {{
+      typeName = 'Object';
+    }}
+    return {{
+      __cideldill_placeholder__: true,
+      type_name: typeName,
+      repr_text: String(val),
+      serialization_error: reason,
+      serialization_format: 'json',
+    }};
+  }};
+  return JSON.stringify(value, function (key, val) {{
     if (typeof val === 'bigint') return val.toString();
     if (typeof val === 'function') return `[Function ${{val.name || 'anonymous'}}]`;
     if (typeof val === 'undefined') return null;
@@ -111,9 +127,39 @@ function _safeJson(value) {{
       if (val === Infinity) return 'Infinity';
       if (val === -Infinity) return '-Infinity';
     }}
+    if (val instanceof Date) {{
+      return val.toISOString();
+    }}
+    if (val instanceof RegExp) {{
+      return val.toString();
+    }}
+    if (val instanceof Error) {{
+      return {{
+        name: val.name || 'Error',
+        message: val.message || String(val),
+        stack: val.stack || null,
+      }};
+    }}
+    if (val instanceof Map) {{
+      return Array.from(val.entries());
+    }}
+    if (val instanceof Set) {{
+      return Array.from(val.values());
+    }}
+    if (ArrayBuffer.isView(val)) {{
+      return Array.from(val);
+    }}
+    if (val instanceof ArrayBuffer) {{
+      return Array.from(new Uint8Array(val));
+    }}
     if (val && typeof val === 'object') {{
+      const parentDepth = seen.get(this) || 0;
+      const depth = parentDepth + 1;
+      if (depth > maxDepth) {{
+        return placeholder(val, `Max depth ${{maxDepth}} exceeded`);
+      }}
       if (seen.has(val)) return '[Circular]';
-      seen.add(val);
+      seen.set(val, depth);
     }}
     return val;
   }});

@@ -249,3 +249,55 @@ def test_functions_endpoint_accepts_json_serialization(server) -> None:
 
     assert response.status_code == 200
     assert server._cid_store.get(function_cid) == function_data.encode("utf-8")
+
+
+def test_call_start_rejects_invalid_dill_payload(server) -> None:
+    _start_server(server)
+
+    response = server.test_client().post(
+        "/api/call/start",
+        data=json.dumps({
+            "method_name": "add",
+            "target": {
+                "cid": "badcid",
+                "data": "not-base64",
+                "serialization_format": "dill",
+            },
+            "args": [],
+            "kwargs": {},
+            "call_site": {"timestamp": 123.0},
+            "process_pid": 4242,
+            "process_start_time": 123.456,
+        }),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 400
+    payload = json.loads(response.data)
+    assert payload.get("error") == "invalid_dill"
+
+
+def test_call_start_rejects_invalid_json_payload(server) -> None:
+    _start_server(server)
+
+    response = server.test_client().post(
+        "/api/call/start",
+        data=json.dumps({
+            "method_name": "add",
+            "target": {
+                "cid": "badcid",
+                "data": "{bad",
+                "serialization_format": "json",
+            },
+            "args": [],
+            "kwargs": {},
+            "call_site": {"timestamp": 123.0},
+            "process_pid": 4242,
+            "process_start_time": 123.456,
+        }),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 400
+    payload = json.loads(response.data)
+    assert payload.get("error") == "invalid_json"
