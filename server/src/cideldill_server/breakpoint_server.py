@@ -18,7 +18,7 @@ from collections import deque
 from pathlib import Path
 from urllib.parse import quote
 
-from flask import Flask, jsonify, render_template_string, request
+from flask import Flask, Response, jsonify, render_template_string, request
 from pygments import highlight
 from pygments.formatters import HtmlFormatter
 from pygments.lexers import get_lexer_by_name
@@ -26,6 +26,7 @@ from werkzeug.serving import BaseWSGIServer, make_server
 
 from .breakpoint_manager import BreakpointManager
 from .cid_store import CIDStore
+from .debug_client_js import render_debug_client_js
 from .port_discovery import get_discovery_file_path, write_port_file
 from .serialization import Serializer, deserialize
 
@@ -4106,6 +4107,12 @@ class BreakpointServer:
                 "breakpoint_after_behaviors": self.manager.get_after_breakpoint_behaviors(),
                 "breakpoint_replacements": self.manager.get_breakpoint_replacements(),
             })
+
+        @self.app.route('/api/debug-client.js', methods=['GET'])
+        def debug_client_js():
+            server_url = request.host_url.rstrip("/")
+            js = render_debug_client_js(server_url)
+            return Response(js, mimetype="application/javascript")
 
         @self.app.route('/api/functions', methods=['GET'])
         def get_functions():

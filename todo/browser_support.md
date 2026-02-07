@@ -68,8 +68,8 @@ The library exposes a single global object `cideldill` (attaches to
 so it can be loaded via:
 
 ```javascript
-// Script tag (global)
-<script src="http://localhost:5174/api/debug-client.js"></script>
+// Script tag (global via module)
+<script type="module" src="http://localhost:5174/api/debug-client.js"></script>
 
 // ES module import
 import { withDebug, debugCall, debugCallSync } from 'http://localhost:5174/api/debug-client.js';
@@ -688,7 +688,7 @@ These were originally open questions. All have been resolved:
 | 6 | `action: "modify"` format | Client declares `preferred_format` in every `/api/call/start` request. Server responds in that format. |
 | 7 | Headless browser testing | Deferred to later. Initial tests simulate the JS client's HTTP calls from Python and use Node.js for JS unit tests. |
 | 8 | Synchronous mode | Supported. `debugCallSync` and `withDebugSync` use synchronous `XMLHttpRequest`. |
-| 9 | Script tag URL | Hardcoded. Docs recommend `<script src="http://localhost:5174/api/debug-client.js"></script>`. Server injects its own URL into the served JS. |
+| 9 | Script tag URL | Hardcoded. Docs recommend `<script type="module" src="http://localhost:5174/api/debug-client.js"></script>`. Server injects its own URL into the served JS. |
 | 10 | CID algorithm and validation | All CIDs (both Python and JS) use **SHA-512**. Server always validates CID against received data; mismatches return 400. |
 | 11 | REPL scope depth | v1 exposes only `$args`, `$this`, and named parameters. No closure variable extraction. |
 | 12 | Log-only mode activation | Always implicit. The client automatically falls back to log-only when sync/async semantics cannot be preserved. No explicit opt-in API. |
@@ -826,7 +826,7 @@ None. All questions have been resolved. See the Resolved Decisions table above.
 - Handle OPTIONS preflight
 - Tests: #13–#22
 
-### Phase 3: JavaScript Client Endpoint
+### Phase 3: JavaScript Client Endpoint (Done)
 - Create `/api/debug-client.js` endpoint with ES module + global support
 - Build the JS client library with `withDebug`, `debugCall`, `configure`
 - Tests: #23–#27
