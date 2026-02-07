@@ -13,11 +13,11 @@ sessions are browsable at `/repls` and individually at `/repl/{pid}-{timestamp}`
 - [x] Phase 1: Server-side REPL session management (ReplManager in BreakpointManager)
 - [x] Phase 2: Server-side API endpoints
 - [x] Phase 3: Client-side eval support
-- [ ] Phase 4: Web UI — REPL session page
-- [ ] Phase 5: Web UI — sessions index page
-- [ ] Phase 6: Web UI — call stack page
-- [ ] Phase 7: Call tree integration
-- [ ] Phase 8: Paused execution card integration
+- [x] Phase 4: Web UI — REPL session page
+- [x] Phase 5: Web UI — sessions index page
+- [x] Phase 6: Web UI — call stack page
+- [x] Phase 7: Call tree integration
+- [x] Phase 8: Paused execution card integration
 
 ---
 

@@ -408,6 +408,12 @@ class BreakpointManager:
     def record_call(self, call_record: dict[str, Any]) -> None:
         """Record a completed call for call tree views."""
         with self._lock:
+            call_id = call_record.get("call_id")
+            if call_id:
+                call_record.setdefault(
+                    "repl_sessions",
+                    list(self._repl_sessions_by_call.get(call_id, [])),
+                )
             self._call_records.append(call_record)
 
     def get_call_records(self) -> list[dict[str, Any]]:
@@ -501,6 +507,11 @@ class BreakpointManager:
             call_id = session.get("call_id")
             if isinstance(call_id, str):
                 self._repl_sessions_by_call.setdefault(call_id, []).append(session_id)
+                for record in self._call_records:
+                    if record.get("call_id") == call_id:
+                        repl_sessions = record.setdefault("repl_sessions", [])
+                        if session_id not in repl_sessions:
+                            repl_sessions.append(session_id)
             return session_id
 
     def _unique_repl_session_id(self, pid: int, started_at: float) -> str:

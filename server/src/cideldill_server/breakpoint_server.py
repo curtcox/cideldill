@@ -143,6 +143,13 @@ HTML_TEMPLATE = """
         .btn-go:hover {
             background-color: #1B5E20;
         }
+        .btn-repl {
+            background-color: #1565C0;
+            color: white;
+        }
+        .btn-repl:hover {
+            background-color: #0D47A1;
+        }
         .breakpoint-list {
             background-color: white;
             border: 1px solid #ddd;
@@ -698,6 +705,7 @@ HTML_TEMPLATE = """
             const stackTrace = (callData.call_site && callData.call_site.stack_trace) ? callData.call_site.stack_trace : [];
             const signature = callData.signature || null;
             const prettyResult = callData.pretty_result;
+            const replSessions = Array.isArray(paused.repl_sessions) ? paused.repl_sessions : [];
 
             const renderArgs = () => {
                 const argsBlock = JSON.stringify({ args: prettyArgs, kwargs: prettyKwargs }, null, 2);
@@ -736,6 +744,17 @@ ${argsBlock}</div>`;
                 }
                 return `<div class="call-data"><strong>Return Value:</strong>
 ${escapeHtml(formatPretty(prettyResult))}</div>`;
+            };
+
+            const renderReplSessions = () => {
+                if (!replSessions.length) {
+                    return '';
+                }
+                const links = replSessions.map(id => {
+                    const href = `/repl/${encodeURIComponent(id)}`;
+                    return `<a href="${href}" target="_blank" rel="noopener noreferrer" style="color:#1565c0;text-decoration:none;">${escapeHtml(id)}</a>`;
+                }).join('<br>');
+                return `<div class="call-data"><strong>REPL Sessions:</strong><div style="margin-top:6px;">${links}</div></div>`;
             };
 
             const renderFunctionChoices = () => {
@@ -784,11 +803,15 @@ ${escapeHtml(formatPretty(prettyResult))}</div>`;
                     ${renderArgs()}
                     ${renderStack()}
                     ${renderResult()}
+                    ${renderReplSessions()}
                     ${renderFunctionChoices()}
                     <div class="actions">
                         <button class="btn btn-go" data-default-function="${escapeHtml(displayName)}"
                                 onclick="continueExecution('${paused.id}', this.dataset.defaultFunction)">
                             🟢
+                        </button>
+                        <button class="btn btn-repl" onclick="openRepl('${paused.id}')">
+                            REPL
                         </button>
                     </div>
                 </div>
@@ -825,6 +848,27 @@ ${escapeHtml(formatPretty(prettyResult))}</div>`;
                 }
             } catch (e) {
                 showMessage('Failed to continue execution: ' + e.message, 'error');
+            }
+        }
+
+        async function openRepl(pauseId) {
+            try {
+                const response = await fetch(`${API_BASE}/repl/start`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pause_id: pauseId })
+                });
+                if (!response.ok) {
+                    const data = await response.json();
+                    showMessage(`Failed to start REPL: ${data.error || response.status}`, 'error');
+                    return;
+                }
+                const data = await response.json();
+                if (data.session_id) {
+                    window.location.href = `/repl/${encodeURIComponent(data.session_id)}`;
+                }
+            } catch (e) {
+                showMessage('Failed to start REPL: ' + e.message, 'error');
             }
         }
 
@@ -2073,6 +2117,242 @@ class BreakpointServer:
             )
             return template
 
+        @self.app.route('/repls', methods=['GET'])
+        def repls_page():
+            template = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>REPL Sessions</title>
+  <style>
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; background-color: #f5f5f5; }
+    .container { max-width: 1200px; margin: 0 auto; }
+    h1 { color: #333; border-bottom: 3px solid #4CAF50; padding-bottom: 10px; }
+    .back-link { display: inline-block; margin-bottom: 20px; color: #1976D2; text-decoration: none; }
+    .back-link:hover { text-decoration: underline; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 12px; margin: 16px 0; }
+    .toolbar input, .toolbar select { padding: 8px; border-radius: 6px; border: 1px solid #ccc; }
+    table { width: 100%; border-collapse: collapse; background: white; border: 1px solid #ddd; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.06); }
+    thead th { text-align: left; background: #fafafa; border-bottom: 1px solid #eee; padding: 12px 10px; font-size: 0.9em; color: #444; }
+    tbody td { padding: 10px; border-bottom: 1px solid #f0f0f0; vertical-align: top; font-size: 0.92em; color: #222; }
+    tbody tr:hover { background: #f7fbff; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+    .row-link { color: #1976D2; text-decoration: none; font-weight: 600; }
+    .row-link:hover { text-decoration: underline; }
+    .badge { padding: 2px 6px; border-radius: 6px; font-size: 0.75em; font-weight: 700; }
+    .badge-active { background: #e8f5e9; color: #2E7D32; }
+    .badge-closed { background: #ffebee; color: #C62828; }
+    .empty-state { text-align: center; padding: 20px; color: #666; font-style: italic; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <a href="/" class="back-link">← Back to Breakpoints</a>
+    <h1>REPL Sessions</h1>
+    <div class="toolbar">
+      <input id="searchInput" type="text" placeholder="Search sessions..." />
+      <select id="statusFilter">
+        <option value="">All</option>
+        <option value="active">Active</option>
+        <option value="closed">Closed</option>
+      </select>
+      <input id="fromInput" type="text" placeholder="From timestamp" />
+      <input id="toInput" type="text" placeholder="To timestamp" />
+      <button id="applyFilters">Apply</button>
+    </div>
+    <div id="sessionsTable"></div>
+  </div>
+  <script>
+    async function loadSessions() {
+      const params = new URLSearchParams();
+      const search = document.getElementById('searchInput').value.trim();
+      const status = document.getElementById('statusFilter').value;
+      const from = document.getElementById('fromInput').value.trim();
+      const to = document.getElementById('toInput').value.trim();
+      if (search) params.set('search', search);
+      if (status) params.set('status', status);
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      const response = await fetch(`/api/repl/sessions?${params.toString()}`);
+      const data = await response.json();
+      const sessions = data.sessions || [];
+      const container = document.getElementById('sessionsTable');
+      if (!sessions.length) {
+        container.innerHTML = '<div class="empty-state">No REPL sessions found.</div>';
+        return;
+      }
+      const rows = sessions.map(session => {
+        const status = session.closed_at ? 'Closed' : 'Active';
+        const badgeClass = session.closed_at ? 'badge-closed' : 'badge-active';
+        const started = session.started_at ? new Date(session.started_at * 1000).toLocaleString() : '—';
+        const closed = session.closed_at ? new Date(session.closed_at * 1000).toLocaleString() : '—';
+        const transcriptCount = Array.isArray(session.transcript) ? session.transcript.length : 0;
+        const callstackLink = session.pause_id ? `<a class="row-link" href="/callstack/${encodeURIComponent(session.pause_id)}">Call stack</a>` : '—';
+        return `
+          <tr>
+            <td class="mono"><a class="row-link" href="/repl/${encodeURIComponent(session.session_id)}">${session.session_id}</a></td>
+            <td>${session.function_name || '—'}</td>
+            <td><span class="badge ${badgeClass}">${status}</span></td>
+            <td class="mono">${started}</td>
+            <td class="mono">${closed}</td>
+            <td class="mono">${transcriptCount}</td>
+            <td>${callstackLink}</td>
+          </tr>
+        `;
+      }).join('');
+      container.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>Session ID</th>
+              <th>Function</th>
+              <th>Status</th>
+              <th>Started</th>
+              <th>Closed</th>
+              <th>Entries</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+
+    document.getElementById('applyFilters').addEventListener('click', loadSessions);
+    window.addEventListener('load', loadSessions);
+  </script>
+</body>
+</html>"""
+            return template
+
+        @self.app.route('/repl/<session_id>', methods=['GET'])
+        def repl_page(session_id: str):
+            template = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>REPL Session</title>
+  <style>
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; background-color: #f5f5f5; }
+    .container { max-width: 1000px; margin: 0 auto; }
+    h1 { color: #333; border-bottom: 3px solid #4CAF50; padding-bottom: 10px; }
+    .back-link { display: inline-block; margin-bottom: 20px; color: #1976D2; text-decoration: none; }
+    .back-link:hover { text-decoration: underline; }
+    .panel { background: white; border: 1px solid #ddd; border-radius: 10px; padding: 16px; box-shadow: 0 2px 4px rgba(0,0,0,0.06); margin-bottom: 16px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
+    .entry { border-bottom: 1px solid #eee; padding: 8px 0; }
+    .entry:last-child { border-bottom: none; }
+    .input { color: #1565C0; }
+    .output { color: #222; }
+    .error { color: #C62828; }
+    textarea { width: 100%; min-height: 100px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; padding: 10px; border-radius: 8px; border: 1px solid #ccc; }
+    button { padding: 8px 14px; border: none; border-radius: 6px; background: #1565C0; color: white; cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <a href="/repls" class="back-link">← Back to REPL Sessions</a>
+    <h1>REPL Session</h1>
+    <div id="meta" class="panel"></div>
+    <div id="transcript" class="panel"></div>
+    <div id="inputPanel" class="panel">
+      <textarea id="exprInput" placeholder="Enter Python expression..."></textarea>
+      <div style="margin-top:10px;">
+        <button id="submitBtn">Run</button>
+      </div>
+    </div>
+  </div>
+  <script>
+    const sessionId = @@SESSION_ID_JSON@@;
+    let sessionClosed = false;
+
+    function renderMeta(session) {
+      const started = session.started_at ? new Date(session.started_at * 1000).toLocaleString() : '—';
+      const closed = session.closed_at ? new Date(session.closed_at * 1000).toLocaleString() : '—';
+      const status = session.closed_at ? 'Closed' : 'Active';
+      const callstackLink = session.pause_id ? `<a href="/callstack/${encodeURIComponent(session.pause_id)}">Call stack</a>` : '';
+      const callTreeLink = session.process_key ? `<a href="/call-tree/${encodeURIComponent(session.process_key)}">Call tree</a>` : '';
+      document.getElementById('meta').innerHTML = `
+        <div><strong>Session:</strong> <span class="mono">${session.session_id}</span></div>
+        <div><strong>Function:</strong> ${session.function_name || '—'}</div>
+        <div><strong>Status:</strong> ${status}</div>
+        <div><strong>Started:</strong> ${started}</div>
+        <div><strong>Closed:</strong> ${closed}</div>
+        <div style="margin-top:8px;">${callstackLink} ${callTreeLink}</div>
+      `;
+    }
+
+    function renderTranscript(entries) {
+      const container = document.getElementById('transcript');
+      if (!entries.length) {
+        container.innerHTML = '<div class="mono">No transcript entries yet.</div>';
+        return;
+      }
+      container.innerHTML = entries.map(entry => {
+        const output = entry.is_error ? `<div class="mono error">${entry.output || ''}</div>` : `
+          ${entry.stdout ? `<div class="mono output">${entry.stdout}</div>` : ''}
+          ${entry.output ? `<div class="mono output">>>> ${entry.output}</div>` : ''}
+        `;
+        const cidLink = entry.result_cid ? `<div><a href="/object/${encodeURIComponent(entry.result_cid)}">result cid</a></div>` : '';
+        return `
+          <div class="entry">
+            <div class="mono input">>>> ${entry.input}</div>
+            ${output}
+            ${cidLink}
+          </div>
+        `;
+      }).join('');
+      container.scrollTop = container.scrollHeight;
+    }
+
+    async function loadSession() {
+      const response = await fetch(`/api/repl/${encodeURIComponent(sessionId)}`);
+      if (!response.ok) {
+        document.getElementById('meta').innerHTML = '<div class="mono">Session not found.</div>';
+        document.getElementById('inputPanel').style.display = 'none';
+        return;
+      }
+      const data = await response.json();
+      const session = data.session;
+      sessionClosed = Boolean(session.closed_at);
+      renderMeta(session);
+      renderTranscript(session.transcript || []);
+      document.getElementById('submitBtn').disabled = sessionClosed;
+      if (sessionClosed) {
+        document.getElementById('exprInput').disabled = true;
+      }
+    }
+
+    async function submitExpr() {
+      const input = document.getElementById('exprInput');
+      const expr = input.value.trim();
+      if (!expr || sessionClosed) return;
+      document.getElementById('submitBtn').disabled = true;
+      const response = await fetch(`/api/repl/${encodeURIComponent(sessionId)}/eval`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expr })
+      });
+      document.getElementById('submitBtn').disabled = false;
+      input.value = '';
+      await loadSession();
+      if (response.status === 409) {
+        sessionClosed = true;
+        document.getElementById('submitBtn').disabled = true;
+      }
+    }
+
+    document.getElementById('submitBtn').addEventListener('click', submitExpr);
+    setInterval(loadSession, 2000);
+    loadSession();
+  </script>
+</body>
+</html>"""
+            return template.replace("@@SESSION_ID_JSON@@", json.dumps(session_id))
+
         @self.app.route('/call-tree', methods=['GET'])
         def call_tree_index():
             """List processes with recorded calls."""
@@ -2236,6 +2516,7 @@ class BreakpointServer:
                     "signature": record.get("signature"),
                     "call_site": call_site,
                     "stack_trace": stack_trace,
+                    "repl_sessions": record.get("repl_sessions", []) or [],
                 }
                 if record.get("method_name") == "with_debug.register":
                     pretty_result = record.get("pretty_result")
@@ -2359,6 +2640,7 @@ class BreakpointServer:
     .tree-toggle.empty { visibility: hidden; }
     .tree-label { font-weight: 600; color: #1976D2; cursor: pointer; background: none; border: none; padding: 0; }
     .tree-time { margin-left: auto; font-size: 0.85em; color: #666; }
+    .repl-badge { background: #e3f2fd; color: #1565C0; font-size: 0.75em; padding: 2px 6px; border-radius: 999px; font-weight: 700; }
     .tree-children { margin-left: 18px; border-left: 1px dashed #e0e0e0; padding-left: 10px; }
     .tree-collapsed > .tree-children { display: none; }
     .detail-item { margin: 10px 0; }
@@ -2556,6 +2838,18 @@ class BreakpointServer:
           }).join('')
         : '<div class="empty-state">No stack trace recorded.</div>';
 
+      const replSessions = Array.isArray(node.repl_sessions) ? node.repl_sessions : [];
+      const replHtml = replSessions.length
+        ? `
+          <div class="detail-item">
+            <div class="detail-label">REPL Sessions</div>
+            <div class="detail-value">
+              ${replSessions.map(id => `<a class="object-link" href="/repl/${encodeURIComponent(id)}">${escapeHtml(id)}</a>`).join('<br>')}
+            </div>
+          </div>
+        `
+        : '';
+
       const targetHtml = node.target ? `
         <div class="detail-item">
           <div class="detail-label">Target</div>
@@ -2654,6 +2948,7 @@ class BreakpointServer:
           <div class="detail-label">Duration</div>
           <div class="detail-value">${escapeHtml(formatDuration(node.duration))}</div>
         </div>
+        ${replHtml}
         ${registeredTargetHtml}
         ${targetHtml}
         <div class="detail-item">
@@ -2715,12 +3010,22 @@ class BreakpointServer:
       label.textContent = node ? `${node.method_name || 'unknown'}()` : id;
       label.addEventListener('click', () => setSelected(id));
 
+      let replBadge = null;
+      if (node && Array.isArray(node.repl_sessions) && node.repl_sessions.length) {
+        replBadge = document.createElement('span');
+        replBadge.className = 'repl-badge';
+        replBadge.textContent = 'REPL';
+      }
+
       const time = document.createElement('div');
       time.className = 'tree-time';
       time.textContent = node ? formatTs(node.started_at) : '';
 
       row.appendChild(toggle);
       row.appendChild(label);
+      if (replBadge) {
+        row.appendChild(replBadge);
+      }
       row.appendChild(time);
 
       const childrenContainer = document.createElement('div');
@@ -2845,6 +3150,95 @@ class BreakpointServer:
             )
 
             return page
+
+        @self.app.route('/callstack/<pause_id>', methods=['GET'])
+        def callstack_view(pause_id: str):
+            paused = self.manager.get_paused_execution(pause_id)
+            if not paused:
+                return "<h1>Paused execution not found.</h1>", 404
+
+            call_data = paused.get("call_data", {})
+            function_name = (
+                call_data.get("method_name")
+                or call_data.get("function_name")
+                or "unknown"
+            )
+            call_site = call_data.get("call_site") or {}
+            stack_trace = _normalize_stack_trace(call_site)
+            process_key = call_data.get("process_key")
+            call_id = call_data.get("call_id")
+            call_tree_link = ""
+            if process_key and call_id:
+                call_tree_link = _call_tree_link(str(process_key), str(call_id))
+
+            repl_sessions = self.manager.get_repl_sessions_for_pause(pause_id)
+            repl_links = "".join(
+                f"<li><a class='row-link' href='/repl/{html.escape(sid)}'>{html.escape(sid)}</a></li>"
+                for sid in repl_sessions
+            )
+            repl_block = (
+                "<div class='panel'><h3>REPL Sessions</h3><ul>" + repl_links + "</ul></div>"
+                if repl_links
+                else ""
+            )
+
+            frames_html = ""
+            for idx, frame in enumerate(stack_trace):
+                filename = html.escape(str(frame.get("filename") or ""))
+                lineno = html.escape(str(frame.get("lineno") or ""))
+                func = html.escape(str(frame.get("function") or ""))
+                ctx = html.escape(str(frame.get("code_context") or ""))
+                frame_url = f"/frame/{html.escape(pause_id)}/{idx}"
+                frames_html += (
+                    "<div class='frame'>"
+                    f"<div class='frame-title'><a class='row-link' href='{frame_url}'>"
+                    f"{func} ({filename}:{lineno})</a></div>"
+                    f"<div class='frame-code'>{ctx}</div>"
+                    "</div>"
+                )
+
+            call_tree_block = (
+                f"<a class='row-link' href='{call_tree_link}'>View Call Tree</a>"
+                if call_tree_link
+                else ""
+            )
+
+            template = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Call Stack</title>
+  <style>
+    body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; background-color: #f5f5f5; }}
+    .container {{ max-width: 1000px; margin: 0 auto; }}
+    h1 {{ color: #333; border-bottom: 3px solid #4CAF50; padding-bottom: 10px; }}
+    .back-link {{ display: inline-block; margin-bottom: 20px; color: #1976D2; text-decoration: none; }}
+    .back-link:hover {{ text-decoration: underline; }}
+    .panel {{ background: white; border: 1px solid #ddd; border-radius: 10px; padding: 16px; box-shadow: 0 2px 4px rgba(0,0,0,0.06); margin-bottom: 16px; }}
+    .frame {{ padding: 12px; border-bottom: 1px solid #eee; }}
+    .frame:last-child {{ border-bottom: none; }}
+    .frame-title {{ font-weight: 600; margin-bottom: 4px; }}
+    .frame-code {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; color: #444; }}
+    .row-link {{ color: #1976D2; text-decoration: none; }}
+    .row-link:hover {{ text-decoration: underline; }}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <a href="/" class="back-link">← Back to Breakpoints</a>
+    <h1>Call Stack for {html.escape(str(function_name))}</h1>
+    <div class="panel">
+      {call_tree_block}
+    </div>
+    {repl_block}
+    <div class="panel">
+      {frames_html or "<div class='empty-state'>No stack frames recorded.</div>"}
+    </div>
+  </div>
+</body>
+</html>"""
+            return template
 
         @self.app.route('/frame/<pause_id>/<int:frame_index>', methods=['GET'])
         def frame_view(pause_id: str, frame_index: int):
@@ -4099,8 +4493,17 @@ class BreakpointServer:
         @self.app.route('/api/paused', methods=['GET'])
         def get_paused():
             """Get all paused executions."""
+            paused = []
+            for item in self.manager.get_paused_executions():
+                pause_id = item.get("id")
+                repl_sessions = []
+                if isinstance(pause_id, str):
+                    repl_sessions = self.manager.get_repl_sessions_for_pause(pause_id)
+                payload = dict(item)
+                payload["repl_sessions"] = repl_sessions
+                paused.append(payload)
             return jsonify({
-                "paused": self.manager.get_paused_executions()
+                "paused": paused
             })
 
         @self.app.route('/api/paused/<pause_id>/continue', methods=['POST'])
