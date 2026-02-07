@@ -114,9 +114,11 @@ When debugging is OFF:
 
 **Logging vs. interception trade-off:** In contexts where the sync/async
 nature of the original call cannot be preserved (e.g., a synchronous function
-wrapped via async proxy), the client falls back to **log-only mode**: the
-call is recorded on the server for the call tree, but the call is not paused
-at breakpoints. This preserves the original call's execution semantics.
+wrapped via async proxy), the client **implicitly** falls back to
+**log-only mode**: the call is recorded on the server for the call tree, but
+the call is not paused at breakpoints. This preserves the original call's
+execution semantics. There is no explicit opt-in for log-only mode — it is
+always automatic based on the calling context.
 
 #### 1.4 Serialization
 
@@ -221,10 +223,13 @@ for REPL evaluation requests. When one arrives, the client:
    arguments and the `this` binding of the paused call.
 3. Serializes the result as JSON and POSTs it to `/api/call/repl-result`.
 
-**Scope construction:** The client creates a closure that exposes the
-intercepted function's arguments by name (using `Function.length` and
-`Function.toString()` to recover parameter names where possible) plus a
-`$args` array and `$this` reference as fallbacks.
+**Scope construction:** The REPL scope exposes only:
+- `$args` — array of the intercepted function's arguments
+- `$this` — the `this` binding of the paused call
+- Named parameters — extracted from `Function.toString()` where possible
+
+Closure variables (values captured from outer scopes) are **not** exposed
+in v1. This avoids the complexity of source parsing.
 
 **Error handling:** If `eval()` throws, the error is captured and sent back
 to the server as an error result, just like the Python REPL.
@@ -262,7 +267,7 @@ When `serialization_format` is `"json"`:
 - The CID store stores the raw UTF-8 bytes of the JSON string.
 - Deserialization uses `json.loads()` instead of `dill.loads(base64.b64decode(...))`.
 
-**CID migration:** All CIDs across the system move from SHA-512 to SHA-512.
+**CID migration:** All CIDs across the system move from SHA-256 to SHA-512.
 This affects both the Python client (dill payloads) and the new browser client
 (JSON payloads). The server always validates that the provided CID matches the
 SHA-512 hash of the received data, rejecting mismatches with a 400 error.
@@ -342,9 +347,14 @@ cideldill.registerFunction = function(name, fn) {
 ```
 
 When the server returns `action: "replace"` with `function_name: "myAlt"`,
-the browser client looks up `"myAlt"` in `_replacementRegistry` and calls
-it with the original arguments. If the replacement is not found, the client
-falls back to calling the original function and logs a warning.
+the browser client:
+
+1. Looks up `"myAlt"` in `_replacementRegistry`.
+2. **Validates the signature:** checks that the replacement's `Function.length`
+   matches the original function's parameter count. On mismatch, logs a
+   warning and falls back to calling the original function.
+3. If found and compatible, calls the replacement with the original arguments.
+4. If not found, falls back to calling the original function and logs a warning.
 
 #### 2.8 CORS Headers
 
@@ -637,6 +647,12 @@ These were originally open questions. All have been resolved:
 | 8 | Synchronous mode | Supported. `debugCallSync` and `withDebugSync` use synchronous `XMLHttpRequest`. |
 | 9 | Script tag URL | Hardcoded. Docs recommend `<script src="http://localhost:5174/api/debug-client.js"></script>`. Server injects its own URL into the served JS. |
 | 10 | CID algorithm and validation | All CIDs (both Python and JS) use **SHA-512**. Server always validates CID against received data; mismatches return 400. |
+| 11 | REPL scope depth | v1 exposes only `$args`, `$this`, and named parameters. No closure variable extraction. |
+| 12 | Log-only mode activation | Always implicit. The client automatically falls back to log-only when sync/async semantics cannot be preserved. No explicit opt-in API. |
+| 13 | SHA-512 migration rollout | Single release. No backward compatibility period — there is no installed base to worry about. Just switch from SHA-256 to SHA-512 everywhere. |
+| 14 | `debugCallSync` polling sleep | Deferred. Address when the implementation is working. |
+| 15 | Replacement function signature validation | Validate. The browser client checks that the replacement's `Function.length` matches the original's parameter count before calling. Mismatch logs a warning and falls back to the original function. |
+| 16 | `withDebugSync` proxy blocking | Acceptable for all callers. No per-method opt-out needed. |
 
 ---
 
@@ -705,69 +721,39 @@ They continue the numbering from the original 119 tests.
 | 153 | `test_js_replace_action_fallback_when_not_registered` | Unregistered replacement falls back to original + warning |
 | 154 | `test_js_replace_action_passes_original_args` | Replacement function receives the original arguments |
 | 155 | `test_js_replace_action_result_sent_to_call_complete` | Replacement function's result is sent in `/api/call/complete` |
+| 156 | `test_js_replace_action_validates_signature_match` | Replacement with matching `Function.length` proceeds normally |
+| 157 | `test_js_replace_action_rejects_signature_mismatch` | Replacement with different `Function.length` falls back to original + warning |
 
 ### 3.21 JavaScript Client: Log-Only Mode
 
 | # | Test | What It Verifies |
 |---|------|-------------------|
-| 156 | `test_js_log_only_mode_records_call_on_server` | Log-only call sends `/api/call/start` and `/api/call/complete` |
-| 157 | `test_js_log_only_mode_does_not_pause` | Log-only call ignores `action: "poll"` and proceeds |
-| 158 | `test_js_log_only_mode_preserves_sync_semantics` | Sync function wrapped via async proxy in log-only mode stays sync |
-| 159 | `test_js_log_only_mode_records_result` | Call result is sent to server even in log-only mode |
+| 158 | `test_js_log_only_mode_records_call_on_server` | Log-only call sends `/api/call/start` and `/api/call/complete` |
+| 159 | `test_js_log_only_mode_does_not_pause` | Log-only call ignores `action: "poll"` and proceeds |
+| 160 | `test_js_log_only_mode_preserves_sync_semantics` | Sync function wrapped via async proxy in log-only mode stays sync |
+| 161 | `test_js_log_only_mode_records_result` | Call result is sent to server even in log-only mode |
 
 ### 3.22 Integration: REPL Round Trip
 
 | # | Test | What It Verifies |
 |---|------|-------------------|
-| 160 | `test_browser_repl_eval_roundtrip` | Server sends REPL expr → browser evals → server receives result |
-| 161 | `test_browser_repl_access_call_args` | REPL expression can read the paused call's arguments |
-| 162 | `test_browser_repl_error_displayed_in_server` | `eval()` error is shown in server REPL UI |
+| 162 | `test_browser_repl_eval_roundtrip` | Server sends REPL expr → browser evals → server receives result |
+| 163 | `test_browser_repl_access_call_args` | REPL expression can read the paused call's arguments |
+| 164 | `test_browser_repl_error_displayed_in_server` | `eval()` error is shown in server REPL UI |
 
 ### 3.23 Integration: Sync Mode Round Trip
 
 | # | Test | What It Verifies |
 |---|------|-------------------|
-| 163 | `test_sync_browser_client_pauses_at_breakpoint` | `debugCallSync` pauses; call appears in `/api/paused` |
-| 164 | `test_sync_browser_client_resumes` | Paused sync call resumes when continued via API |
-| 165 | `test_sync_browser_client_modify_args` | Sync client receives and uses modified args from server |
+| 165 | `test_sync_browser_client_pauses_at_breakpoint` | `debugCallSync` pauses; call appears in `/api/paused` |
+| 166 | `test_sync_browser_client_resumes` | Paused sync call resumes when continued via API |
+| 167 | `test_sync_browser_client_modify_args` | Sync client receives and uses modified args from server |
 
 ---
 
 ## Open Questions
 
-1. **REPL scope depth:** The plan says the REPL creates a closure with the
-   function's arguments available. Should the scope also include the
-   function's closure variables (e.g., values captured from an outer scope)?
-   Accessing them would require parsing the function source, which adds
-   complexity. Should v1 expose only `$args`, `$this`, and named parameters?
-
-2. **Log-only mode activation:** When exactly should the client fall back to
-   log-only mode? The plan says "when the sync/async nature cannot be
-   preserved." The concrete case is: async proxy wrapping a synchronous call
-   site. Are there other cases? Should log-only be explicitly opt-in (e.g.,
-   `withDebug(obj, {logOnly: true})`) or always implicit?
-
-3. **SHA-512 migration rollout:** Moving existing Python CIDs from SHA-256 to
-   SHA-512 is a breaking change for any persisted CID store (SQLite). Should
-   the migration:
-   (a) happen in a single release with a CID store version bump + migration, or
-   (b) support a transition period where both SHA-256 and SHA-512 are accepted?
-
-4. **`debugCallSync` polling sleep:** Synchronous XHR blocks the main thread.
-   During sync polling, the browser becomes unresponsive. Should the poll
-   interval be configurable per-call? Is there a maximum duration after which
-   the sync client gives up and proceeds (analogous to the Python
-   `deadlock_watchdog_timeout_s`)?
-
-5. **Replacement function signature validation:** When the browser client
-   looks up a replacement function in the registry, should it validate that
-   the replacement has a compatible signature (parameter count) with the
-   original? Or just call it and let runtime errors surface?
-
-6. **`withDebugSync` proxy — return value of intercepted methods:** If a
-   sync-proxied method hits a breakpoint and the sync XHR poll loop runs,
-   the method call blocks until resumed. Is this acceptable for all callers,
-   or should there be a per-method opt-out?
+None. All questions have been resolved. See the Resolved Decisions table above.
 
 ---
 
@@ -777,7 +763,7 @@ They continue the numbering from the original 119 tests.
 - Update Python `serialization_common.py` to use SHA-512 for `compute_cid`
 - Update Python `Serializer.serialize` and `verify_cid` to use SHA-512
 - Add server-side CID validation on all endpoints that receive data
-- Update CID store if schema migration is needed
+- No backward compatibility period — clean switch from SHA-256 to SHA-512
 - Tests: #120–#128
 
 ### Phase 1: Server-Side JSON Format Support
@@ -804,12 +790,12 @@ They continue the numbering from the original 119 tests.
 - Implement call protocol (call/start, poll, call/complete)
 - Implement function registration and replacement registry
 - Implement proxy wrapping
-- Tests: #32–#88, #151–#155
+- Tests: #32–#88, #151–#157
 
 ### Phase 5: JavaScript Client Sync Mode
 - Implement `debugCallSync` and `withDebugSync` with synchronous XHR
 - Implement log-only fallback mode
-- Tests: #134–#141, #156–#159
+- Tests: #134–#141, #158–#161
 
 ### Phase 6: JavaScript Client REPL
 - Implement REPL polling during pause
@@ -820,7 +806,7 @@ They continue the numbering from the original 119 tests.
 ### Phase 7: Integration Testing
 - End-to-end tests with real server and simulated browser client
 - REPL and sync mode round trips
-- Tests: #89–#100, #160–#165
+- Tests: #89–#100, #162–#167
 
 ### Phase 8: Edge Cases and Hardening
 - Handle all error and edge case scenarios
