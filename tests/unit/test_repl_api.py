@@ -1,0 +1,114 @@
+"""Unit tests for REPL API endpoints."""
+
+import json
+import threading
+import time
+
+import pytest
+
+from cideldill_server.breakpoint_manager import BreakpointManager
+from cideldill_server.breakpoint_server import BreakpointServer
+
+
+@pytest.fixture
+def server():
+    manager = BreakpointManager()
+    server = BreakpointServer(manager, port=0, repl_eval_timeout_s=1.0)
+    yield server
+    server.stop()
+
+
+def _pause_call_data(pid: int = 5555) -> dict[str, object]:
+    return {
+        "method_name": "demo",
+        "call_id": "call-1",
+        "call_site": {"stack_trace": []},
+        "process_pid": pid,
+        "process_start_time": 10.0,
+        "process_key": f"10.000000+{pid}",
+    }
+
+
+def test_post_repl_start_creates_session(server) -> None:
+    pause_id = server.manager.add_paused_execution(_pause_call_data())
+
+    response = server.test_client().post(
+        "/api/repl/start",
+        data=json.dumps({"pause_id": pause_id}),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200
+    payload = json.loads(response.data)
+    assert "session_id" in payload
+
+
+def test_poll_repl_returns_pending_eval_request(server) -> None:
+    pause_id = server.manager.add_paused_execution(_pause_call_data())
+    session_id = server.manager.start_repl_session(pause_id)
+
+    eval_response = {}
+
+    def _post_eval() -> None:
+        nonlocal eval_response
+        resp = server.test_client().post(
+            f"/api/repl/{session_id}/eval",
+            data=json.dumps({"expr": "1 + 1"}),
+            content_type="application/json",
+        )
+        eval_response = {"status": resp.status_code, "data": json.loads(resp.data)}
+
+    thread = threading.Thread(target=_post_eval)
+    thread.start()
+    time.sleep(0.1)
+
+    poll = server.test_client().get(f"/api/poll-repl/{pause_id}")
+    assert poll.status_code == 200
+    poll_payload = json.loads(poll.data)
+    assert poll_payload["eval_id"] is not None
+    assert poll_payload["session_id"] == session_id
+    assert poll_payload["expr"] == "1 + 1"
+
+    result_payload = {
+        "eval_id": poll_payload["eval_id"],
+        "pause_id": pause_id,
+        "session_id": session_id,
+        "result": "2",
+        "stdout": "",
+        "error": None,
+        "result_cid": None,
+        "result_data": None,
+    }
+    result = server.test_client().post(
+        "/api/call/repl-result",
+        data=json.dumps(result_payload),
+        content_type="application/json",
+    )
+    assert result.status_code == 200
+
+    thread.join(timeout=1.0)
+    assert eval_response["status"] == 200
+    assert eval_response["data"]["output"] == "2"
+    assert eval_response["data"]["is_error"] is False
+
+
+def test_poll_repl_returns_null_when_no_requests(server) -> None:
+    pause_id = server.manager.add_paused_execution(_pause_call_data())
+
+    response = server.test_client().get(f"/api/poll-repl/{pause_id}")
+    assert response.status_code == 200
+    payload = json.loads(response.data)
+    assert payload["eval_id"] is None
+
+
+def test_repl_eval_timeout_returns_504(server) -> None:
+    pause_id = server.manager.add_paused_execution(_pause_call_data())
+    session_id = server.manager.start_repl_session(pause_id)
+
+    response = server.test_client().post(
+        f"/api/repl/{session_id}/eval",
+        data=json.dumps({"expr": "1 + 1"}),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 504

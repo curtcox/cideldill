@@ -13,6 +13,7 @@ import os
 import re
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from urllib.parse import quote
 
@@ -860,6 +861,7 @@ class BreakpointServer:
         debug_enabled: bool = False,
         db_path: str = ":memory:",
         port_file: Path | None = None,
+        repl_eval_timeout_s: float = 30.0,
     ) -> None:
         """Initialize the server.
 
@@ -878,6 +880,10 @@ class BreakpointServer:
         self._call_seq = 0
         self._call_seq_lock = threading.Lock()
         self._debug_enabled = debug_enabled
+        self._repl_eval_timeout_s = float(repl_eval_timeout_s)
+        self._repl_lock = threading.Lock()
+        self._repl_eval_queues: dict[str, deque[dict[str, str]]] = {}
+        self._repl_eval_waiters: dict[str, dict[str, object]] = {}
         self.port_file = port_file or get_discovery_file_path()
         self._setup_routes()
 
@@ -924,6 +930,43 @@ class BreakpointServer:
                     continue
                 data = base64.b64decode(item["data"])
                 self._cid_store.store(item["cid"], data)
+
+        def _queue_repl_eval(pause_id: str, session_id: str, expr: str) -> str:
+            eval_id = str(uuid.uuid4())
+            with self._repl_lock:
+                self._repl_eval_queues.setdefault(pause_id, deque()).append({
+                    "eval_id": eval_id,
+                    "session_id": session_id,
+                    "expr": expr,
+                })
+                self._repl_eval_waiters[eval_id] = {
+                    "event": threading.Event(),
+                    "result": None,
+                    "session_id": session_id,
+                    "pause_id": pause_id,
+                    "expr": expr,
+                    "closed": False,
+                }
+            return eval_id
+
+        def _pop_repl_eval(pause_id: str) -> dict[str, str] | None:
+            with self._repl_lock:
+                queue = self._repl_eval_queues.get(pause_id)
+                if not queue:
+                    return None
+                return queue.popleft()
+
+        def _mark_repl_waiters_closed(pause_id: str | None = None, session_id: str | None = None) -> None:
+            with self._repl_lock:
+                for waiter in self._repl_eval_waiters.values():
+                    if pause_id and waiter.get("pause_id") != pause_id:
+                        continue
+                    if session_id and waiter.get("session_id") != session_id:
+                        continue
+                    waiter["closed"] = True
+                    event = waiter.get("event")
+                    if isinstance(event, threading.Event):
+                        event.set()
 
         def _safe_repr(obj: object, limit: int = 500) -> str:
             try:
@@ -3602,6 +3645,165 @@ class BreakpointServer:
             self.manager.set_default_behavior(behavior)
             return jsonify({"status": "ok", "behavior": behavior})
 
+        @self.app.route('/api/repl/start', methods=['POST'])
+        def repl_start():
+            data = request.get_json() or {}
+            pause_id = data.get("pause_id")
+            if not pause_id:
+                return jsonify({"error": "missing_pause_id"}), 400
+            paused = self.manager.get_paused_execution(pause_id)
+            if paused is None:
+                if self.manager.get_resume_action(pause_id) is not None:
+                    return jsonify({"error": "pause_resumed"}), 409
+                return jsonify({"error": "pause_not_found"}), 404
+            try:
+                session_id = self.manager.start_repl_session(pause_id)
+            except KeyError as exc:
+                return jsonify({"error": "invalid_pause", "message": str(exc)}), 400
+            return jsonify({"session_id": session_id})
+
+        @self.app.route('/api/repl/sessions', methods=['GET'])
+        def repl_sessions():
+            search = request.args.get("search")
+            status = request.args.get("status")
+            from_ts = request.args.get("from")
+            to_ts = request.args.get("to")
+            try:
+                from_value = float(from_ts) if from_ts is not None else None
+                to_value = float(to_ts) if to_ts is not None else None
+            except ValueError:
+                return jsonify({"error": "invalid_timestamp"}), 400
+            try:
+                sessions = self.manager.list_repl_sessions(
+                    search=search,
+                    status=status,
+                    from_ts=from_value,
+                    to_ts=to_value,
+                )
+            except ValueError as exc:
+                return jsonify({"error": "invalid_status", "message": str(exc)}), 400
+            return jsonify({"sessions": sessions})
+
+        @self.app.route('/api/repl/<session_id>', methods=['GET'])
+        def repl_session_detail(session_id: str):
+            session = self.manager.get_repl_session(session_id)
+            if session is None:
+                return jsonify({"error": "session_not_found"}), 404
+            return jsonify({"session": session})
+
+        @self.app.route('/api/repl/<session_id>/eval', methods=['POST'])
+        def repl_eval(session_id: str):
+            data = request.get_json() or {}
+            expr = data.get("expr")
+            if not isinstance(expr, str) or not expr.strip():
+                return jsonify({"error": "missing_expr"}), 400
+            session = self.manager.get_repl_session(session_id)
+            if session is None:
+                return jsonify({"error": "session_not_found"}), 404
+            if session.get("closed_at") is not None:
+                return jsonify({"error": "session_closed"}), 409
+            pause_id = session.get("pause_id")
+            if not isinstance(pause_id, str):
+                return jsonify({"error": "invalid_pause"}), 400
+
+            eval_id = _queue_repl_eval(pause_id, session_id, expr)
+            waiter = self._repl_eval_waiters.get(eval_id)
+            if waiter is None:
+                return jsonify({"error": "eval_missing"}), 500
+            event = waiter.get("event")
+            if not isinstance(event, threading.Event):
+                return jsonify({"error": "eval_missing"}), 500
+
+            if not event.wait(timeout=self._repl_eval_timeout_s):
+                with self._repl_lock:
+                    self._repl_eval_waiters.pop(eval_id, None)
+                return jsonify({"error": "eval_timeout"}), 504
+
+            with self._repl_lock:
+                waiter = self._repl_eval_waiters.pop(eval_id, None)
+            if waiter is None:
+                return jsonify({"error": "eval_missing"}), 500
+            if waiter.get("closed"):
+                return jsonify({"error": "session_closed"}), 409
+            result = waiter.get("result") or {}
+            return jsonify(result)
+
+        @self.app.route('/api/repl/<session_id>/close', methods=['POST'])
+        def repl_close(session_id: str):
+            try:
+                self.manager.close_repl_session(session_id)
+            except KeyError:
+                return jsonify({"error": "session_not_found"}), 404
+            _mark_repl_waiters_closed(session_id=session_id)
+            return jsonify({"status": "ok"})
+
+        @self.app.route('/api/poll-repl/<pause_id>', methods=['GET'])
+        def poll_repl(pause_id: str):
+            request_data = _pop_repl_eval(pause_id)
+            if request_data is None:
+                return jsonify({"eval_id": None})
+            return jsonify(request_data)
+
+        @self.app.route('/api/call/repl-result', methods=['POST'])
+        def repl_result():
+            data = request.get_json() or {}
+            eval_id = data.get("eval_id")
+            session_id = data.get("session_id")
+            pause_id = data.get("pause_id")
+            if not eval_id or not session_id or not pause_id:
+                return jsonify({"error": "missing_fields"}), 400
+
+            session = self.manager.get_repl_session(session_id)
+            if session is None:
+                return jsonify({"error": "session_not_found"}), 404
+            if session.get("closed_at") is not None:
+                return jsonify({"error": "session_closed"}), 409
+
+            waiter = self._repl_eval_waiters.get(eval_id)
+            if waiter is None:
+                return jsonify({"error": "eval_not_found"}), 404
+
+            result_cid = data.get("result_cid")
+            result_data = data.get("result_data")
+            if result_cid and result_data:
+                self._cid_store.store(result_cid, base64.b64decode(result_data))
+
+            error = data.get("error")
+            stdout = data.get("stdout") or ""
+            result_value = data.get("result") or ""
+            if error:
+                output = str(error)
+                is_error = True
+            else:
+                output = str(result_value)
+                is_error = False
+
+            input_expr = waiter.get("expr") if isinstance(waiter, dict) else ""
+            try:
+                self.manager.append_repl_transcript(
+                    session_id,
+                    str(input_expr or ""),
+                    output,
+                    str(stdout),
+                    is_error,
+                    result_cid=result_cid,
+                )
+            except RuntimeError:
+                return jsonify({"error": "session_closed"}), 409
+
+            with self._repl_lock:
+                waiter["result"] = {
+                    "output": output,
+                    "stdout": stdout,
+                    "is_error": is_error,
+                    "result_cid": result_cid,
+                }
+                event = waiter.get("event")
+                if isinstance(event, threading.Event):
+                    event.set()
+
+            return jsonify({"status": "ok"})
+
         @self.app.route('/api/call/start', methods=['POST'])
         def call_start():
             """Handle call start from debug client."""
@@ -3675,6 +3877,7 @@ class BreakpointServer:
                 "process_start_time": float(process_start_time),
                 "process_key": process_key,
             }
+            call_data["call_id"] = call_id
             self.manager.register_call(call_id, call_data)
             if self.manager.should_pause_at_breakpoint(method_name):
                 pause_id = self.manager.add_paused_execution(call_data)
@@ -3735,6 +3938,7 @@ class BreakpointServer:
             method_name = ""
             process_key = None
             if call_data:
+                call_data.setdefault("call_id", call_id)
                 method_name = call_data.get("method_name", "")
                 process_key = _process_key(
                     call_data.get("process_pid"),
@@ -3934,6 +4138,7 @@ class BreakpointServer:
                 action_dict['exception_message'] = data['exception_message']
 
             self.manager.resume_execution(pause_id, action_dict)
+            _mark_repl_waiters_closed(pause_id=pause_id)
             return jsonify({"status": "ok", "pause_id": pause_id})
 
     def start(self) -> None:
