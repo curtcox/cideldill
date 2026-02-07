@@ -5,6 +5,7 @@ for managing breakpoints and paused executions through a web UI.
 """
 
 import base64
+import hashlib
 import uuid
 import html
 import json
@@ -26,7 +27,7 @@ from werkzeug.serving import BaseWSGIServer, make_server
 from .breakpoint_manager import BreakpointManager
 from .cid_store import CIDStore
 from .port_discovery import get_discovery_file_path, write_port_file
-from .serialization import deserialize
+from .serialization import Serializer, deserialize
 
 # Configure Flask's logging to suppress request spam by default
 log = logging.getLogger('werkzeug')
@@ -957,6 +958,48 @@ class BreakpointServer:
             timestamp = f"{time.time():.6f}"
             return f"{timestamp}-{seq:03d}"
 
+        def _error_payload(
+            error: str,
+            message: str,
+            *,
+            expected_cid: str | None = None,
+            provided_cid: str | None = None,
+        ) -> dict[str, object]:
+            payload: dict[str, object] = {"error": error, "message": message}
+            if expected_cid is not None:
+                payload["expected_cid"] = expected_cid
+            if provided_cid is not None:
+                payload["provided_cid"] = provided_cid
+            return payload
+
+        def _resolve_serialization_format(
+            item: dict[str, object], *, default: str = "dill"
+        ) -> str:
+            fmt = item.get("serialization_format", default) or default
+            if fmt not in {"dill", "json"}:
+                raise ValueError("invalid_serialization_format")
+            return fmt
+
+        def _decode_payload_bytes(item: dict[str, object]) -> tuple[bytes | None, str]:
+            fmt = _resolve_serialization_format(item)
+            if "data" not in item:
+                return None, fmt
+            raw = item.get("data")
+            if fmt == "json":
+                if not isinstance(raw, str):
+                    raise ValueError("invalid_json")
+                try:
+                    json.loads(raw)
+                except Exception as exc:  # noqa: BLE001
+                    raise ValueError("invalid_json") from exc
+                return raw.encode("utf-8"), fmt
+            if not isinstance(raw, str):
+                raise ValueError("invalid_dill")
+            try:
+                return base64.b64decode(raw), fmt
+            except Exception as exc:  # noqa: BLE001
+                raise ValueError("invalid_dill") from exc
+
         def collect_missing_cids(items) -> list[str]:
             missing: list[str] = []
             iterable = items.values() if isinstance(items, dict) else items
@@ -967,13 +1010,93 @@ class BreakpointServer:
                     missing.append(item["cid"])
             return missing
 
-        def store_payload(items) -> None:
+        def store_payload(items) -> dict[str, object] | None:
             iterable = items.values() if isinstance(items, dict) else items
             for item in iterable:
                 if "cid" not in item or "data" not in item:
                     continue
-                data = base64.b64decode(item["data"])
-                self._cid_store.store(item["cid"], data)
+                cid = item.get("cid")
+                if not isinstance(cid, str):
+                    continue
+                try:
+                    data, _fmt = _decode_payload_bytes(item)
+                except ValueError as exc:
+                    if str(exc) == "invalid_serialization_format":
+                        return _error_payload(
+                            "invalid_serialization_format",
+                            "serialization_format must be 'dill' or 'json'",
+                        )
+                    if str(exc) == "invalid_json":
+                        return _error_payload("invalid_json", "Invalid JSON payload")
+                    if str(exc) == "invalid_dill":
+                        return _error_payload("invalid_dill", "Invalid dill payload")
+                    return _error_payload("invalid_payload", "Invalid payload data")
+                if data is None:
+                    continue
+                expected = hashlib.sha512(data).hexdigest()
+                if expected != cid:
+                    return _error_payload(
+                        "cid_mismatch",
+                        "Provided CID does not match SHA-512 hash of data",
+                        expected_cid=expected,
+                        provided_cid=cid,
+                    )
+                self._cid_store.store(cid, data)
+            return None
+
+        def _encode_payload_item(value: object, preferred_format: str) -> dict[str, object]:
+            if preferred_format == "json":
+                try:
+                    data = json.dumps(value)
+                except Exception as exc:  # noqa: BLE001
+                    raise ValueError("invalid_json") from exc
+                cid = hashlib.sha512(data.encode("utf-8")).hexdigest()
+                return {
+                    "cid": cid,
+                    "data": data,
+                    "serialization_format": "json",
+                }
+            serializer = Serializer()
+            serialized = serializer.force_serialize_with_data(value)
+            return {
+                "cid": serialized.cid,
+                "data": serialized.data_base64,
+                "serialization_format": "dill",
+            }
+
+        def _apply_preferred_format(
+            action_dict: dict[str, object], preferred_format: str
+        ) -> dict[str, object] | None:
+            try:
+                if "modified_args" in action_dict:
+                    args = action_dict.get("modified_args")
+                    if isinstance(args, list):
+                        action_dict["modified_args"] = [
+                            item
+                            if isinstance(item, dict) and "cid" in item
+                            else _encode_payload_item(item, preferred_format)
+                            for item in args
+                        ]
+                if "modified_kwargs" in action_dict:
+                    kwargs = action_dict.get("modified_kwargs")
+                    if isinstance(kwargs, dict):
+                        encoded_kwargs: dict[str, object] = {}
+                        for key, value in kwargs.items():
+                            if isinstance(value, dict) and "cid" in value:
+                                encoded_kwargs[key] = value
+                            else:
+                                encoded_kwargs[key] = _encode_payload_item(value, preferred_format)
+                        action_dict["modified_kwargs"] = encoded_kwargs
+                if "fake_result" in action_dict and "fake_result_data" not in action_dict:
+                    encoded = _encode_payload_item(action_dict.get("fake_result"), preferred_format)
+                    action_dict["fake_result_cid"] = encoded.get("cid")
+                    action_dict["fake_result_data"] = encoded.get("data")
+                    action_dict["fake_result_serialization_format"] = encoded.get("serialization_format")
+            except ValueError as exc:
+                if str(exc) == "invalid_json":
+                    return _error_payload("invalid_json", "Invalid JSON payload")
+                return _error_payload("invalid_payload", "Invalid payload data")
+            return None
 
         def _queue_repl_eval(pause_id: str, session_id: str, expr: str) -> str:
             eval_id = str(uuid.uuid4())
@@ -1164,6 +1287,20 @@ class BreakpointServer:
                 stored = None
             if stored is None:
                 return f"<cid:{cid} missing>"
+            serialization_format = item.get("serialization_format")
+            if serialization_format == "json":
+                try:
+                    return json.loads(stored.decode("utf-8"))
+                except Exception as exc:  # noqa: BLE001
+                    return f"<unavailable: {type(exc).__name__}>"
+            if serialization_format not in (None, "dill"):
+                return f"<unavailable: invalid format {serialization_format}>"
+            # If format isn't specified, attempt JSON as a best-effort fallback.
+            if serialization_format is None:
+                try:
+                    return json.loads(stored.decode("utf-8"))
+                except Exception:
+                    pass
             try:
                 value = deserialize(stored)
             except Exception as exc:  # noqa: BLE001
@@ -1229,17 +1366,21 @@ class BreakpointServer:
             role: str,
             client_ref: object,
             cid: str | None,
+            serialization_format: str | None = None,
         ) -> None:
             normalized_ref = _normalize_client_ref(client_ref)
             if normalized_ref is None or cid is None:
                 return
+            item: dict[str, object] = {"cid": cid}
+            if serialization_format:
+                item["serialization_format"] = serialization_format
             snapshot = {
                 "timestamp": time.time(),
                 "call_id": call_id,
                 "method_name": method_name,
                 "role": role,
                 "cid": cid,
-                "pretty": _format_payload_value({"cid": cid}),
+                "pretty": _format_payload_value(item),
             }
             self.manager.record_object_snapshot(process_key, normalized_ref, snapshot)
 
@@ -1257,7 +1398,7 @@ class BreakpointServer:
             return str(value)
 
         def _is_cid(value: object) -> bool:
-            return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+            return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{128}", value) is not None
 
         def _object_ref(process_key: str | None, client_ref: int | str) -> str:
             if process_key:
@@ -3950,17 +4091,30 @@ class BreakpointServer:
             signature = data.get('signature')
             function_cid = data.get('function_cid')
             function_data = data.get('function_data')
+            function_format = data.get("function_serialization_format", "dill")
             function_client_ref = data.get('function_client_ref')
             metadata: dict[str, Any] | None = None
             if not function_name:
                 return jsonify({"error": "function_name required"}), 400
             if function_cid and function_data:
                 try:
-                    self._cid_store.store(function_cid, base64.b64decode(function_data))
+                    error = store_payload([{
+                        "cid": function_cid,
+                        "data": function_data,
+                        "serialization_format": function_format,
+                    }])
+                    if error:
+                        return jsonify(error), 400
                     try:
                         decoded = self._cid_store.get(function_cid)
                         if decoded is not None:
-                            value = deserialize(decoded)
+                            if function_format == "json":
+                                try:
+                                    value = json.loads(decoded.decode("utf-8"))
+                                except Exception:
+                                    value = decoded.decode("utf-8", errors="replace")
+                            else:
+                                value = deserialize(decoded)
                             if _is_placeholder(value):
                                 metadata = _format_placeholder(value)
                             else:
@@ -4284,11 +4438,23 @@ class BreakpointServer:
                     "message": "Resend with full data",
                 }), 400
 
-            store_payload([target] if target else [])
-            store_payload(args)
-            store_payload(kwargs)
+            error = store_payload([target] if target else [])
+            if error:
+                return jsonify(error), 400
+            error = store_payload(args)
+            if error:
+                return jsonify(error), 400
+            error = store_payload(kwargs)
+            if error:
+                return jsonify(error), 400
 
             call_id = next_call_id()
+            preferred_format = data.get("preferred_format", "dill")
+            if preferred_format not in {"dill", "json"}:
+                return jsonify({
+                    "error": "invalid_preferred_format",
+                    "message": "preferred_format must be 'dill' or 'json'",
+                }), 400
             _record_payload_snapshots(
                 process_key=process_key,
                 call_id=call_id,
@@ -4325,6 +4491,7 @@ class BreakpointServer:
                 "pretty_kwargs": pretty_kwargs,
                 "signature": data.get("signature"),
                 "call_site": data.get("call_site"),
+                "preferred_format": preferred_format,
                 "process_pid": int(process_pid),
                 "process_start_time": float(process_start_time),
                 "process_key": process_key,
@@ -4375,16 +4542,30 @@ class BreakpointServer:
             status = data.get("status")
             result_data = data.get("result_data")
             result_cid = data.get("result_cid")
+            result_format = data.get("result_serialization_format", "dill")
             exception_data = data.get("exception_data")
             exception_cid = data.get("exception_cid")
+            exception_format = data.get("exception_serialization_format", "dill")
             result_client_ref = data.get("result_client_ref")
             exception_client_ref = data.get("exception_client_ref")
             completed_at = data.get("timestamp") or time.time()
 
             if result_data and result_cid:
-                self._cid_store.store(result_cid, base64.b64decode(result_data))
+                error = store_payload([{
+                    "cid": result_cid,
+                    "data": result_data,
+                    "serialization_format": result_format,
+                }])
+                if error:
+                    return jsonify(error), 400
             if exception_data and exception_cid:
-                self._cid_store.store(exception_cid, base64.b64decode(exception_data))
+                error = store_payload([{
+                    "cid": exception_cid,
+                    "data": exception_data,
+                    "serialization_format": exception_format,
+                }])
+                if error:
+                    return jsonify(error), 400
 
             call_data = self.manager.pop_call(call_id) if call_id else None
             method_name = ""
@@ -4407,6 +4588,7 @@ class BreakpointServer:
                     role="result",
                     client_ref=result_client_ref,
                     cid=result_cid,
+                    serialization_format=result_format,
                 )
                 _record_completion_snapshot(
                     process_key=process_key,
@@ -4415,6 +4597,7 @@ class BreakpointServer:
                     role="exception",
                     client_ref=exception_client_ref,
                     cid=exception_cid,
+                    serialization_format=exception_format,
                 )
 
             # Record execution history for breakpoints
@@ -4422,10 +4605,16 @@ class BreakpointServer:
                 method_name = call_data.get("method_name", "")
                 pretty_result = None
                 if result_cid:
-                    pretty_result = _format_payload_value({"cid": result_cid})
+                    pretty_result = _format_payload_value({
+                        "cid": result_cid,
+                        "serialization_format": result_format,
+                    })
                 pretty_exception = None
                 if exception_cid:
-                    pretty_exception = _format_payload_value({"cid": exception_cid})
+                    pretty_exception = _format_payload_value({
+                        "cid": exception_cid,
+                        "serialization_format": exception_format,
+                    })
 
                 call_record = dict(call_data)
                 call_record["call_id"] = call_id
@@ -4461,7 +4650,10 @@ class BreakpointServer:
             ):
                 pretty_result = None
                 if result_cid:
-                    pretty_result = _format_payload_value({"cid": result_cid})
+                    pretty_result = _format_payload_value({
+                        "cid": result_cid,
+                        "serialization_format": result_format,
+                    })
                 call_data = dict(call_data)
                 call_data["pretty_result"] = pretty_result
                 pause_id = self.manager.add_paused_execution(call_data)
@@ -4489,26 +4681,46 @@ class BreakpointServer:
 
             result_data = data.get("result_data")
             result_cid = data.get("result_cid")
+            result_format = data.get("result_serialization_format", "dill")
             exception_data = data.get("exception_data")
             exception_cid = data.get("exception_cid")
+            exception_format = data.get("exception_serialization_format", "dill")
 
             if result_data and result_cid:
-                self._cid_store.store(result_cid, base64.b64decode(result_data))
+                error = store_payload([{
+                    "cid": result_cid,
+                    "data": result_data,
+                    "serialization_format": result_format,
+                }])
+                if error:
+                    return jsonify(error), 400
             if exception_data and exception_cid:
-                self._cid_store.store(exception_cid, base64.b64decode(exception_data))
+                error = store_payload([{
+                    "cid": exception_cid,
+                    "data": exception_data,
+                    "serialization_format": exception_format,
+                }])
+                if error:
+                    return jsonify(error), 400
 
             timestamp = data.get("timestamp") or time.time()
             call_site = data.get("call_site") or {}
 
             pretty_result = None
             if result_cid:
-                pretty_result = _format_payload_value({"cid": result_cid})
+                pretty_result = _format_payload_value({
+                    "cid": result_cid,
+                    "serialization_format": result_format,
+                })
             elif "pretty_result" in data:
                 pretty_result = data.get("pretty_result")
 
             pretty_exception = None
             if exception_cid:
-                pretty_exception = _format_payload_value({"cid": exception_cid})
+                pretty_exception = _format_payload_value({
+                    "cid": exception_cid,
+                    "serialization_format": exception_format,
+                })
             elif "exception" in data:
                 pretty_exception = data.get("exception")
 
@@ -4570,9 +4782,11 @@ class BreakpointServer:
             data = request.get_json() or {}
             action = data.get('action', 'continue')
             replacement_function = data.get('replacement_function')
-
-            if action == 'skip':
-                return jsonify({"error": "skip_not_supported"}), 400
+            paused = self.manager.get_paused_execution(pause_id) or {}
+            call_data = paused.get("call_data") if isinstance(paused, dict) else {}
+            preferred_format = "dill"
+            if isinstance(call_data, dict):
+                preferred_format = call_data.get("preferred_format", "dill")
 
             if replacement_function:
                 action_dict = {
@@ -4597,6 +4811,12 @@ class BreakpointServer:
                 action_dict['exception_type'] = data['exception_type']
             if 'exception_message' in data:
                 action_dict['exception_message'] = data['exception_message']
+
+            if preferred_format not in {"dill", "json"}:
+                preferred_format = "dill"
+            error = _apply_preferred_format(action_dict, preferred_format)
+            if error:
+                return jsonify(error), 400
 
             self.manager.resume_execution(pause_id, action_dict)
             _mark_repl_waiters_closed(pause_id=pause_id)

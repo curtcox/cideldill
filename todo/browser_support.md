@@ -812,7 +812,7 @@ None. All questions have been resolved. See the Resolved Decisions table above.
 - No backward compatibility period — clean switch from SHA-256 to SHA-512
 - Tests: #121–#129
 
-### Phase 1: Server-Side JSON Format Support
+### Phase 1: Server-Side JSON Format Support (Done)
 - Add `serialization_format` handling to `/api/call/start`, `/api/call/complete`,
   `/api/call/event`, `/api/functions`
 - Add `preferred_format` handling to call data
