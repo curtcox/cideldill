@@ -1,0 +1,626 @@
+# Browser JavaScript Debug Support
+
+## Goal
+
+Provide browser-side `with_debug` and `debug_call` equivalents so that JavaScript
+running in a web page can participate in the same breakpoint/inspection workflow
+as the existing Python client. This is **additive** — the Python client is unchanged.
+
+---
+
+## Design Principles
+
+1. **Reuse existing server endpoints** (`/api/call/start`, `/api/call/complete`,
+   `/api/poll/<pause_id>`, `/api/functions`, `/api/breakpoints`, `/api/call/event`).
+2. **Page URL replaces PID** — browsers have no OS process ID. The page's
+   `window.location.href` serves as the process identifier for grouping and
+   correlation.
+3. **JSON serialization** — browsers cannot produce dill pickles. A
+   `serialization_format` field on every payload tells the server how to
+   interpret `data` fields (`"dill"` for existing Python traffic, `"json"` for
+   browser traffic).
+4. **Server-served JavaScript** — the breakpoint server exposes an endpoint
+   that returns the client library JS, so any page can include it with a single
+   `<script>` tag.
+5. **Minimal server changes** — the server already stores and renders JSON
+   "pretty" snapshots; JSON-serialized payloads just skip the dill
+   decode/CID-store step and flow directly into the existing pretty-print path.
+
+---
+
+## Architecture Overview
+
+```
+┌─────────────────────────┐          ┌───────────────────────────┐
+│   Browser Page          │          │   Breakpoint Server       │
+│                         │          │                           │
+│  <script src=           │  HTTP    │  /api/debug-client.js     │
+│   "/api/debug-client.js"│◄─────── │  (serves JS library)      │
+│  ></script>             │          │                           │
+│                         │          │                           │
+│  cideldill.withDebug()  │──POST──►│  /api/call/start          │
+│  cideldill.debugCall()  │──POST──►│  /api/call/complete       │
+│                         │◄──GET───│  /api/poll/<id>           │
+│                         │──POST──►│  /api/functions            │
+└─────────────────────────┘          └───────────────────────────┘
+```
+
+---
+
+## Component Design
+
+### 1. JavaScript Client Library (`debug-client.js`)
+
+Served by the breakpoint server at `GET /api/debug-client.js`.
+
+#### 1.1 Global Namespace
+
+The library exposes a single global object `cideldill` (or attaches to
+`window.cideldill`) with the public API. It also supports ES module export
+when loaded via `import`.
+
+#### 1.2 State Management
+
+Mirrors the Python `_DebugState`:
+
+```javascript
+// Internal state (not exported)
+let _enabled = false;
+let _serverUrl = null;    // auto-detected from script src
+let _pageUrl = null;      // window.location.href at enable time
+let _pageLoadTime = null; // performance.timeOrigin or Date.now() at enable time
+let _clientRefCounter = 0;
+let _cidCache = new Map(); // cid -> true (sent to server)
+let _registeredFunctions = new Set(); // function keys already registered
+```
+
+#### 1.3 Public API
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `withDebug(command)` | `withDebug("ON" \| "OFF") → DebugInfo` | Enable/disable debugging |
+| `withDebug(target)` | `withDebug(object) → Proxy \| object` | Wrap object for method interception |
+| `withDebug(aliasAndTarget)` | `withDebug(["alias", object]) → Proxy \| object` | Wrap with stable alias |
+| `debugCall(fn, ...args)` | `debugCall(fn, ...args) → Promise<result>` | Inline breakpoint (always async in JS) |
+| `debugCall(alias, fn, ...args)` | `debugCall("name", fn, ...args) → Promise<result>` | Inline breakpoint with alias |
+| `configure(options)` | `configure({serverUrl, ...}) → void` | Set server URL if not auto-detected |
+
+**Key difference from Python:** All intercepted calls return `Promise` because
+the browser client must use `fetch` (async) to communicate with the server.
+When debugging is OFF, `debugCall` returns `Promise.resolve(fn(...args))` so
+the async wrapper is still present but adds negligible overhead.
+
+#### 1.4 Serialization
+
+The JavaScript client serializes objects to JSON. Since arbitrary JS objects
+cannot always be JSON-serialized, the client uses a structured-clone-safe
+approach:
+
+1. **Try** `JSON.stringify(obj)` with a replacer that handles cycles and
+   non-serializable values.
+2. **On failure**, produce a placeholder object analogous to
+   `UnpicklablePlaceholder`:
+   ```json
+   {
+     "type_name": "HTMLElement",
+     "repr_text": "<div id=\"main\">...</div>",
+     "attributes": {"id": "main", "className": "container"},
+     "failed_attributes": {"parentNode": "circular reference"},
+     "serialization_error": "Converting circular structure to JSON",
+     "serialization_format": "json"
+   }
+   ```
+3. **CID** is computed as SHA-256 of the canonical JSON string (using the
+   Web Crypto API: `crypto.subtle.digest`).
+
+#### 1.5 Process Identity
+
+Instead of `(process_pid, process_start_time)`, the browser client sends:
+
+| Field | Value | Purpose |
+|-------|-------|---------|
+| `process_pid` | `0` | Sentinel indicating browser client |
+| `process_start_time` | `performance.timeOrigin / 1000` | Page load epoch (seconds) |
+| `page_url` | `window.location.href` | Human-readable process identifier |
+
+The server's `_process_key` function already accepts any integer PID and float
+timestamp, so `0 + <timeOrigin>` produces a unique key per page load. The
+`page_url` field is additional metadata for display purposes.
+
+#### 1.6 Call Site Information
+
+Python sends a stack trace. JavaScript sends:
+
+```json
+{
+  "timestamp": 1707349261.123,
+  "page_url": "https://example.com/app",
+  "stack_trace": [
+    {
+      "filename": "https://example.com/app.js",
+      "lineno": 42,
+      "function": "handleClick",
+      "code_context": null
+    }
+  ]
+}
+```
+
+The stack trace is parsed from `new Error().stack`. The format varies across
+browsers but the library normalizes it to the same shape the Python client
+uses.
+
+#### 1.7 Proxy Wrapping (`withDebug(object)`)
+
+Uses JavaScript `Proxy` to intercept method calls, analogous to Python's
+`DebugProxy`:
+
+```javascript
+// Conceptual sketch
+function wrapObject(target, alias) {
+  return new Proxy(target, {
+    get(obj, prop) {
+      const value = obj[prop];
+      if (typeof value !== "function") return value;
+      return async function(...args) {
+        // ... call start / poll / execute / call complete ...
+      };
+    }
+  });
+}
+```
+
+**Important:** Wrapped methods become async. The caller must `await` them.
+This is a fundamental difference from the Python Proxy where methods remain
+synchronous (the Python client blocks on the HTTP call).
+
+#### 1.8 REPL Support
+
+Browser REPL support is **deferred to a future iteration**. The Python client's
+REPL works by evaluating expressions in the paused frame's local scope, which
+has no browser equivalent without a custom evaluator. The browser client will
+skip REPL polling (the `poll-repl` endpoint) in v1.
+
+---
+
+### 2. Server Changes
+
+#### 2.1 New Endpoint: `GET /api/debug-client.js`
+
+Returns the JavaScript client library with `Content-Type: application/javascript`.
+The server URL is injected into the script as a constant so the client
+auto-discovers its server.
+
+#### 2.2 Serialization Format Specifier
+
+Every payload that currently carries `data` (base64-encoded dill) gains an
+optional `serialization_format` field:
+
+| Value | Meaning |
+|-------|---------|
+| `"dill"` | (default, backward compatible) base64-encoded dill pickle |
+| `"json"` | JSON-encoded value (the `data` field is a JSON string, not base64) |
+
+**Affected payloads:**
+
+- `/api/call/start` — `target.data`, `args[*].data`, `kwargs.*.data`
+- `/api/call/complete` — `result_data`, `exception_data`
+- `/api/functions` — `function_data`
+- `/api/call/event` — `result_data`, `exception_data`
+
+When `serialization_format` is `"json"`:
+- The `data` field contains a JSON string (not base64).
+- The `cid` field is the SHA-256 hex digest of the UTF-8 encoded JSON string.
+- The CID store stores the raw UTF-8 bytes of the JSON string.
+- Deserialization uses `json.loads()` instead of `dill.loads(base64.b64decode(...))`.
+
+#### 2.3 Process Key with Page URL
+
+The server currently builds `process_key = f"{start:.6f}+{pid}"`. Browser
+payloads include an additional `page_url` field. The server stores `page_url`
+alongside the process key as metadata for display in the web UI (call tree,
+paused executions, etc.) without changing the key format.
+
+#### 2.4 Pretty-Printing JSON Payloads
+
+The server's `_format_payload_value` function currently deserializes dill
+objects for display. For JSON payloads, it can display the JSON directly
+since it is already human-readable. The function checks `serialization_format`
+and branches accordingly:
+
+- `"dill"` → existing path (dill.loads + pygments Python highlighting)
+- `"json"` → json.loads + pygments JSON highlighting
+
+#### 2.5 CID Deduplication for JSON
+
+The same CID cache logic applies: if a CID is already in the CID store, the
+client can omit the `data` field. The server returns `cid_not_found` if it
+needs the data resent. This is unchanged from the Python flow.
+
+#### 2.6 CORS Headers
+
+The breakpoint server must add CORS headers so that pages on different origins
+can call the API. The `/api/debug-client.js` endpoint also needs CORS for
+cross-origin `<script>` loading (or use `crossorigin` attribute).
+
+A simple approach: add `Access-Control-Allow-Origin: *` to all `/api/*`
+responses and handle `OPTIONS` preflight requests. This is acceptable because
+the breakpoint server is a development tool running locally.
+
+---
+
+### 3. Web UI Changes
+
+#### 3.1 Client Type Indicator
+
+Paused executions and call tree entries from browser clients show a browser
+icon (or "JS" label) next to the page URL instead of a PID.
+
+#### 3.2 JSON Value Display
+
+When the server detects a JSON-serialized payload, the object browser and
+call detail views render JSON with syntax highlighting instead of attempting
+Python repr formatting.
+
+---
+
+## Serialization Format Specifier — Detailed Placement
+
+The `serialization_format` field appears at the **payload item level** (not
+the top-level request), because a single request could theoretically mix
+formats (e.g., a Python proxy passing a JSON-serialized value from a browser
+callback):
+
+```json
+{
+  "method_name": "fetchData",
+  "target": {
+    "cid": "abc123...",
+    "client_ref": 1,
+    "data": "{\"type\": \"APIClient\", \"baseUrl\": \"https://api.example.com\"}",
+    "serialization_format": "json"
+  },
+  "args": [
+    {
+      "cid": "def456...",
+      "client_ref": 2,
+      "data": "{\"endpoint\": \"/users\"}",
+      "serialization_format": "json"
+    }
+  ],
+  "kwargs": {},
+  "page_url": "https://example.com/app",
+  "process_pid": 0,
+  "process_start_time": 1707349261.123
+}
+```
+
+When `serialization_format` is absent, the server assumes `"dill"` (backward
+compatible).
+
+---
+
+## Test Plan
+
+Tests are organized by component. Each test name follows the project's
+`test_*.py` naming convention. Tests use TDD (red-green-refactor) per
+CLAUDE.md.
+
+### 3.1 Server: Serialization Format Handling
+
+These test the server's ability to accept and store JSON-serialized payloads.
+
+| # | Test | What It Verifies |
+|---|------|-------------------|
+| 1 | `test_call_start_accepts_json_serialization_format` | `/api/call/start` accepts `serialization_format: "json"` in payload items and returns a `call_id` |
+| 2 | `test_call_start_defaults_to_dill_when_format_absent` | Existing payloads without `serialization_format` still work (backward compat) |
+| 3 | `test_call_start_stores_json_data_in_cid_store` | JSON data is stored in CID store with CID = SHA-256 of UTF-8 JSON |
+| 4 | `test_call_start_cid_dedup_works_for_json` | Second request with same CID and no `data` succeeds (server has it cached) |
+| 5 | `test_call_start_returns_cid_not_found_for_missing_json_data` | Request with JSON CID but no data and CID not in store → 400 with `cid_not_found` |
+| 6 | `test_call_complete_accepts_json_result_data` | `/api/call/complete` stores JSON result with `serialization_format: "json"` |
+| 7 | `test_call_complete_accepts_json_exception_data` | `/api/call/complete` stores JSON exception data |
+| 8 | `test_call_event_accepts_json_serialization_format` | `/api/call/event` handles JSON payloads |
+| 9 | `test_register_function_accepts_json_format` | `/api/functions` POST accepts JSON-serialized function metadata |
+| 10 | `test_mixed_format_in_single_request` | A `/api/call/start` where `target` is JSON format but an arg is dill format (or vice versa) is handled correctly |
+| 11 | `test_json_cid_matches_sha256_of_utf8_json_string` | Server validates that provided CID matches SHA-256 of the JSON data bytes |
+| 12 | `test_invalid_serialization_format_rejected` | `serialization_format: "xml"` → 400 error |
+
+### 3.2 Server: Process Identity with Page URL
+
+| # | Test | What It Verifies |
+|---|------|-------------------|
+| 13 | `test_process_key_with_pid_zero_and_page_url` | `process_pid=0` + `process_start_time` produces a valid process key |
+| 14 | `test_page_url_stored_in_call_data` | `page_url` from request body is stored in call data and accessible via `/api/paused` |
+| 15 | `test_call_tree_groups_by_page_url` | Call tree view groups browser calls by page URL |
+| 16 | `test_page_url_displayed_in_paused_execution` | Paused execution card shows page URL when present |
+| 17 | `test_different_page_loads_get_different_process_keys` | Two requests with `pid=0` but different `process_start_time` get different keys |
+| 18 | `test_same_page_reload_gets_new_process_key` | Same URL with different `process_start_time` (reload) creates a new process key |
+
+### 3.3 Server: CORS Support
+
+| # | Test | What It Verifies |
+|---|------|-------------------|
+| 19 | `test_api_responses_include_cors_headers` | All `/api/*` responses have `Access-Control-Allow-Origin: *` |
+| 20 | `test_options_preflight_returns_200` | `OPTIONS` request to any `/api/*` endpoint returns 200 with correct CORS headers |
+| 21 | `test_cors_allows_content_type_json` | Preflight response includes `Access-Control-Allow-Headers: Content-Type` |
+| 22 | `test_debug_client_js_has_cors_headers` | `/api/debug-client.js` response includes CORS headers |
+
+### 3.4 Server: JavaScript Client Endpoint
+
+| # | Test | What It Verifies |
+|---|------|-------------------|
+| 23 | `test_debug_client_js_endpoint_exists` | `GET /api/debug-client.js` returns 200 |
+| 24 | `test_debug_client_js_content_type` | Response has `Content-Type: application/javascript` |
+| 25 | `test_debug_client_js_contains_server_url` | Returned JS contains the server's own URL so client auto-discovers |
+| 26 | `test_debug_client_js_defines_cideldill_namespace` | Returned JS defines `cideldill` global (parseable, no syntax errors) |
+| 27 | `test_debug_client_js_is_cacheable` | Response includes appropriate cache headers (ETag or Cache-Control) |
+
+### 3.5 Server: Pretty-Print JSON Payloads
+
+| # | Test | What It Verifies |
+|---|------|-------------------|
+| 28 | `test_format_payload_value_for_json_data` | `_format_payload_value` returns readable dict for JSON-serialized items |
+| 29 | `test_format_payload_value_for_dill_data_unchanged` | Existing dill path still works identically |
+| 30 | `test_breakpoint_history_shows_json_args` | `/api/breakpoints/<name>/history` renders JSON args readably |
+| 31 | `test_object_browser_renders_json_objects` | `/objects` page displays JSON-serialized objects with JSON highlighting |
+
+### 3.6 JavaScript Client: Core API
+
+These tests run in a simulated browser environment (e.g., jsdom or by testing
+the JS against a live test server from Python using subprocess + a headless
+browser, or by unit-testing the JS functions directly).
+
+| # | Test | What It Verifies |
+|---|------|-------------------|
+| 32 | `test_js_with_debug_on_returns_debug_info` | `cideldill.withDebug("ON")` returns object with `isEnabled()` true |
+| 33 | `test_js_with_debug_off_returns_debug_info` | `cideldill.withDebug("OFF")` returns object with `isEnabled()` false |
+| 34 | `test_js_with_debug_off_is_noop_for_wrapping` | `cideldill.withDebug(obj)` when OFF returns the original object |
+| 35 | `test_js_with_debug_on_wraps_object_in_proxy` | `cideldill.withDebug(obj)` when ON returns a Proxy |
+| 36 | `test_js_proxy_intercepts_method_calls` | Calling a method on a wrapped object sends POST to `/api/call/start` |
+| 37 | `test_js_proxy_non_function_properties_not_intercepted` | Reading a data property on a wrapped object does not trigger a call |
+| 38 | `test_js_debug_call_sends_call_start` | `cideldill.debugCall(fn, arg)` POSTs to `/api/call/start` |
+| 39 | `test_js_debug_call_with_alias` | `cideldill.debugCall("myAlias", fn, arg)` uses alias as `method_name` |
+| 40 | `test_js_debug_call_when_off_calls_directly` | When debug OFF, `cideldill.debugCall(fn, arg)` calls `fn(arg)` directly |
+| 41 | `test_js_debug_call_returns_function_result` | Result of the original function is returned through the promise |
+| 42 | `test_js_debug_call_propagates_exceptions` | If `fn` throws, the promise rejects with the same error |
+| 43 | `test_js_configure_sets_server_url` | `cideldill.configure({serverUrl: "..."})` overrides auto-detection |
+
+### 3.7 JavaScript Client: Serialization
+
+| # | Test | What It Verifies |
+|---|------|-------------------|
+| 44 | `test_js_serializes_primitives_as_json` | Numbers, strings, booleans, null serialize correctly |
+| 45 | `test_js_serializes_plain_objects` | `{a: 1, b: "two"}` produces valid JSON with correct CID |
+| 46 | `test_js_serializes_arrays` | `[1, 2, 3]` serializes correctly |
+| 47 | `test_js_serializes_nested_objects` | Deep nesting works |
+| 48 | `test_js_handles_circular_references` | Object with cycle produces placeholder instead of throwing |
+| 49 | `test_js_handles_dom_elements` | DOM node produces a placeholder with type_name and attributes |
+| 50 | `test_js_handles_functions_in_objects` | Functions in object values produce placeholder entries |
+| 51 | `test_js_handles_undefined_values` | `undefined` is serialized as `null` or omitted, not dropped silently |
+| 52 | `test_js_handles_symbol_keys` | Symbol-keyed properties are skipped gracefully |
+| 53 | `test_js_handles_bigint` | BigInt values produce string representation |
+| 54 | `test_js_cid_computation_matches_server` | CID computed in JS (SHA-256 of JSON UTF-8) matches what server computes for same JSON string |
+| 55 | `test_js_cid_cache_deduplication` | Second serialization of same object omits data (cache hit) |
+| 56 | `test_js_placeholder_structure_matches_server_expectation` | JS placeholder objects have the fields the server expects |
+
+### 3.8 JavaScript Client: Process Identity
+
+| # | Test | What It Verifies |
+|---|------|-------------------|
+| 57 | `test_js_sends_pid_zero` | All payloads have `process_pid: 0` |
+| 58 | `test_js_sends_page_load_time` | `process_start_time` is set from `performance.timeOrigin` |
+| 59 | `test_js_sends_page_url` | All payloads include `page_url` field |
+| 60 | `test_js_page_url_reflects_current_location` | `page_url` matches `window.location.href` |
+
+### 3.9 JavaScript Client: Call Stack Parsing
+
+| # | Test | What It Verifies |
+|---|------|-------------------|
+| 61 | `test_js_parses_chrome_stack_trace` | Chrome-format stack traces are parsed into `{filename, lineno, function}` |
+| 62 | `test_js_parses_firefox_stack_trace` | Firefox-format stack traces are parsed |
+| 63 | `test_js_parses_safari_stack_trace` | Safari-format stack traces are parsed |
+| 64 | `test_js_stack_trace_with_anonymous_functions` | Anonymous functions get a sensible placeholder name |
+| 65 | `test_js_stack_trace_with_eval` | `eval()` frames are handled without crashing |
+
+### 3.10 JavaScript Client: Polling
+
+| # | Test | What It Verifies |
+|---|------|-------------------|
+| 66 | `test_js_polls_when_action_is_poll` | Client enters poll loop when server returns `action: "poll"` |
+| 67 | `test_js_stops_polling_when_ready` | Poll loop exits when server returns `status: "ready"` |
+| 68 | `test_js_respects_poll_interval` | Polls at the interval specified by server |
+| 69 | `test_js_times_out_after_timeout_ms` | After `timeout_ms`, client stops polling and continues |
+| 70 | `test_js_handles_poll_network_error` | Network error during poll does not crash; retries or times out |
+
+### 3.11 JavaScript Client: Action Handling
+
+| # | Test | What It Verifies |
+|---|------|-------------------|
+| 71 | `test_js_action_continue_executes_normally` | `action: "continue"` → function runs, result returned |
+| 72 | `test_js_action_modify_uses_modified_args` | `action: "modify"` → function called with modified args from server |
+| 73 | `test_js_action_skip_returns_fake_result` | `action: "skip"` → function not called, fake result returned |
+| 74 | `test_js_action_raise_throws_exception` | `action: "raise"` → promise rejects with specified error |
+| 75 | `test_js_action_replace_calls_replacement` | `action: "replace"` → looks up registered replacement and calls it |
+| 76 | `test_js_sends_call_complete_after_success` | After function returns, POST to `/api/call/complete` with `status: "success"` |
+| 77 | `test_js_sends_call_complete_after_exception` | After function throws, POST to `/api/call/complete` with `status: "exception"` |
+| 78 | `test_js_handles_after_breakpoint_poll` | If call_complete returns `action: "poll"`, client polls again |
+
+### 3.12 JavaScript Client: Function Registration
+
+| # | Test | What It Verifies |
+|---|------|-------------------|
+| 79 | `test_js_registers_function_on_first_call` | First intercepted call POSTs to `/api/functions` |
+| 80 | `test_js_does_not_re_register_same_function` | Second call to same function skips registration |
+| 81 | `test_js_registration_includes_function_name` | Registration payload has `function_name` |
+| 82 | `test_js_registration_includes_signature_if_available` | If function has `.length` or `.toString()`, signature is included |
+
+### 3.13 JavaScript Client: Proxy Behavior
+
+| # | Test | What It Verifies |
+|---|------|-------------------|
+| 83 | `test_js_proxy_preserves_this_binding` | Method called on proxy has correct `this` |
+| 84 | `test_js_proxy_handles_constructor_calls` | `new Proxy(...)` doesn't break if target is a class |
+| 85 | `test_js_proxy_toString_returns_original` | `proxy.toString()` returns the original's toString |
+| 86 | `test_js_proxy_property_access_not_async` | Non-function property reads are synchronous |
+| 87 | `test_js_proxy_handles_symbol_methods` | `Symbol.iterator`, `Symbol.toPrimitive` are forwarded |
+| 88 | `test_js_proxy_wrapping_with_alias` | `withDebug(["myName", obj])` uses "myName" as function prefix |
+
+### 3.14 Integration: Browser Client ↔ Server Round Trip
+
+These tests start a real server and exercise the JS client against it.
+They can use a headless browser (Playwright/Puppeteer) or simulate the
+JS client's HTTP calls from Python.
+
+| # | Test | What It Verifies |
+|---|------|-------------------|
+| 89 | `test_browser_client_registers_and_calls_through_server` | Full round trip: enable → wrap → call → server sees call |
+| 90 | `test_browser_client_pauses_at_breakpoint` | Set breakpoint → browser call pauses → appears in `/api/paused` |
+| 91 | `test_browser_client_resumes_after_continue` | Paused browser call resumes when continued from UI/API |
+| 92 | `test_browser_client_modify_args` | Server modifies args → browser client receives and uses modified args |
+| 93 | `test_browser_client_skip_returns_fake_result` | Server sets skip → browser client receives fake result |
+| 94 | `test_browser_client_and_python_client_coexist` | Both a Python and browser client connect; both appear in call tree with correct identifiers |
+| 95 | `test_browser_call_tree_shows_page_url` | Call tree page displays page URL for browser-originated calls |
+| 96 | `test_browser_breakpoint_history_shows_json_values` | History view renders JSON-serialized args readably |
+| 97 | `test_browser_client_handles_server_restart` | If server restarts, browser client re-enables cleanly |
+| 98 | `test_browser_client_handles_server_unreachable` | Calls proceed (or fail gracefully) when server is down |
+| 99 | `test_multiple_browser_tabs_get_unique_process_keys` | Two page loads with different load times → different process keys |
+| 100 | `test_debug_client_js_served_from_running_server` | `GET /api/debug-client.js` from a running server returns valid JS |
+
+### 3.15 Edge Cases and Error Handling
+
+| # | Test | What It Verifies |
+|---|------|-------------------|
+| 101 | `test_js_call_start_with_empty_args` | `debugCall(fn)` with no args works |
+| 102 | `test_js_call_start_with_large_payload` | Very large JSON object is handled (not truncated silently) |
+| 103 | `test_js_call_start_with_deeply_nested_object` | 50+ levels of nesting produce placeholder, not stack overflow |
+| 104 | `test_js_concurrent_calls_do_not_interfere` | Two simultaneous `debugCall` invocations maintain separate call IDs |
+| 105 | `test_js_rapid_enable_disable_cycle` | ON → OFF → ON rapidly does not leave stale state |
+| 106 | `test_server_rejects_json_data_with_dill_format` | `serialization_format: "dill"` with non-base64 data → appropriate error |
+| 107 | `test_server_rejects_invalid_json_in_json_format` | `serialization_format: "json"` with unparseable data → appropriate error |
+| 108 | `test_js_handles_server_500_response` | Server error during call/start → call proceeds (or rejects) gracefully |
+| 109 | `test_js_handles_network_timeout` | fetch timeout → call proceeds (or rejects) gracefully |
+| 110 | `test_js_wrapping_null_or_undefined` | `withDebug(null)` returns null, `withDebug(undefined)` returns undefined |
+| 111 | `test_js_debug_call_with_async_function` | `debugCall(asyncFn, arg)` correctly awaits the async function |
+| 112 | `test_js_debug_call_with_generator_function` | `debugCall(generatorFn)` handles or rejects gracefully |
+| 113 | `test_js_proxy_method_returning_promise` | If proxied method returns Promise, it is properly awaited and result reported |
+| 114 | `test_json_serialization_of_date_objects` | `Date` objects serialize to ISO string |
+| 115 | `test_json_serialization_of_regexp` | `RegExp` objects serialize to string representation |
+| 116 | `test_json_serialization_of_error_objects` | `Error` objects serialize with message and stack |
+| 117 | `test_json_serialization_of_map_and_set` | `Map` and `Set` serialize to array-of-entries / array |
+| 118 | `test_json_serialization_of_typed_arrays` | `Uint8Array` etc. serialize to regular arrays |
+| 119 | `test_json_serialization_of_nan_and_infinity` | `NaN`, `Infinity`, `-Infinity` serialize to string markers |
+
+---
+
+## Open Questions
+
+1. **Should the JavaScript client support `withDebug(object)` proxy wrapping
+   in v1, or only `debugCall`?**
+   Proxy wrapping makes all methods async, which is a breaking change for
+   existing synchronous call sites. Should v1 ship both, or start with
+   `debugCall`-only?
+
+2. **How should the `action: "replace"` work in the browser?**
+   In Python, the replacement function is another registered Python function
+   on the same process. In the browser, the replacement needs to either:
+   (a) be a JS function registered earlier by the page, or
+   (b) be skipped/unsupported in v1.
+   Which approach?
+
+3. **Should the JS client library support ES module import in addition to
+   the global `<script>` tag?**
+   E.g., `import { withDebug, debugCall } from '/api/debug-client.js'`
+
+4. **What is the CORS policy?**
+   The plan proposes `Access-Control-Allow-Origin: *` for all `/api/*`
+   endpoints since this is a local dev tool. Is there a scenario where a
+   more restrictive policy is needed?
+
+5. **Should the browser client REPL be supported in v1?**
+   Python REPL evaluates expressions in the paused frame's locals. A browser
+   equivalent could use `eval()` in the page context, but this raises
+   security and scoping concerns. Defer to v2?
+
+6. **How should `action: "modify"` deserialize args in the browser?**
+   The server currently sends modified args as dill-serialized payloads. For
+   browser clients, modified args must be sent as JSON. Should the server
+   detect the client type (from `serialization_format` or `process_pid == 0`)
+   and respond in the appropriate format? Or should the client declare its
+   preferred format in the request?
+
+7. **Headless browser testing infrastructure:**
+   Integration tests need to exercise real JavaScript in a browser. Should we
+   use Playwright, Puppeteer, or a Node.js-based approach (jsdom)? What is
+   the CI environment constraint?
+
+8. **Should `debugCall` support synchronous mode?**
+   Some callers may not be in an async context. Should there be a
+   `debugCallSync` that uses `XMLHttpRequest` synchronously (deprecated but
+   functional), or is async-only acceptable?
+
+9. **How should the script tag URL work across different server configurations?**
+   If the server is behind a reverse proxy or on a non-default port, how does
+   the `<script src>` URL get constructed? Should the docs recommend
+   `<script src="http://localhost:5174/api/debug-client.js"></script>` with
+   the port hardcoded, or is there a discovery mechanism?
+
+10. **Should the server validate JSON CIDs?**
+    The plan specifies CID = SHA-256 of UTF-8 JSON. Should the server
+    validate this on every request (extra computation), or trust the client
+    (as it does for dill CIDs today)?
+
+---
+
+## Implementation Phases
+
+### Phase 1: Server-Side JSON Format Support
+- Add `serialization_format` handling to `/api/call/start`, `/api/call/complete`,
+  `/api/call/event`, `/api/functions`
+- Update CID store to handle JSON data storage
+- Update `_format_payload_value` to pretty-print JSON payloads
+- Tests: #1–#12, #28–#31
+
+### Phase 2: Server Process Identity + CORS
+- Store and display `page_url` field
+- Add CORS headers to all `/api/*` endpoints
+- Handle OPTIONS preflight
+- Tests: #13–#22
+
+### Phase 3: JavaScript Client Endpoint
+- Create `/api/debug-client.js` endpoint
+- Build the JS client library with `withDebug`, `debugCall`, `configure`
+- Tests: #23–#27
+
+### Phase 4: JavaScript Client Core
+- Implement serialization, CID computation, process identity
+- Implement call protocol (call/start, poll, call/complete)
+- Implement function registration
+- Tests: #32–#82
+
+### Phase 5: Integration Testing
+- End-to-end tests with real server and browser/simulated client
+- Tests: #89–#100
+
+### Phase 6: Edge Cases and Hardening
+- Handle all error and edge case scenarios
+- Tests: #101–#119
+
+---
+
+## Files to Create/Modify
+
+### New Files
+- `server/src/cideldill_server/debug_client_js.py` — JS client library content
+  (or inline in breakpoint_server.py alongside HTML_TEMPLATE)
+- `tests/unit/test_browser_serialization_format.py` — server-side JSON format tests
+- `tests/unit/test_browser_cors.py` — CORS tests
+- `tests/unit/test_browser_process_identity.py` — page URL / PID=0 tests
+- `tests/unit/test_debug_client_js_endpoint.py` — JS endpoint tests
+- `tests/integration/test_browser_integration.py` — full round-trip tests
+
+### Modified Files
+- `server/src/cideldill_server/breakpoint_server.py` — CORS, new endpoint,
+  JSON format handling in call/start, call/complete, call/event, functions
+- `server/src/cideldill_server/serialization.py` (if exists) or the
+  relevant server deserialization path — JSON branch
+- Web UI HTML template — client type indicator, JSON rendering
