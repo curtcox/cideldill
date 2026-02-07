@@ -332,12 +332,6 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
             </div>
-            <div class="breakpoint-list" style="margin-bottom: 20px;">
-                <h3 style="margin: 10px 0;">Registered Functions</h3>
-                <div id="registeredFunctionsList">
-                    <div class="empty-state">No functions registered.</div>
-                </div>
-            </div>
             <div id="breakpointsList">
                 <div class="empty-state">No breakpoints set.</div>
             </div>
@@ -349,7 +343,6 @@ HTML_TEMPLATE = """
         let updateInterval = null;
         let registeredFunctions = [];
         let functionSignatures = {};
-        let functionMetadata = {};
         const selectedReplacements = {};
         let isBreakpointSelectActive = false;
         let activeTab = 'paused';
@@ -622,42 +615,15 @@ HTML_TEMPLATE = """
                 const data = await response.json();
                 registeredFunctions = data.functions || [];
                 functionSignatures = data.function_signatures || {};
-                functionMetadata = data.function_metadata || {};
             } catch (e) {
                 console.error('Failed to load functions:', e);
                 registeredFunctions = [];
                 functionSignatures = {};
-                functionMetadata = {};
             }
-        }
-
-        function renderRegisteredFunctions() {
-            const container = document.getElementById('registeredFunctionsList');
-            if (!container) {
-                return;
-            }
-            if (!registeredFunctions.length) {
-                container.innerHTML = '<div class="empty-state">No functions registered.</div>';
-                return;
-            }
-            const items = registeredFunctions.map(fn => {
-                const meta = functionMetadata[fn] || {};
-                const isStub = meta.__cideldill_placeholder__ === true;
-                const summary = meta.summary ? escapeHtml(meta.summary) : '';
-                const stubLabel = isStub ? ' (stub)' : '';
-                return `
-                    <div class="breakpoint-item">
-                        <span class="breakpoint-name">${escapeHtml(fn)}${stubLabel}</span>
-                        ${summary ? `<div style="margin-left: 8px; color: #555;">${summary}</div>` : ''}
-                    </div>
-                `;
-            }).join('');
-            container.innerHTML = '<div class="breakpoint-list">' + items + '</div>';
         }
 
         async function refresh() {
             await loadFunctions();
-            renderRegisteredFunctions();
             if (!isBreakpointSelectActive) {
                 await loadBreakpoints();
             }
