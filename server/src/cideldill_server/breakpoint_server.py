@@ -2256,6 +2256,7 @@ class BreakpointServer:
   <div class="container">
     <a href="/repls" class="back-link">← Back to REPL Sessions</a>
     <h1>REPL Session</h1>
+    <div style="margin-bottom: 10px;"><a class="row-link" href="/repl-help">REPL Help</a></div>
     <div id="meta" class="panel"></div>
     <div id="transcript" class="panel"></div>
     <div id="inputPanel" class="panel">
@@ -2275,12 +2276,25 @@ class BreakpointServer:
       const status = session.closed_at ? 'Closed' : 'Active';
       const callstackLink = session.pause_id ? `<a href="/callstack/${encodeURIComponent(session.pause_id)}">Call stack</a>` : '';
       const callTreeLink = session.process_key ? `<a href="/call-tree/${encodeURIComponent(session.process_key)}">Call tree</a>` : '';
+      const prettyArgs = Array.isArray(session.pretty_args) ? session.pretty_args : [];
+      const prettyKwargs = session.pretty_kwargs || {};
+      const params = [];
+      prettyArgs.forEach((value, idx) => {
+        params.push(`[${idx}] ${JSON.stringify(value)}`);
+      });
+      Object.entries(prettyKwargs).forEach(([key, value]) => {
+        params.push(`${key}=${JSON.stringify(value)}`);
+      });
+      const paramsHtml = params.length
+        ? `<div><strong>Parameters:</strong><div class="mono" style="margin-top:6px;">${params.join('<br>')}</div></div>`
+        : '<div><strong>Parameters:</strong> —</div>';
       document.getElementById('meta').innerHTML = `
         <div><strong>Session:</strong> <span class="mono">${session.session_id}</span></div>
         <div><strong>Function:</strong> ${session.function_name || '—'}</div>
         <div><strong>Status:</strong> ${status}</div>
         <div><strong>Started:</strong> ${started}</div>
         <div><strong>Closed:</strong> ${closed}</div>
+        ${paramsHtml}
         <div style="margin-top:8px;">${callstackLink} ${callTreeLink}</div>
       `;
     }
@@ -2337,12 +2351,24 @@ class BreakpointServer:
         body: JSON.stringify({ expr })
       });
       document.getElementById('submitBtn').disabled = false;
-      input.value = '';
-      await loadSession();
       if (response.status === 409) {
         sessionClosed = true;
         document.getElementById('submitBtn').disabled = true;
+        document.getElementById('exprInput').disabled = true;
+        const container = document.getElementById('transcript');
+        const entry = document.createElement('div');
+        entry.className = 'entry';
+        entry.innerHTML = `
+          <div class="mono input">>>> ${expr}</div>
+          <div class="mono error">Breakpoint resumed — command not executed.</div>
+        `;
+        container.appendChild(entry);
+        container.scrollTop = container.scrollHeight;
+        input.value = '';
+        return;
       }
+      input.value = '';
+      await loadSession();
     }
 
     document.getElementById('submitBtn').addEventListener('click', submitExpr);
@@ -2352,6 +2378,38 @@ class BreakpointServer:
 </body>
 </html>"""
             return template.replace("@@SESSION_ID_JSON@@", json.dumps(session_id))
+
+        @self.app.route('/repl-help', methods=['GET'])
+        def repl_help_page():
+            template = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>REPL Help</title>
+  <style>
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; background-color: #f5f5f5; }
+    .container { max-width: 900px; margin: 0 auto; }
+    h1 { color: #333; border-bottom: 3px solid #4CAF50; padding-bottom: 10px; }
+    .back-link { display: inline-block; margin-bottom: 20px; color: #1976D2; text-decoration: none; }
+    .back-link:hover { text-decoration: underline; }
+    .panel { background: white; border: 1px solid #ddd; border-radius: 10px; padding: 16px; box-shadow: 0 2px 4px rgba(0,0,0,0.06); margin-bottom: 16px; }
+    pre { background: #f8f8f8; padding: 12px; border-radius: 8px; overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <a href="/repls" class="back-link">← Back to REPL Sessions</a>
+    <h1>REPL Help</h1>
+    <div class="panel">
+      <h2>Examples</h2>
+      <pre>x + 1\nprint(x)\nmy_list.append(42)\nimport math\nmath.sqrt(9)\n\ndef foo(a):\n    return a * 2\n\nfoo(3)</pre>
+      <p>Multi-line input: use Shift+Enter in the text area to add new lines, then click Run.</p>
+    </div>
+  </div>
+</body>
+</html>"""
+            return template
 
         @self.app.route('/call-tree', methods=['GET'])
         def call_tree_index():

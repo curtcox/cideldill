@@ -500,6 +500,11 @@ class BreakpointManager:
                 "function_name": call_data.get("method_name") or call_data.get("function_name"),
                 "call_id": call_data.get("call_id"),
                 "process_key": call_data.get("process_key"),
+                "args": call_data.get("args"),
+                "kwargs": call_data.get("kwargs"),
+                "pretty_args": call_data.get("pretty_args"),
+                "pretty_kwargs": call_data.get("pretty_kwargs"),
+                "signature": call_data.get("signature"),
                 "transcript": [],
             }
             self._repl_sessions[session_id] = session
