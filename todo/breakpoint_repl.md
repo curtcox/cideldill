@@ -1,0 +1,614 @@
+# Breakpoint REPL — Plan
+
+## Summary
+
+Allow the user to interact with the app suspended at any breakpoint using a REPL
+embedded in the web UI. While the breakpoint is paused, the user can evaluate
+arbitrary Python expressions in the context of the paused client process. The
+REPL transcript is recorded and linked from the relevant call tree node. Past
+sessions are browsable at `/repls` and individually at `/repl/{pid}-{timestamp}`.
+
+---
+
+## Concepts
+
+| Term | Definition |
+|------|-----------|
+| **REPL session** | An interactive evaluation session tied to one paused breakpoint. Created when the user opens the REPL for a paused execution. Identified by `{pid}-{timestamp}` where `pid` is the client process PID and `timestamp` is the epoch time when the user started the session. |
+| **Transcript** | The ordered list of `(input, output)` pairs from a REPL session, stored server-side. |
+| **Active session** | A REPL session where the breakpoint is still paused and the user can submit new expressions. |
+| **Closed session** | A REPL session where the breakpoint has been resumed. Read-only transcript view. |
+
+---
+
+## Architecture
+
+### Communication Flow
+
+```
+Browser (REPL UI)
+    │
+    │  POST /api/repl/{session_id}/eval   {"expr": "x + 1"}
+    │  GET  /api/repl/{session_id}        (poll / transcript)
+    │
+    ▼
+Server (BreakpointServer + ReplManager)
+    │
+    │  POST /api/call/repl-eval           {"pause_id": "...", "expr": "x + 1"}
+    │  GET  /api/poll-repl/{pause_id}     (client polls for eval requests)
+    │
+    ▼
+Client (DebugClient, paused in wait_for_resume_action loop)
+    │
+    │  Receives eval request
+    │  Evaluates expression in the paused frame's locals/globals
+    │  POST /api/call/repl-result         {"pause_id": "...", "result": "3", "error": null}
+    │
+    ▼
+Server
+    │  Appends to transcript
+    │  Returns result to browser via next poll / response
+    ▼
+Browser (displays result)
+```
+
+### Why the Client Evaluates
+
+The app's runtime state (local variables, imported modules, live objects) lives
+in the client process. The server only has serialized snapshots. To provide a
+real REPL, expressions must be evaluated in the client process using the actual
+stack frame where the breakpoint was hit.
+
+### Client-Side Eval Loop
+
+When a breakpoint pauses and the client is polling `wait_for_resume_action`, it
+currently only handles resume/skip/modify/raise actions. We extend this to also
+handle `{"action": "repl_eval", "expr": "..."}` actions:
+
+1. Client receives `repl_eval` action.
+2. Client evaluates `expr` using `eval()` in the frame's `locals`/`globals`.
+3. Client POSTs the result (or error) back to the server.
+4. Client continues polling for the next action (does NOT resume execution).
+
+This means the client stays paused and can handle an arbitrary number of
+`repl_eval` actions before eventually receiving a `continue`/`skip`/`raise`
+action that actually resumes execution.
+
+### Multi-Action Polling Change
+
+Currently `wait_for_resume_action` returns a single action and the client
+resumes. We need to change this so:
+
+- `repl_eval` actions are handled in-loop and do NOT cause the function to return.
+- Only terminal actions (`continue`, `skip`, `raise`, `modify`) cause the
+  function to return and resume execution.
+
+---
+
+## Data Model
+
+### ReplSession (server-side, in ReplManager)
+
+```python
+{
+    "session_id": str,           # "{pid}-{timestamp}" — unique identifier
+    "pause_id": str,             # Links to paused execution in BreakpointManager
+    "pid": int,                  # Client process PID
+    "started_at": float,         # Epoch timestamp when user started session
+    "closed_at": float | None,   # Epoch timestamp when breakpoint resumed (None if active)
+    "function_name": str,        # The function where the breakpoint was hit
+    "call_id": str | None,       # Links to call record for call tree integration
+    "process_key": str,          # "{pid}_{start_time}" for call tree linkage
+    "transcript": [              # Ordered list of interactions
+        {
+            "index": int,
+            "input": str,        # User expression
+            "output": str,       # repr() of result or error message
+            "is_error": bool,
+            "timestamp": float,  # When this exchange happened
+        },
+    ],
+}
+```
+
+### Storage
+
+REPL sessions are stored in `BreakpointManager` (in-memory dict keyed by
+`session_id`). If persistence across server restarts is needed later, sessions
+can be serialized to the CAS store or a dedicated SQLite table, but in-memory
+is consistent with how paused executions and call records are stored today.
+
+---
+
+## Routes
+
+### Pages (HTML)
+
+| Route | Purpose |
+|-------|---------|
+| `/repls` | Searchable/filterable timestamp-based index of all REPL sessions. |
+| `/repl/{pid}-{timestamp}` | Dedicated page for one REPL session. Active: shows live REPL. Closed: shows transcript. |
+| `/callstack/{pause_id}` | Complete call stack information for the breakpoint associated with a pause. |
+
+### API Endpoints
+
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/api/repl/start` | POST | Start a new REPL session for a paused execution. Body: `{"pause_id": "..."}`. Returns `session_id`. |
+| `/api/repl/{session_id}` | GET | Get session metadata + full transcript. |
+| `/api/repl/{session_id}/eval` | POST | Submit an expression. Body: `{"expr": "..."}`. Returns the result once client evaluates. |
+| `/api/repl/sessions` | GET | List all sessions. Supports query params: `?search=`, `?status=active|closed`, `?from=`, `?to=`. |
+| `/api/repl/{session_id}/close` | POST | Explicitly close a session (marks closed_at). Happens automatically when breakpoint resumes. |
+| `/api/call/repl-eval` | Internal | Server queues an eval request for the client. |
+| `/api/call/repl-result` | POST | Client posts eval result back. |
+| `/api/poll-repl/{pause_id}` | GET | Client polls for pending eval requests (separate from resume polling). |
+
+### Call Tree Integration
+
+Each call tree node for a paused execution that had REPL sessions will include
+links to the associated `/repl/{pid}-{timestamp}` pages. The call record in
+`BreakpointManager._call_records` will gain a `repl_sessions` field: a list of
+`session_id` values.
+
+---
+
+## UI Design
+
+### `/repls` — Session Index Page
+
+- Header: "REPL Sessions"
+- Search bar: free-text search across function names and transcript content.
+- Filters:
+  - Status: All / Active / Closed (radio buttons or dropdown).
+  - Date range: From / To timestamp pickers.
+- Table columns:
+  - Session ID (link to `/repl/{pid}-{timestamp}`)
+  - Function name
+  - Status (Active / Closed badge)
+  - Started at (human-readable timestamp)
+  - Closed at (or "—" if active)
+  - Transcript lines count
+  - Call stack link (link to `/callstack/{pause_id}`)
+- Sorted by `started_at` descending (most recent first).
+- Pagination if session count exceeds a threshold (e.g., 50 per page).
+
+### `/repl/{pid}-{timestamp}` — Session Page
+
+**Header section:**
+- Function name and breakpoint details.
+- Status badge (Active / Closed).
+- Link to `/callstack/{pause_id}` ("View Call Stack").
+- Link to `/call-tree/{process_key}` ("View Call Tree").
+- Timestamps (started, closed).
+
+**Transcript section:**
+- Scrollable area showing all past `input`/`output` pairs.
+- Inputs styled as `>>>` prompts (monospace, syntax highlighted).
+- Outputs styled as REPL output (monospace).
+- Errors styled distinctly (red text or red border).
+- Auto-scrolls to bottom on new entries.
+
+**Input section (active sessions only):**
+- Text input (or multi-line textarea with shift+enter for newlines).
+- Submit button / Enter to evaluate.
+- Disabled with message "Breakpoint resumed — session closed" when closed.
+
+**Callstack link:**
+- Prominent link/button: "View Call Stack" → `/callstack/{pause_id}`.
+
+### `/callstack/{pause_id}` — Call Stack Page
+
+- Header: "Call Stack for {function_name}"
+- Link back to REPL session(s) associated with this pause.
+- Full stack trace display (reuse existing frame view pattern from `/frame/`):
+  - Each frame shows: filename, line number, function name, code context.
+  - Frames are clickable to expand/collapse source context.
+- Local variables for each frame (if available from the client).
+- Link to the call tree node.
+
+### Call Tree Node Integration
+
+On the `/call-tree/{process_key}` page, call tree nodes that have associated
+REPL sessions will show a small "REPL" badge/link. Clicking it navigates to the
+relevant `/repl/{pid}-{timestamp}` page. If multiple REPL sessions exist for
+one call, all are listed.
+
+---
+
+## Implementation Plan
+
+### Phase 1: Server-Side REPL Session Management
+
+1. Create `ReplManager` class (or extend `BreakpointManager`):
+   - `start_session(pause_id) -> session_id`
+   - `get_session(session_id) -> ReplSession`
+   - `list_sessions(search, status, from_ts, to_ts) -> list[ReplSession]`
+   - `append_transcript(session_id, input, output, is_error) -> int`
+   - `close_session(session_id)`
+   - `get_sessions_for_pause(pause_id) -> list[session_id]`
+   - `get_sessions_for_call(call_id) -> list[session_id]`
+2. Thread-safe with locking (same pattern as `BreakpointManager`).
+3. Auto-close sessions when breakpoint resumes (hook into `resume_execution`).
+
+### Phase 2: Server-Side API Endpoints
+
+1. Add REPL API routes to `BreakpointServer._register_routes()`.
+2. Implement eval request queuing:
+   - When browser POSTs to `/api/repl/{session_id}/eval`, server creates an
+     eval request and queues it for the client.
+   - Server blocks (with timeout) waiting for the client to post the result.
+3. Implement client-facing endpoints:
+   - `/api/poll-repl/{pause_id}` — client polls for eval requests.
+   - `/api/call/repl-result` — client posts eval results.
+
+### Phase 3: Client-Side Eval Support
+
+1. Modify `wait_for_resume_action` loop in client to also poll
+   `/api/poll-repl/{pause_id}` for eval requests.
+2. When an eval request is received:
+   - Capture the frame's `locals()` and `globals()` at the breakpoint site.
+   - Run `eval(expr, globals, locals)` in a try/except.
+   - POST result/error to `/api/call/repl-result`.
+3. For statement execution (assignments, imports): use `exec()` when `eval()`
+   raises `SyntaxError`, then re-eval to capture the result. Track exec'd
+   names in a session-local namespace dict.
+4. Continue polling — do NOT resume execution until a terminal action arrives.
+
+### Phase 4: Web UI — REPL Session Page
+
+1. Create HTML template for `/repl/{pid}-{timestamp}`.
+2. JavaScript for:
+   - Submitting expressions via fetch POST.
+   - Polling for results (or use SSE if preferred).
+   - Rendering transcript entries.
+   - Auto-scroll behavior.
+   - Input history (up/down arrow).
+3. Syntax highlighting for Python expressions (reuse Pygments integration).
+
+### Phase 5: Web UI — Sessions Index Page
+
+1. Create HTML template for `/repls`.
+2. JavaScript for:
+   - Search/filter controls.
+   - Fetch session list from `/api/repl/sessions`.
+   - Pagination.
+
+### Phase 6: Web UI — Call Stack Page
+
+1. Create HTML template for `/callstack/{pause_id}`.
+2. Reuse frame rendering logic from existing `/frame/` route.
+3. Add links to associated REPL sessions.
+
+### Phase 7: Call Tree Integration
+
+1. Add `repl_sessions` field to call records.
+2. Modify call tree HTML template to show REPL links on nodes with sessions.
+
+### Phase 8: Paused Execution Card Integration
+
+1. Add "Open REPL" button to the paused execution cards on the main page.
+2. Clicking it POSTs to `/api/repl/start` and redirects to the session page.
+
+---
+
+## Tests
+
+### Unit Tests — ReplManager
+
+```
+test_start_session_creates_session_with_correct_fields
+test_start_session_returns_unique_session_id_format
+test_start_session_for_nonexistent_pause_id_raises_error
+test_start_session_session_id_contains_pid_and_timestamp
+test_get_session_returns_correct_session
+test_get_session_nonexistent_returns_none
+test_list_sessions_returns_all_sessions
+test_list_sessions_filter_by_active_status
+test_list_sessions_filter_by_closed_status
+test_list_sessions_filter_by_timestamp_range
+test_list_sessions_search_by_function_name
+test_list_sessions_search_by_transcript_content
+test_list_sessions_combined_filters
+test_list_sessions_empty_when_no_sessions
+test_append_transcript_adds_entry_with_correct_fields
+test_append_transcript_entries_ordered_by_index
+test_append_transcript_to_nonexistent_session_raises_error
+test_append_transcript_to_closed_session_raises_error
+test_close_session_sets_closed_at
+test_close_session_already_closed_is_idempotent
+test_close_session_nonexistent_raises_error
+test_auto_close_on_breakpoint_resume
+test_get_sessions_for_pause_returns_matching_sessions
+test_get_sessions_for_pause_returns_empty_for_no_sessions
+test_get_sessions_for_call_returns_matching_sessions
+test_thread_safety_concurrent_session_starts
+test_thread_safety_concurrent_transcript_appends
+test_multiple_sessions_for_same_pause_id
+```
+
+### Unit Tests — API Endpoints (Server)
+
+```
+test_post_repl_start_creates_session_returns_session_id
+test_post_repl_start_missing_pause_id_returns_400
+test_post_repl_start_invalid_pause_id_returns_404
+test_post_repl_start_pause_already_resumed_returns_409
+test_get_repl_session_returns_metadata_and_transcript
+test_get_repl_session_nonexistent_returns_404
+test_post_repl_eval_queues_expression_and_returns_result
+test_post_repl_eval_missing_expr_returns_400
+test_post_repl_eval_empty_expr_returns_400
+test_post_repl_eval_on_closed_session_returns_409
+test_post_repl_eval_timeout_when_client_disconnected_returns_504
+test_get_repl_sessions_returns_all_sessions
+test_get_repl_sessions_filter_by_status
+test_get_repl_sessions_filter_by_timestamp_range
+test_get_repl_sessions_search_parameter
+test_get_repl_sessions_pagination
+test_post_repl_close_closes_session
+test_post_repl_close_nonexistent_returns_404
+test_poll_repl_returns_pending_eval_request
+test_poll_repl_returns_empty_when_no_requests
+test_call_repl_result_posts_result_back
+test_call_repl_result_posts_error_back
+test_call_repl_result_unblocks_waiting_eval_request
+```
+
+### Unit Tests — Client-Side Eval
+
+```
+test_eval_simple_expression_returns_result
+test_eval_expression_with_local_variables
+test_eval_expression_with_global_variables
+test_eval_expression_referencing_function_arguments
+test_eval_syntax_error_returns_error
+test_eval_runtime_error_returns_error_with_traceback
+test_eval_name_error_returns_helpful_message
+test_eval_statement_via_exec_fallback
+test_eval_import_statement
+test_eval_assignment_then_reference_in_later_eval
+test_eval_modifying_local_variable
+test_eval_accessing_self_on_method_breakpoint
+test_eval_result_repr_for_large_objects_is_truncated
+test_eval_result_repr_for_unprintable_objects
+test_eval_does_not_resume_execution
+test_eval_multiple_expressions_sequentially
+test_client_polls_repl_eval_requests
+test_client_posts_repl_result_after_eval
+test_client_continues_polling_after_eval
+test_client_resumes_only_on_terminal_action
+test_client_handles_eval_during_polling_loop
+test_eval_with_multiline_expression
+test_eval_timeout_protection_for_infinite_loops
+```
+
+### Unit Tests — Call Stack Page
+
+```
+test_callstack_page_renders_for_valid_pause_id
+test_callstack_page_returns_404_for_invalid_pause_id
+test_callstack_page_shows_all_stack_frames
+test_callstack_page_shows_frame_filenames_and_line_numbers
+test_callstack_page_shows_code_context
+test_callstack_page_links_to_repl_sessions
+test_callstack_page_links_to_call_tree
+```
+
+### Unit Tests — REPL Session Page
+
+```
+test_repl_page_renders_for_active_session
+test_repl_page_renders_for_closed_session
+test_repl_page_shows_transcript
+test_repl_page_shows_input_field_when_active
+test_repl_page_hides_input_field_when_closed
+test_repl_page_shows_closed_message_when_closed
+test_repl_page_returns_404_for_nonexistent_session
+test_repl_page_links_to_callstack
+test_repl_page_links_to_call_tree
+```
+
+### Unit Tests — Sessions Index Page
+
+```
+test_repls_page_renders_with_no_sessions
+test_repls_page_renders_with_sessions
+test_repls_page_shows_session_links
+test_repls_page_search_filters_by_function_name
+test_repls_page_search_filters_by_transcript_content
+test_repls_page_filter_by_active_status
+test_repls_page_filter_by_closed_status
+test_repls_page_filter_by_date_range
+test_repls_page_sorted_by_most_recent_first
+test_repls_page_pagination
+test_repls_page_shows_callstack_links
+```
+
+### Unit Tests — Call Tree Integration
+
+```
+test_call_tree_node_shows_repl_badge_when_session_exists
+test_call_tree_node_no_repl_badge_when_no_session
+test_call_tree_node_repl_badge_links_to_session_page
+test_call_tree_node_multiple_sessions_shows_all_links
+test_call_record_repl_sessions_field_populated_on_session_start
+test_call_record_repl_sessions_field_empty_by_default
+```
+
+### Unit Tests — Paused Execution Card
+
+```
+test_paused_card_shows_open_repl_button
+test_paused_card_repl_button_starts_session_and_redirects
+test_paused_card_shows_existing_repl_link_if_session_active
+```
+
+### Integration Tests
+
+```
+test_full_repl_flow_start_eval_close
+    Start server, pause a breakpoint, start REPL session, eval expression,
+    verify result in transcript, resume breakpoint, verify session closed.
+
+test_repl_eval_accesses_live_client_state
+    Breakpoint pauses with known local variables. REPL eval reads them
+    correctly.
+
+test_repl_eval_modifies_client_state
+    Eval an assignment, then eval a read of that variable in the same session.
+    Verify the modification persisted.
+
+test_repl_session_closes_on_breakpoint_resume
+    Start REPL, resume breakpoint from UI (not from REPL), verify session
+    auto-closes and transcript is preserved.
+
+test_repl_eval_after_resume_returns_error
+    Resume breakpoint, then try to eval. Verify 409 response.
+
+test_multiple_repl_sessions_same_breakpoint
+    Start two REPL sessions for the same paused execution. Both work
+    independently. Both appear in call tree node.
+
+test_repl_transcript_persists_after_close
+    Close session, GET transcript, verify all entries present.
+
+test_repl_session_visible_in_call_tree
+    Start REPL for a paused call, verify call tree shows REPL link.
+
+test_repls_index_lists_all_sessions
+    Create multiple sessions, verify /repls lists them all.
+
+test_repls_index_search_works
+    Create sessions for different functions, search by function name.
+
+test_repl_page_live_interaction
+    Open /repl/{pid}-{timestamp} for active session, submit expression via
+    form, verify result appears in transcript.
+
+test_repl_page_shows_read_only_transcript_when_closed
+    Close session, load page, verify no input field, transcript visible.
+
+test_callstack_page_complete_stack_info
+    Pause at breakpoint, verify /callstack/{pause_id} shows full stack.
+
+test_repl_page_links_to_callstack
+    Verify /repl/{pid}-{timestamp} page has working link to /callstack/.
+
+test_client_disconnect_during_eval_times_out_gracefully
+    Start eval, kill client process, verify server returns timeout error
+    and session can be closed.
+
+test_concurrent_evals_serialized
+    Submit two evals rapidly. Verify they execute sequentially and both
+    results appear in transcript in order.
+```
+
+### Edge Case Tests
+
+```
+test_eval_expression_that_raises_exception
+test_eval_expression_that_returns_none
+test_eval_expression_that_returns_empty_string
+test_eval_expression_that_returns_very_large_result
+test_eval_expression_with_unicode
+test_eval_expression_with_special_characters
+test_eval_expression_that_blocks_indefinitely_times_out
+test_eval_expression_that_prints_to_stdout
+test_eval_expression_that_modifies_mutable_argument
+test_session_id_with_large_pid
+test_session_id_with_high_precision_timestamp
+test_start_session_race_condition_same_pid_timestamp
+test_close_session_while_eval_in_flight
+test_resume_breakpoint_while_eval_in_flight
+test_server_restart_loses_in_memory_sessions
+test_multiple_clients_same_pid_different_start_time
+test_repl_session_for_inline_breakpoint_vs_proxy_breakpoint
+test_repl_with_async_debug_call_breakpoint
+test_repls_page_with_hundreds_of_sessions_performance
+test_transcript_with_hundreds_of_entries_performance
+test_eval_in_nested_breakpoint_scope
+test_callstack_page_for_deeply_nested_stack
+```
+
+---
+
+## Open Questions
+
+1. **Exec vs Eval scope isolation**: When the user runs `exec("x = 42")` in the
+   REPL, should `x` be visible in subsequent `eval()` calls? If yes, we need a
+   persistent namespace dict per session that overlays the frame locals. If no,
+   assignments are fire-and-forget. **Proposed answer**: Yes, maintain a
+   session-local namespace dict that is passed as the `locals` parameter to both
+   `eval()` and `exec()`, merged with the frame's actual locals.
+
+2. **Stdout/stderr capture**: If the user's expression calls `print()`, should
+   the output appear in the REPL transcript? **Proposed answer**: Yes, redirect
+   `sys.stdout` and `sys.stderr` to a `StringIO` during eval and include
+   captured output in the result. If there is both a return value and stdout
+   output, show both.
+
+3. **Security**: `eval()`/`exec()` of arbitrary code in the client process is
+   inherently unsafe. Is this acceptable given the debugger is a dev tool
+   running on a trusted local network? **Proposed answer**: Yes. Document that
+   the REPL has full access to the client process. This is the same trust model
+   as any debugger (pdb, gdb, etc.).
+
+4. **Timeout for eval**: What should the timeout be for client-side eval? Too
+   short and complex expressions fail. Too long and infinite loops hang the
+   session. **Proposed answer**: Default 30 seconds, configurable per-server.
+   On timeout, the eval is abandoned and an error is returned to the user.
+   The client should run eval in a thread so the polling loop isn't blocked.
+
+5. **Multi-line input**: Should the REPL support multi-line expressions
+   (e.g., function definitions, for loops)? **Proposed answer**: Yes. The UI
+   textarea supports Shift+Enter for newlines. The client uses
+   `compile(expr, "<repl>", "exec")` to detect whether more input is needed
+   (like the standard Python REPL's `code.InteractiveConsole`).
+
+6. **Persistence**: Should REPL sessions survive server restarts?
+   **Proposed answer**: No, not in the initial implementation. Sessions are
+   in-memory, consistent with paused executions. Active sessions become
+   invalid on restart since the client breakpoint is also lost. Could add
+   SQLite persistence for historical transcripts later.
+
+7. **REPL for already-resumed breakpoints**: Can a user start a REPL session
+   for a breakpoint that has already been resumed? **Proposed answer**: No.
+   The REPL requires a live paused execution. Past breakpoints are viewable
+   only through their existing execution history pages.
+
+8. **Eval result serialization**: Should eval results be stored in the CAS
+   store as CIDs, or just as `repr()` strings in the transcript?
+   **Proposed answer**: Store `repr()` in the transcript for display. Optionally
+   also store the serialized result as a CID for deep inspection via the
+   object browser, but only if serialization succeeds (graceful degradation).
+
+9. **Concurrent REPL sessions on same pause**: If two browser tabs open REPLs
+   for the same paused execution, they share the client-side namespace. Evals
+   from either session execute in the same process. Should we allow this?
+   **Proposed answer**: Yes, allow it. Each session has its own transcript,
+   but they share the underlying client state. Document this behavior. The
+   session-local namespace dicts are per-session, but mutations to the frame's
+   actual locals are visible across sessions.
+
+10. **Call stack local variables**: Should `/callstack/{pause_id}` show local
+    variable values for each frame? This requires the client to serialize and
+    send frame locals. **Proposed answer**: Start without local variables in
+    the call stack page (just show frame metadata like the existing `/frame/`
+    route). Add locals display as a follow-up if needed — the REPL itself
+    serves as the primary way to inspect variables.
+
+11. **`/repl` page link to `/callstack`**: The requirement says "The /repl page
+    should include a link to a /callstack page." Does `/callstack` show the
+    call stack at the moment the breakpoint was hit, or the current call stack?
+    **Proposed answer**: The call stack at the moment the breakpoint was hit.
+    This is the stack trace already captured in the paused execution's
+    `call_site.stack_trace`. The stack is static — it doesn't change while
+    paused.
+
+12. **Session ID uniqueness**: The format `{pid}-{timestamp}` could
+    theoretically collide if two sessions start at the exact same millisecond
+    for the same PID (e.g., two browser tabs clicking simultaneously). Should
+    we add a disambiguator? **Proposed answer**: Use microsecond-precision
+    timestamps (`time.time()` gives float with ~microsecond precision).
+    Collisions are astronomically unlikely. If paranoid, add a check-and-retry
+    with a 1ms bump.
