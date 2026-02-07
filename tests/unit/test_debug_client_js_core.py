@@ -184,6 +184,9 @@ globalThis.fetch = async (url, opts) => {
   if (url.endsWith('/api/call/start')) return { ok: true, json: async () => ({
     call_id: 'c1', action: 'poll', poll_url: '/api/poll/abc', poll_interval_ms: 1
   }) };
+  if (url.endsWith('/api/poll-repl/abc')) {
+    return { ok: true, json: async () => ({ eval_id: null }) };
+  }
   if (url.endsWith('/api/poll/abc')) {
     pollCount += 1;
     return { ok: true, json: async () => ({ status: 'ready', action: { action: 'continue' } }) };

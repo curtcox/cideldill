@@ -183,6 +183,8 @@ def test_poll_logs_suspended_breakpoints_for_long_running_poll(monkeypatch, capl
     def fake_get_json(self, path: str) -> dict:
         if path == "/api/poll/abc":
             return {"status": "waiting"}
+        if path == "/api/poll-repl/abc":
+            return {"eval_id": None}
         raise AssertionError(f"Unexpected path: {path}")
 
     def fake_get(url: str, timeout: float) -> _Response:
@@ -234,6 +236,8 @@ def test_poll_logs_all_visible_suspended_breakpoints(monkeypatch, caplog) -> Non
     def fake_get_json(self, path: str) -> dict:
         if path == "/api/poll/abc":
             return {"status": "waiting"}
+        if path == "/api/poll-repl/abc":
+            return {"eval_id": None}
         raise AssertionError(f"Unexpected path: {path}")
 
     def fake_get(url: str, timeout: float) -> _Response:
@@ -291,6 +295,8 @@ def test_poll_uses_function_name_when_method_name_missing(monkeypatch, caplog) -
     def fake_get_json(self, path: str) -> dict:
         if path == "/api/poll/abc":
             return {"status": "waiting"}
+        if path == "/api/poll-repl/abc":
+            return {"eval_id": None}
         raise AssertionError(f"Unexpected path: {path}")
 
     def fake_get(url: str, timeout: float) -> _Response:
@@ -341,6 +347,8 @@ def test_poll_logs_when_no_suspended_breakpoints_are_visible(monkeypatch, caplog
     def fake_get_json(self, path: str) -> dict:
         if path == "/api/poll/abc":
             return {"status": "waiting"}
+        if path == "/api/poll-repl/abc":
+            return {"eval_id": None}
         raise AssertionError(f"Unexpected path: {path}")
 
     def fake_get(url: str, timeout: float) -> _Response:
@@ -380,6 +388,8 @@ def test_async_poll_logs_when_no_suspended_breakpoints_are_visible(monkeypatch, 
     def fake_get_json(self, path: str) -> dict:
         if path == "/api/poll/abc":
             return {"status": "waiting"}
+        if path == "/api/poll-repl/abc":
+            return {"eval_id": None}
         raise AssertionError(f"Unexpected path: {path}")
 
     def fake_get(url: str, timeout: float) -> _Response:

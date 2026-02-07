@@ -72,7 +72,15 @@ def execute_call_action(
 ) -> Any:
     """Execute the server's action directive for a call."""
     while action.get("action") == "poll":
-        action = client.poll(action, frame=frame)
+        if frame is None:
+            action = client.poll(action)
+        else:
+            try:
+                action = client.poll(action, frame=frame)
+            except TypeError as exc:  # pragma: no cover - fallback for legacy mocks
+                if "frame" not in str(exc):
+                    raise
+                action = client.poll(action)
 
     action_type = action.get("action")
     if action_type == "continue":
@@ -105,7 +113,15 @@ async def execute_call_action_async(
 ) -> Any:
     """Async variant of execute_call_action."""
     while action.get("action") == "poll":
-        action = await client.async_poll(action, frame=frame)
+        if frame is None:
+            action = await client.async_poll(action)
+        else:
+            try:
+                action = await client.async_poll(action, frame=frame)
+            except TypeError as exc:  # pragma: no cover - fallback for legacy mocks
+                if "frame" not in str(exc):
+                    raise
+                action = await client.async_poll(action)
 
     action_type = action.get("action")
     if action_type == "continue":
