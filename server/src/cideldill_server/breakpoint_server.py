@@ -892,6 +892,7 @@ class BreakpointServer:
         port: int = 5174,
         host: str = "0.0.0.0",
         debug_enabled: bool = False,
+        db_path: str = ":memory:",
         port_file: Path | None = None,
     ) -> None:
         """Initialize the server.
@@ -907,7 +908,7 @@ class BreakpointServer:
         self.app = Flask(__name__)
         self._running = False
         self._server: BaseWSGIServer | None = None
-        self._cid_store = CIDStore()
+        self._cid_store = CIDStore(db_path)
         self._call_seq = 0
         self._call_seq_lock = threading.Lock()
         self._debug_enabled = debug_enabled

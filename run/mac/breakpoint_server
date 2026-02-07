@@ -11,6 +11,8 @@ Options:
     --port PORT         Port to listen on (default: 5174)
     --host HOST         Host to bind to (default: 0.0.0.0)
     --debug             Enable debug logging for successful poll requests
+    --db PATH           SQLite DB path (default: auto-created disk DB)
+    --memory            Use in-memory SQLite DB
     -h, --help          Show this help message
 
 Examples:
@@ -25,10 +27,17 @@ Examples:
 
     # Enable debug logging for poll requests
     breakpoint_server --debug
+
+    # Use in-memory database
+    breakpoint_server --memory
+
+    # Use a specific database file
+    breakpoint_server --db /path/to/breakpoints.sqlite3
 """
 
 import argparse
 import sys
+from datetime import datetime
 from pathlib import Path
 
 script_dir = Path(__file__).parent
@@ -50,6 +59,8 @@ Examples:
   breakpoint_server                  # Run on default port 5174
   breakpoint_server --port 8080      # Run on custom port
   breakpoint_server --host 127.0.0.1 # Bind to localhost only
+  breakpoint_server --memory         # Use in-memory DB
+  breakpoint_server --db /path/to/breakpoints.sqlite3
         """
     )
 
@@ -72,12 +83,47 @@ Examples:
         help="Enable debug logging for successful poll requests"
     )
 
+    db_group = parser.add_mutually_exclusive_group()
+    db_group.add_argument(
+        "--db",
+        default=None,
+        help=(
+            "SQLite database file for payload storage. Defaults to an auto-created "
+            "disk DB under .cideldill/breakpoint_dbs. Use ':memory:' for in-memory."
+        ),
+    )
+    db_group.add_argument(
+        "--memory",
+        action="store_true",
+        help="Use an in-memory SQLite database (equivalent to --db :memory:).",
+    )
+
     return parser.parse_args()
+
+
+def resolve_db_path(args) -> str:
+    if args.memory:
+        return ":memory:"
+    if args.db:
+        if args.db == ":memory:":
+            return ":memory:"
+        db_path = Path(args.db).expanduser()
+        if not db_path.is_absolute():
+            db_path = (Path.cwd() / db_path).resolve()
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        return str(db_path)
+
+    db_dir = repo_root / ".cideldill" / "breakpoint_dbs"
+    db_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    db_path = db_dir / f"breakpoints-{timestamp}.sqlite3"
+    return str(db_path)
 
 
 def main():
     """Main entry point for the script."""
     args = parse_args()
+    db_path = resolve_db_path(args)
 
     print("=" * 60)
     print("CID el Dill - Interactive Breakpoint Server")
@@ -93,6 +139,7 @@ def main():
     print("  DELETE /api/breakpoints/<name> - Remove breakpoint")
     print("  GET    /api/paused             - List paused executions")
     print("  POST   /api/paused/<id>/continue - Continue execution")
+    print(f"\nDatabase: {db_path}")
     print("\nPress Ctrl+C to stop the server")
     print("=" * 60)
 
@@ -103,6 +150,7 @@ def main():
             port=args.port,
             host=args.host,
             debug_enabled=args.debug,
+            db_path=db_path,
         )
         print("\n✓ Server is starting...\n")
         server.start()
