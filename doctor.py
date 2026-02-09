@@ -6,6 +6,10 @@ and that the environment is correctly configured.
 """
 
 import sys
+import os
+import shutil
+import subprocess
+from pathlib import Path
 
 # ANSI color codes
 GREEN = '\033[92m'
@@ -36,6 +40,30 @@ def check_module(module_name: str, import_name: str = None) -> tuple[bool, str]:
         return True, module_name
     except ImportError:
         return False, module_name
+
+
+def check_path_python_imports(modules: list[str]) -> tuple[bool, str]:
+    """Check that the PATH python can import required modules.
+
+    This matches how run/mac scripts execute (#!/usr/bin/env python3).
+    """
+    python_path = shutil.which("python3") or shutil.which("python")
+    if not python_path:
+        return False, "python3 (NOT FOUND on PATH)"
+
+    import_code = ";".join([f"import {module}" for module in modules])
+    result = subprocess.run(
+        [python_path, "-c", import_code],
+        capture_output=True,
+        text=True,
+        env=os.environ,
+        check=False,
+    )
+    if result.returncode != 0:
+        error = result.stderr.strip() or "missing dependencies"
+        return False, f"{Path(python_path).name} ({error})"
+
+    return True, f"{Path(python_path).name}"
 
 
 def check_cideldill_client_installed() -> tuple[bool, str]:
@@ -133,8 +161,22 @@ def main():
         all_passed = all_passed and passed
     print()
 
+    # Check PATH python used by run/mac scripts
+    print(f"{BOLD}5. Script Runtime (PATH python3){RESET}")
+    runtime_modules = ["dill", "flask", "pygments", "requests"]
+    passed, msg = check_path_python_imports(runtime_modules)
+    status = f"{GREEN}✓{RESET}" if passed else f"{RED}✗{RESET}"
+    print(f"   {status} {msg}")
+    if not passed:
+        print(
+            "   Scripts like run/mac/breakpoint_server use /usr/bin/env python3. "
+            "Activate the venv or rerun ./run/mac/bootstrap_env."
+        )
+    all_passed = all_passed and passed
+    print()
+
     # Check optional development dependencies
-    print(f"{BOLD}5. Development Dependencies (Optional){RESET}")
+    print(f"{BOLD}6. Development Dependencies (Optional){RESET}")
     dev_deps = [
         ('pytest', 'pytest'),
         ('pytest-cov', 'pytest_cov'),

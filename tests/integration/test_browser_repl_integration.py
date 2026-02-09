@@ -114,7 +114,7 @@ const mod = await import(pathToFileURL(process.env.DEBUG_JS).href);
 const { withDebug, debugCall } = mod;
 
 globalThis.window = { location: { href: 'https://example.com/app' } };
-globalThis.performance = { timeOrigin: 1234 };
+globalThis.performance = { timeOrigin: 1234, markResourceTiming: () => {} };
 
 withDebug('ON');
 function add(a, b) { return a + b; }

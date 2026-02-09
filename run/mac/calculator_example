@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import sqlite3
 import webbrowser
@@ -15,6 +16,38 @@ repo_root = script_dir.parent.parent
 sys.path.insert(0, str(repo_root / "client" / "src"))
 sys.path.insert(0, str(repo_root / "server" / "src"))
 sys.path.insert(0, str(repo_root))
+
+
+def _candidate_venv_pythons() -> list[tuple[Path, Path]]:
+    candidates: list[tuple[Path, Path]] = []
+
+    venv_env = os.environ.get("VIRTUAL_ENV")
+    if venv_env:
+        venv_root = Path(venv_env)
+        candidates.append((venv_root / "bin" / "python", venv_root))
+
+    venv_root = repo_root / "venv"
+    candidates.append((venv_root / "bin" / "python", venv_root))
+
+    dot_venv_root = repo_root / ".venv"
+    candidates.append((dot_venv_root / "bin" / "python", dot_venv_root))
+
+    return [pair for pair in candidates if pair[0].exists()]
+
+
+def _reexec_with_venv_python() -> None:
+    for venv_python, venv_root in _candidate_venv_pythons():
+        try:
+            current_prefix = Path(sys.prefix).resolve()
+            target_prefix = venv_root.resolve()
+        except OSError:
+            continue
+
+        if current_prefix != target_prefix:
+            os.execv(str(venv_python), [str(venv_python)] + sys.argv)
+
+
+_reexec_with_venv_python()
 
 from examples.level0_calculator import add, div, mul
 
@@ -62,8 +95,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
 
 def _record_call(conn: sqlite3.Connection, fn_name: str) -> None:
     conn.execute(
-        "INSERT INTO call_records (function_name) VALUES (?)",
-        (fn_name,),
+        "INSERT INTO call_records (function_name, args_cid) VALUES (?, ?)",
+        (fn_name, ""),
     )
     conn.commit()
 

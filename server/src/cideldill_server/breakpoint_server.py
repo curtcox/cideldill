@@ -1127,6 +1127,7 @@ class BreakpointServer:
                 self._repl_eval_queues.setdefault(pause_id, deque()).append({
                     "eval_id": eval_id,
                     "session_id": session_id,
+                    "pause_id": pause_id,
                     "expr": expr,
                 })
                 self._repl_eval_waiters[eval_id] = {

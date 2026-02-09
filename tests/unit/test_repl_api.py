@@ -158,3 +158,41 @@ def test_repl_eval_timeout_returns_504(server) -> None:
     )
 
     assert response.status_code == 504
+
+
+def test_poll_repl_response_includes_pause_id(server) -> None:
+    """The poll-repl response must include pause_id so the JS client can
+    include it when posting results to /api/call/repl-result."""
+    pause_id = server.manager.add_paused_execution(_pause_call_data())
+    session_id = server.manager.start_repl_session(pause_id)
+
+    # Queue an eval request (in a background thread since it blocks)
+    def _post_eval() -> None:
+        server.test_client().post(
+            f"/api/repl/{session_id}/eval",
+            data=json.dumps({"expr": "x + 1"}),
+            content_type="application/json",
+        )
+
+    thread = threading.Thread(target=_post_eval)
+    thread.start()
+    time.sleep(0.1)
+
+    poll = server.test_client().get(f"/api/poll-repl/{pause_id}")
+    assert poll.status_code == 200
+    poll_payload = json.loads(poll.data)
+    assert poll_payload["eval_id"] is not None
+    assert poll_payload["pause_id"] == pause_id
+
+    # Clean up: post a result so the eval thread unblocks
+    server.test_client().post(
+        "/api/call/repl-result",
+        data=json.dumps({
+            "eval_id": poll_payload["eval_id"],
+            "pause_id": pause_id,
+            "session_id": session_id,
+            "result": "42",
+        }),
+        content_type="application/json",
+    )
+    thread.join(timeout=2.0)

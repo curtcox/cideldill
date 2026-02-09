@@ -32,7 +32,7 @@ const mod = await import(pathToFileURL(process.env.DEBUG_JS).href);
 const { withDebug, debugCallSync } = mod;
 
 globalThis.window = { location: { href: 'https://example.com/app' } };
-globalThis.performance = { timeOrigin: 1234 };
+globalThis.performance = { timeOrigin: 1234, markResourceTiming: () => {} };
 
 const requests = [];
 const responses = new Map();
@@ -80,7 +80,7 @@ const mod = await import(pathToFileURL(process.env.DEBUG_JS).href);
 const { withDebug, debugCallSync } = mod;
 
 globalThis.window = { location: { href: 'https://example.com/app' } };
-globalThis.performance = { timeOrigin: 1234 };
+globalThis.performance = { timeOrigin: 1234, markResourceTiming: () => {} };
 
 const requests = [];
 let pollCount = 0;
@@ -140,7 +140,7 @@ const mod = await import(pathToFileURL(process.env.DEBUG_JS).href);
 const { withDebug } = mod;
 
 globalThis.window = { location: { href: 'https://example.com/app' } };
-globalThis.performance = { timeOrigin: 1234 };
+globalThis.performance = { timeOrigin: 1234, markResourceTiming: () => {} };
 
 const calls = [];
 globalThis.fetch = async (url, opts) => {

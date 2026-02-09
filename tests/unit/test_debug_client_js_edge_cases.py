@@ -32,7 +32,7 @@ const mod = await import(pathToFileURL(process.env.DEBUG_JS).href);
 const { withDebug, debugCall } = mod;
 
 globalThis.window = { location: { href: 'https://example.com/app' } };
-globalThis.performance = { timeOrigin: 1234 };
+globalThis.performance = { timeOrigin: 1234, markResourceTiming: () => {} };
 
 let callStart = null;
 
@@ -64,7 +64,7 @@ const mod = await import(pathToFileURL(process.env.DEBUG_JS).href);
 const { withDebug, debugCall } = mod;
 
 globalThis.window = { location: { href: 'https://example.com/app' } };
-globalThis.performance = { timeOrigin: 1234 };
+globalThis.performance = { timeOrigin: 1234, markResourceTiming: () => {} };
 
 let callStart = null;
 const bigValue = 'x'.repeat(10000);
@@ -97,7 +97,7 @@ const mod = await import(pathToFileURL(process.env.DEBUG_JS).href);
 const { withDebug, debugCall } = mod;
 
 globalThis.window = { location: { href: 'https://example.com/app' } };
-globalThis.performance = { timeOrigin: 1234 };
+globalThis.performance = { timeOrigin: 1234, markResourceTiming: () => {} };
 
 let callStart = null;
 
@@ -137,7 +137,7 @@ const mod = await import(pathToFileURL(process.env.DEBUG_JS).href);
 const { withDebug, debugCall } = mod;
 
 globalThis.window = { location: { href: 'https://example.com/app' } };
-globalThis.performance = { timeOrigin: 1234 };
+globalThis.performance = { timeOrigin: 1234, markResourceTiming: () => {} };
 
 let callStartCount = 0;
 const callCompleteIds = [];
@@ -177,7 +177,7 @@ const mod = await import(pathToFileURL(process.env.DEBUG_JS).href);
 const { withDebug, debugCall } = mod;
 
 globalThis.window = { location: { href: 'https://example.com/app' } };
-globalThis.performance = { timeOrigin: 1234 };
+globalThis.performance = { timeOrigin: 1234, markResourceTiming: () => {} };
 
 let callStartCount = 0;
 
@@ -214,7 +214,7 @@ const mod = await import(pathToFileURL(process.env.DEBUG_JS).href);
 const { withDebug, debugCall } = mod;
 
 globalThis.window = { location: { href: 'https://example.com/app' } };
-globalThis.performance = { timeOrigin: 1234 };
+globalThis.performance = { timeOrigin: 1234, markResourceTiming: () => {} };
 
 globalThis.fetch = async (url, opts) => {
   if (url.endsWith('/api/functions')) return { ok: true, json: async () => ({ status: 'ok' }) };
@@ -246,7 +246,7 @@ const mod = await import(pathToFileURL(process.env.DEBUG_JS).href);
 const { withDebug, debugCall } = mod;
 
 globalThis.window = { location: { href: 'https://example.com/app' } };
-globalThis.performance = { timeOrigin: 1234 };
+globalThis.performance = { timeOrigin: 1234, markResourceTiming: () => {} };
 
 globalThis.fetch = async (url, opts) => {
   throw new Error('timeout');
@@ -291,7 +291,7 @@ const mod = await import(pathToFileURL(process.env.DEBUG_JS).href);
 const { withDebug, debugCall } = mod;
 
 globalThis.window = { location: { href: 'https://example.com/app' } };
-globalThis.performance = { timeOrigin: 1234 };
+globalThis.performance = { timeOrigin: 1234, markResourceTiming: () => {} };
 
 globalThis.fetch = async (url, opts) => {
   if (url.endsWith('/api/functions')) return { ok: true, json: async () => ({ status: 'ok' }) };
@@ -316,7 +316,7 @@ const mod = await import(pathToFileURL(process.env.DEBUG_JS).href);
 const { withDebug, debugCall } = mod;
 
 globalThis.window = { location: { href: 'https://example.com/app' } };
-globalThis.performance = { timeOrigin: 1234 };
+globalThis.performance = { timeOrigin: 1234, markResourceTiming: () => {} };
 
 globalThis.fetch = async (url, opts) => {
   if (url.endsWith('/api/functions')) return { ok: true, json: async () => ({ status: 'ok' }) };
@@ -344,7 +344,7 @@ const mod = await import(pathToFileURL(process.env.DEBUG_JS).href);
 const { withDebug } = mod;
 
 globalThis.window = { location: { href: 'https://example.com/app' } };
-globalThis.performance = { timeOrigin: 1234 };
+globalThis.performance = { timeOrigin: 1234, markResourceTiming: () => {} };
 
 let callComplete = null;
 
@@ -380,7 +380,7 @@ const mod = await import(pathToFileURL(process.env.DEBUG_JS).href);
 const { withDebug, debugCall } = mod;
 
 globalThis.window = { location: { href: 'https://example.com/app' } };
-globalThis.performance = { timeOrigin: 1234 };
+globalThis.performance = { timeOrigin: 1234, markResourceTiming: () => {} };
 
 let callStart = null;
 const date = new Date('2024-01-02T03:04:05.000Z');
@@ -412,7 +412,7 @@ const mod = await import(pathToFileURL(process.env.DEBUG_JS).href);
 const { withDebug, debugCall } = mod;
 
 globalThis.window = { location: { href: 'https://example.com/app' } };
-globalThis.performance = { timeOrigin: 1234 };
+globalThis.performance = { timeOrigin: 1234, markResourceTiming: () => {} };
 
 let callStart = null;
 const regex = /abc/i;
@@ -444,7 +444,7 @@ const mod = await import(pathToFileURL(process.env.DEBUG_JS).href);
 const { withDebug, debugCall } = mod;
 
 globalThis.window = { location: { href: 'https://example.com/app' } };
-globalThis.performance = { timeOrigin: 1234 };
+globalThis.performance = { timeOrigin: 1234, markResourceTiming: () => {} };
 
 let callStart = null;
 const err = new Error('boom');
@@ -476,7 +476,7 @@ const mod = await import(pathToFileURL(process.env.DEBUG_JS).href);
 const { withDebug, debugCall } = mod;
 
 globalThis.window = { location: { href: 'https://example.com/app' } };
-globalThis.performance = { timeOrigin: 1234 };
+globalThis.performance = { timeOrigin: 1234, markResourceTiming: () => {} };
 
 let callStart = null;
 const map = new Map([['a', 1], ['b', 2]]);
@@ -511,7 +511,7 @@ const mod = await import(pathToFileURL(process.env.DEBUG_JS).href);
 const { withDebug, debugCall } = mod;
 
 globalThis.window = { location: { href: 'https://example.com/app' } };
-globalThis.performance = { timeOrigin: 1234 };
+globalThis.performance = { timeOrigin: 1234, markResourceTiming: () => {} };
 
 let callStart = null;
 const arr = new Uint8Array([1, 2, 3]);
@@ -543,7 +543,7 @@ const mod = await import(pathToFileURL(process.env.DEBUG_JS).href);
 const { withDebug, debugCall } = mod;
 
 globalThis.window = { location: { href: 'https://example.com/app' } };
-globalThis.performance = { timeOrigin: 1234 };
+globalThis.performance = { timeOrigin: 1234, markResourceTiming: () => {} };
 
 let callStart = null;
 const payload = { a: NaN, b: Infinity, c: -Infinity };
