@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Breakpoints</title>
+    <style>
+        body { font-family: sans-serif; margin: 0; padding: 20px; background: #f5f5f5; color: #333; }
+        .function-card { background: white; padding: 1em; margin-bottom: 0.5em; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .function-header { display: flex; justify-content: space-between; margin-bottom: 0.5em; }
+        .function-name { font-weight: bold; }
+        .btn { padding: 0.5em 1em; border: none; border-radius: 4px; cursor: pointer; }
+        .btn-set { background: #4CAF50; color: white; }
+        .btn-remove { background: #f44336; color: white; }
+    </style>
+</head>
+<body>
+    __NAV_HEADER__
+    <h1>Breakpoints</h1>
+    <div class="functions">
+        __FUNCTIONS_HTML__
+    </div>
+    <script>
+        const API_BASE = __API_BASE__;
+        function setBreakpoint(name) {
+            fetch(API_BASE + '/breakpoints', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({function_name: name}) });
+        }
+        function removeBreakpoint(name) {
+            fetch(API_BASE + '/breakpoints/' + encodeURIComponent(name), { method: 'DELETE' });
+        }
+    </script>
+</body>
+</html>

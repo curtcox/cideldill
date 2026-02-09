@@ -38,3 +38,4 @@ node_modules/
 # Generated HTML reports and databases
 *.db
 *.html
+!server/src/cideldill_server/templates/*.html
