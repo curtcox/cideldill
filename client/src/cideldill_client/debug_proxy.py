@@ -351,7 +351,7 @@ class DebugProxy:
         return attr
 
     def __str__(self) -> str:
-        return self._intercept_dunder("__str__")
+        return str(self._target)
 
     def __repr__(self) -> str:
         return repr(self._target)
