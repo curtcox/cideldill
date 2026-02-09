@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Bootstrap a local virtual environment and verify installation.
+#
+# Usage:
+#   ./run/mac/bootstrap_env        # Runtime dependencies
+#   ./run/mac/bootstrap_env --dev  # Development dependencies
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+VENV_DIR="${PROJECT_ROOT}/venv"
+
+PYTHON_CMD=""
+if command -v python3 &> /dev/null; then
+    PYTHON_CMD="python3"
+elif command -v python &> /dev/null; then
+    PYTHON_CMD="python"
+else
+    echo "Error: Python not found. Please install Python 3.9 or higher."
+    exit 1
+fi
+
+if [ ! -d "${VENV_DIR}" ]; then
+    echo "Creating virtual environment at ${VENV_DIR}"
+    "${PYTHON_CMD}" -m venv "${VENV_DIR}"
+fi
+
+cd "${PROJECT_ROOT}"
+
+VENV_PYTHON="${VENV_DIR}/bin/python"
+if [ ! -x "${VENV_PYTHON}" ]; then
+    echo "Error: virtual environment python not found at ${VENV_PYTHON}"
+    exit 1
+fi
+
+PATH="${VENV_DIR}/bin:${PATH}" ./install_deps.sh "${1-}"
+
+PATH="${VENV_DIR}/bin:${PATH}" "${VENV_PYTHON}" doctor.py
+
+echo ""
+echo "✓ Environment ready to run."

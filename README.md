@@ -29,6 +29,12 @@ To install both the client and server with all dependencies:
 ./install_deps.sh
 ```
 
+To create a virtual environment, install dependencies, and verify setup in one step (macOS):
+
+```bash
+./run/mac/bootstrap_env
+```
+
 To install just one package:
 
 ```bash
@@ -40,6 +46,12 @@ For development (includes testing and linting tools):
 
 ```bash
 ./install_deps.sh --dev
+```
+
+Or use the one-step bootstrap script for development:
+
+```bash
+./run/mac/bootstrap_env --dev
 ```
 
 **Important**:
@@ -65,6 +77,12 @@ venv\Scripts\activate  # On Windows
 
 # When done, deactivate
 deactivate
+```
+
+Alternatively, use the one-step bootstrap script to create the virtual environment, install dependencies, and run the doctor check automatically (macOS):
+
+```bash
+./run/mac/bootstrap_env
 ```
 
 ### Verify Installation
