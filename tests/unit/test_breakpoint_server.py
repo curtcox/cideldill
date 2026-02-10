@@ -558,6 +558,36 @@ def test_root_page_serves_html(server) -> None:
     assert "🚦" in html
 
 
+def test_openapi_spec_endpoint(server) -> None:
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    response = server.test_client().get("/openapi.json")
+    assert response.status_code == 200
+    assert response.is_json
+    data = json.loads(response.data)
+    assert data["openapi"].startswith("3.")
+    assert data["info"]["title"] == "CID el Dill Breakpoint Server API"
+    assert "/api/breakpoints" in data["paths"]
+    assert "get" in data["paths"]["/api/breakpoints"]
+    assert "post" in data["paths"]["/api/breakpoints"]
+    assert "/api/paused" in data["paths"]
+
+
+def test_openapi_docs_endpoint(server) -> None:
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    response = server.test_client().get("/docs")
+    assert response.status_code == 200
+    assert response.mimetype == "text/html"
+    html = response.data.decode("utf-8")
+    assert "SwaggerUIBundle" in html
+    assert "/openapi.json" in html
+
+
 def test_behavior_endpoint_supports_exception_modes(server) -> None:
     thread = threading.Thread(target=server.start, daemon=True)
     thread.start()

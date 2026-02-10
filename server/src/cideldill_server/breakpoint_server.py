@@ -1757,6 +1757,269 @@ class BreakpointServer:
                 return None
             return f"{start:.6f}+{pid}"
 
+        def _openapi_spec() -> dict[str, object]:
+            any_object_schema = {"type": "object", "additionalProperties": True}
+            success_response = {
+                "description": "Successful response",
+                "content": {
+                    "application/json": {
+                        "schema": any_object_schema,
+                    }
+                },
+            }
+            default_post_request_body = {
+                "required": False,
+                "content": {
+                    "application/json": {
+                        "schema": any_object_schema,
+                    }
+                },
+            }
+
+            def _with_json_body(summary: str) -> dict[str, object]:
+                return {
+                    "summary": summary,
+                    "requestBody": default_post_request_body,
+                    "responses": {"200": success_response},
+                }
+
+            def _path_parameter(name: str, description: str) -> list[dict[str, object]]:
+                return [{
+                    "name": name,
+                    "in": "path",
+                    "required": True,
+                    "description": description,
+                    "schema": {"type": "string"},
+                }]
+
+            return {
+                "openapi": "3.1.0",
+                "info": {
+                    "title": "CID el Dill Breakpoint Server API",
+                    "version": "1.0.0",
+                    "description": (
+                        "OpenAPI definition for breakpoint management, paused execution "
+                        "control, and REPL APIs."
+                    ),
+                },
+                "servers": [
+                    {"url": request.host_url.rstrip("/")},
+                ],
+                "paths": {
+                    "/api/breakpoints": {
+                        "get": {
+                            "summary": "List breakpoints",
+                            "responses": {"200": success_response},
+                        },
+                        "post": _with_json_body("Register a breakpoint"),
+                    },
+                    "/api/breakpoints/{function_name}": {
+                        "delete": {
+                            "summary": "Delete a breakpoint",
+                            "parameters": _path_parameter(
+                                "function_name",
+                                "Breakpoint function name",
+                            ),
+                            "responses": {"200": success_response},
+                        },
+                    },
+                    "/api/breakpoints/{function_name}/behavior": {
+                        "post": {
+                            **_with_json_body("Set before-breakpoint behavior"),
+                            "parameters": _path_parameter(
+                                "function_name",
+                                "Breakpoint function name",
+                            ),
+                        },
+                    },
+                    "/api/breakpoints/{function_name}/after_behavior": {
+                        "post": {
+                            **_with_json_body("Set after-breakpoint behavior"),
+                            "parameters": _path_parameter(
+                                "function_name",
+                                "Breakpoint function name",
+                            ),
+                        },
+                    },
+                    "/api/breakpoints/{function_name}/replacement": {
+                        "post": {
+                            **_with_json_body("Set breakpoint replacement function"),
+                            "parameters": _path_parameter(
+                                "function_name",
+                                "Breakpoint function name",
+                            ),
+                        },
+                    },
+                    "/api/breakpoints/{function_name}/history": {
+                        "get": {
+                            "summary": "Get breakpoint execution history",
+                            "parameters": _path_parameter(
+                                "function_name",
+                                "Breakpoint function name",
+                            ),
+                            "responses": {"200": success_response},
+                        },
+                    },
+                    "/api/functions": {
+                        "get": {
+                            "summary": "List registered functions",
+                            "responses": {"200": success_response},
+                        },
+                        "post": _with_json_body("Register a function"),
+                    },
+                    "/api/behavior": {
+                        "get": {
+                            "summary": "Get global breakpoint behavior",
+                            "responses": {"200": success_response},
+                        },
+                        "post": _with_json_body("Set global breakpoint behavior"),
+                    },
+                    "/api/paused": {
+                        "get": {
+                            "summary": "List paused executions",
+                            "responses": {"200": success_response},
+                        },
+                    },
+                    "/api/paused/{pause_id}/continue": {
+                        "post": {
+                            **_with_json_body("Resume a paused execution"),
+                            "parameters": _path_parameter(
+                                "pause_id",
+                                "Paused execution id",
+                            ),
+                        },
+                    },
+                    "/api/call/start": {
+                        "post": _with_json_body("Start call interception"),
+                    },
+                    "/api/poll/{pause_id}": {
+                        "get": {
+                            "summary": "Poll for pause resume action",
+                            "parameters": _path_parameter(
+                                "pause_id",
+                                "Paused execution id",
+                            ),
+                            "responses": {"200": success_response},
+                        },
+                    },
+                    "/api/call/complete": {
+                        "post": _with_json_body("Complete call interception"),
+                    },
+                    "/api/call/event": {
+                        "post": _with_json_body("Record call-tree event"),
+                    },
+                    "/api/repl/start": {
+                        "post": _with_json_body("Start REPL session"),
+                    },
+                    "/api/repl/sessions": {
+                        "get": {
+                            "summary": "List REPL sessions",
+                            "responses": {"200": success_response},
+                        },
+                    },
+                    "/api/repl/{session_id}": {
+                        "get": {
+                            "summary": "Get REPL session details",
+                            "parameters": _path_parameter(
+                                "session_id",
+                                "REPL session id",
+                            ),
+                            "responses": {"200": success_response},
+                        },
+                    },
+                    "/api/repl/{session_id}/eval": {
+                        "post": {
+                            **_with_json_body("Submit REPL eval request"),
+                            "parameters": _path_parameter(
+                                "session_id",
+                                "REPL session id",
+                            ),
+                        },
+                    },
+                    "/api/repl/{session_id}/close": {
+                        "post": {
+                            **_with_json_body("Close REPL session"),
+                            "parameters": _path_parameter(
+                                "session_id",
+                                "REPL session id",
+                            ),
+                        },
+                    },
+                    "/api/poll-repl/{pause_id}": {
+                        "get": {
+                            "summary": "Poll for pending REPL eval request",
+                            "parameters": _path_parameter(
+                                "pause_id",
+                                "Paused execution id",
+                            ),
+                            "responses": {"200": success_response},
+                        },
+                    },
+                    "/api/call/repl-result": {
+                        "post": _with_json_body("Submit REPL eval result"),
+                    },
+                    "/api/debug-client.js": {
+                        "get": {
+                            "summary": "Fetch browser debug helper client",
+                            "responses": {
+                                "200": {
+                                    "description": "JavaScript client payload",
+                                    "content": {
+                                        "application/javascript": {
+                                            "schema": {"type": "string"},
+                                        }
+                                    },
+                                }
+                            },
+                        },
+                    },
+                },
+            }
+
+        @self.app.route('/openapi.json', methods=['GET'])
+        @self.app.route('/api/openapi.json', methods=['GET'])
+        def openapi_spec():
+            return jsonify(_openapi_spec())
+
+        @self.app.route('/docs', methods=['GET'])
+        def openapi_docs():
+            docs_html = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CID el Dill API Docs</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css" />
+  <style>
+    body { margin: 0; background: #fafafa; }
+    #swagger-ui { max-width: 1200px; margin: 0 auto; }
+  </style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-standalone-preset.js"></script>
+  <script>
+    window.onload = function() {
+      if (!window.SwaggerUIBundle) {
+        document.body.innerHTML = '<p style="padding: 16px;">Swagger UI assets failed to load. Use /openapi.json directly.</p>';
+        return;
+      }
+      window.ui = SwaggerUIBundle({
+        url: '/openapi.json',
+        dom_id: '#swagger-ui',
+        deepLinking: true,
+        presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],
+        layout: 'BaseLayout'
+      });
+    };
+  </script>
+</body>
+</html>
+"""
+            return Response(docs_html, mimetype="text/html")
+
         @self.app.route('/')
         def index():
             """Serve the main web UI."""
