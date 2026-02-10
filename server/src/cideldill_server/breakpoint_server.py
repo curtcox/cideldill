@@ -402,6 +402,36 @@ HTML_TEMPLATE = """
             return String(value);
         }
 
+        function parseTraceback(text) {
+            if (!text) return [];
+            const frames = [];
+            const re = /^\\s*File "([^"]+)", line (\\d+)(?:, in (.+))?$/;
+            const lines = text.split('\\n');
+            for (let i = 0; i < lines.length; i++) {
+                const m = lines[i].match(re);
+                if (m) {
+                    const code = (i + 1 < lines.length && !lines[i + 1].match(re) && !lines[i + 1].match(/^\\S/) && lines[i + 1].trim()) ? lines[i + 1].trim() : '';
+                    frames.push({ filename: m[1], lineno: parseInt(m[2], 10), function: m[3] || '', code_context: code });
+                }
+            }
+            return frames;
+        }
+
+        function renderTraceback(text) {
+            if (!text) return '';
+            const frames = parseTraceback(text);
+            if (!frames.length) return '<pre style="white-space:pre-wrap;font-size:12px;color:#666;">' + escapeHtml(text) + '</pre>';
+            const items = frames.map((f) => {
+                const label = `${f.function || 'unknown'} (${f.filename}:${f.lineno})`;
+                const url = `/frame/source?file=${encodeURIComponent(f.filename)}&line=${encodeURIComponent(f.lineno)}`;
+                const ctxHtml = f.code_context ? `<div style="margin-top:4px;color:#444;"><code>${escapeHtml(f.code_context)}</code></div>` : '';
+                return `<div style="padding:6px 8px;border-radius:6px;margin-bottom:6px;background:#f9fafb;border:1px solid #eee;"><div><a href="${url}" target="_blank" rel="noopener noreferrer" style="color:#1976D2;text-decoration:none;font-weight:600;">${escapeHtml(label)}</a></div>${ctxHtml}</div>`;
+            }).join('');
+            const lastLine = text.trim().split('\\n').pop() || '';
+            const errLine = lastLine.match(/^\\S/) ? `<div style="margin-top:8px;font-weight:600;color:#c62828;">${escapeHtml(lastLine)}</div>` : '';
+            return items + errLine;
+        }
+
         function globalBehaviorIcon(behavior) {
             if (behavior === 'stop') return '🛑';
             if (behavior === 'exception') return '⚠️';
@@ -820,11 +850,10 @@ ${escapeHtml(formatPretty(prettyResult))}</div>`;
                     return '';
                 }
                 let text = escapeHtml(formatPretty(prettyException));
-                if (prettyException && prettyException.traceback) {
-                    text += '\\n\\n' + escapeHtml(prettyException.traceback);
-                }
+                const tb = (prettyException && prettyException.traceback) || '';
+                const tbHtml = tb ? renderTraceback(tb) : '';
                 return `<div class="call-data"><strong>Exception:</strong>
-${text}</div>`;
+${text}${tbHtml ? '<div style="margin-top:8px;">' + tbHtml + '</div>' : ''}</div>`;
             };
 
             const renderReplSessions = () => {
@@ -3624,6 +3653,41 @@ class BreakpointServer:
       return String(value);
     }
 
+    function parseTraceback(text) {
+      if (!text) return [];
+      const frames = [];
+      const re = /^\\s*File "([^"]+)", line (\\d+)(?:, in (.+))?$/;
+      const lines = text.split('\\n');
+      for (let i = 0; i < lines.length; i++) {
+        const m = lines[i].match(re);
+        if (m) {
+          const code = (i + 1 < lines.length && !lines[i + 1].match(re) && !lines[i + 1].match(/^\\S/) && lines[i + 1].trim()) ? lines[i + 1].trim() : '';
+          frames.push({ filename: m[1], lineno: parseInt(m[2], 10), function: m[3] || '', code_context: code });
+        }
+      }
+      return frames;
+    }
+
+    function renderTraceback(text) {
+      if (!text) return '';
+      const frames = parseTraceback(text);
+      if (!frames.length) return '<pre style="white-space:pre-wrap;font-size:12px;color:#666;">' + escapeHtml(text) + '</pre>';
+      const items = frames.map((f) => {
+        const label = `${f.function || 'unknown'} (${f.filename}:${f.lineno})`;
+        const url = `/frame/source?file=${encodeURIComponent(f.filename)}&line=${encodeURIComponent(f.lineno)}`;
+        const ctxHtml = f.code_context ? `<div>${escapeHtml(f.code_context)}</div>` : '';
+        return `
+          <div class="stack-frame">
+            <div><a class="stack-frame-link" href="${url}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a></div>
+            ${ctxHtml}
+          </div>
+        `;
+      }).join('');
+      const lastLine = text.trim().split('\\n').pop() || '';
+      const errLine = lastLine.match(/^\\S/) ? `<div style="margin-top:8px;font-weight:600;color:#c62828;">${escapeHtml(lastLine)}</div>` : '';
+      return items + errLine;
+    }
+
     function escapeHtml(text) {
       return String(text)
         .replace(/&/g, '&amp;')
@@ -3958,7 +4022,7 @@ class BreakpointServer:
         ${node.exception ? `
           <div class="detail-item">
             <div class="detail-label">Exception</div>
-            <div class="detail-value">${renderPretty(node.exception)}${node.exception && node.exception.traceback ? '<pre style="margin-top:8px;white-space:pre-wrap;font-size:12px;color:#666;">' + escapeHtml(node.exception.traceback) + '</pre>' : (node.exception_traceback ? '<pre style="margin-top:8px;white-space:pre-wrap;font-size:12px;color:#666;">' + escapeHtml(node.exception_traceback) + '</pre>' : '')}</div>
+            <div class="detail-value">${renderPretty(node.exception)}${(() => { const tb = (node.exception && node.exception.traceback) || node.exception_traceback || ''; return tb ? '<div style="margin-top:8px;">' + renderTraceback(tb) + '</div>' : ''; })()}</div>
             ${exceptionLinks}
           </div>
         ` : ''}
@@ -4262,6 +4326,16 @@ class BreakpointServer:
 </body>
 </html>"""
             return template
+
+        @self.app.route('/frame/source', methods=['GET'])
+        def frame_source_view():
+            """Render source file at a given line from query params."""
+            file_path = request.args.get('file', '')
+            try:
+                line_no = int(request.args.get('line', '0'))
+            except ValueError:
+                line_no = 0
+            return _render_frame_page(file_path, line_no)
 
         @self.app.route('/frame/<pause_id>/<int:frame_index>', methods=['GET'])
         def frame_view(pause_id: str, frame_index: int):

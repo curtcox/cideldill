@@ -6,6 +6,7 @@ Verifies that the server's /api/call/complete endpoint:
 3. Makes exception details searchable in the call-tree UI
 4. Uses plain-text fields as fallback when dill deserialization degrades
 5. Displays exception details visibly in all UI pages
+6. Parses exception tracebacks into clickable source links
 """
 
 from __future__ import annotations
@@ -357,3 +358,96 @@ class TestBreakpointHistoryDetailExceptionDisplay:
         assert "connection failed" in html
         # It should NOT show raw JSON keys as visible content
         assert "__cideldill_exception__" not in html
+
+
+# ---------------------------------------------------------------------------
+# Tests: Traceback parsing and source frame linking
+# ---------------------------------------------------------------------------
+
+SAMPLE_TRACEBACK = (
+    "Traceback (most recent call last):\n"
+    '  File "/Users/coxcu/me/cideldill/client/src/cideldill_client/debug_proxy.py", line 322, in wrapper\n'
+    "    result = await self._execute_action_async(action, method, args, kwargs, frame=frame)\n"
+    "             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"
+    '  File "/Users/coxcu/work/project/sql_client.py", line 81, in get_connection\n'
+    "    conn = psycopg2.connect(self.connection_string)\n"
+    "           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"
+    "psycopg2.OperationalError: connection failed\n"
+)
+
+
+class TestTracebackSourceLinks:
+    """Exception tracebacks should be parsed and rendered with clickable
+    links to /frame/source pages, matching the existing stack trace style."""
+
+    def test_frame_source_route_exists(self, server) -> None:
+        """A /frame/source route must exist to render source by file+line."""
+        thread = threading.Thread(target=server.start, daemon=True)
+        thread.start()
+        time.sleep(0.2)
+
+        client = server.test_client()
+        # Request a non-existent file — should return 404, not 405 (method not allowed)
+        resp = client.get("/frame/source?file=/nonexistent.py&line=1")
+        assert resp.status_code in (200, 404), (
+            f"Expected 200 or 404, got {resp.status_code}"
+        )
+
+    def test_call_tree_has_traceback_parser_js(self, server) -> None:
+        """The call-tree detail page must include JS that parses Python
+        tracebacks into structured frames with clickable links."""
+        thread = threading.Thread(target=server.start, daemon=True)
+        thread.start()
+        time.sleep(0.2)
+
+        call_id = _start_call(server)
+        _complete_call_with_exception(
+            server, call_id, exception_traceback=SAMPLE_TRACEBACK,
+        )
+
+        records = server.manager.get_call_records()
+        process_key = records[0]["process_key"]
+
+        client = server.test_client()
+        resp = client.get(f"/call-tree/{process_key}")
+        assert resp.status_code == 200
+        html = resp.data.decode("utf-8")
+
+        # Must contain a function that parses traceback text into frames
+        assert "renderTraceback" in html or "parseTraceback" in html
+
+    def test_call_tree_traceback_contains_frame_links(self, server) -> None:
+        """The rendered traceback should link to /frame/source pages."""
+        thread = threading.Thread(target=server.start, daemon=True)
+        thread.start()
+        time.sleep(0.2)
+
+        call_id = _start_call(server)
+        _complete_call_with_exception(
+            server, call_id, exception_traceback=SAMPLE_TRACEBACK,
+        )
+
+        records = server.manager.get_call_records()
+        process_key = records[0]["process_key"]
+
+        client = server.test_client()
+        resp = client.get(f"/call-tree/{process_key}")
+        assert resp.status_code == 200
+        html = resp.data.decode("utf-8")
+
+        # The JS rendering code must reference /frame/source for traceback links
+        assert "/frame/source" in html
+
+    def test_dashboard_traceback_contains_frame_links(self, server) -> None:
+        """The dashboard renderException should also link traceback frames."""
+        thread = threading.Thread(target=server.start, daemon=True)
+        thread.start()
+        time.sleep(0.2)
+
+        client = server.test_client()
+        resp = client.get("/")
+        assert resp.status_code == 200
+        html = resp.data.decode("utf-8")
+
+        # The dashboard page must include traceback rendering with links
+        assert "renderTraceback" in html or "parseTraceback" in html
