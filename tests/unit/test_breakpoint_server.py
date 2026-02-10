@@ -1087,6 +1087,59 @@ def test_call_tree_detail_supports_incremental_filter_from_query(server) -> None
     assert "needle_detail" in payload["nodes"][0]["searchText"]
 
 
+def test_call_tree_detail_search_text_includes_exception_module_from_serialized_payload(server) -> None:
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    process_pid = 4321
+    process_start_time = 4444.0
+    process_key = f"{process_start_time:.6f}+{process_pid}"
+
+    start_response = server.test_client().post(
+        "/api/call/start",
+        data=json.dumps({
+            "method_name": "db_call",
+            "target_cid": "target-cid",
+            "args": [],
+            "kwargs": {},
+            "call_site": {"timestamp": 5.0, "stack_trace": []},
+            "process_pid": process_pid,
+            "process_start_time": process_start_time,
+        }),
+        content_type="application/json",
+    )
+    assert start_response.status_code == 200
+    call_id = json.loads(start_response.data)["call_id"]
+
+    class OperationalError(Exception):
+        __module__ = "psycopg2"
+
+    serializer = Serializer()
+    exception_payload = serializer.force_serialize_with_data(
+        OperationalError("database role does not exist")
+    )
+    complete_response = server.test_client().post(
+        "/api/call/complete",
+        data=json.dumps({
+            "call_id": call_id,
+            "status": "exception",
+            "exception_cid": exception_payload.cid,
+            "exception_data": exception_payload.data_base64,
+        }),
+        content_type="application/json",
+    )
+    assert complete_response.status_code == 200
+
+    response = server.test_client().get(f"/call-tree/{process_key}")
+    assert response.status_code == 200
+    html = response.data.decode("utf-8")
+    match = re.search(r"const data = ({.*?});", html, re.S)
+    assert match, "Expected call tree data to be embedded in HTML."
+    payload = json.loads(match.group(1))
+    assert "psycopg2" in payload["nodes"][0]["searchText"]
+
+
 def test_frame_endpoint_renders_source_for_paused_execution(server) -> None:
     """Test GET /frame/<pause_id>/<frame_index> endpoint."""
     thread = threading.Thread(target=server.start, daemon=True)

@@ -1365,6 +1365,158 @@ class BreakpointServer:
                 "capture_timestamp": getattr(value, "capture_timestamp", 0.0),
             }
 
+        def _format_exception_value(
+            value: object,
+            *,
+            depth: int,
+            max_depth: int,
+            visited: set[int],
+        ) -> object:
+            if _is_placeholder(value):
+                return _format_placeholder(value)
+
+            if _is_json_scalar(value):
+                return value
+
+            if isinstance(value, bytes):
+                return _safe_repr(value)
+
+            if depth >= max_depth:
+                return {
+                    "__cideldill_truncated__": True,
+                    "summary": _safe_repr(value),
+                }
+
+            if isinstance(value, dict):
+                formatted_items: dict[str, object] = {}
+                for idx, (item_key, item_value) in enumerate(value.items()):
+                    if idx >= 50:
+                        remaining = len(value) - 50
+                        if remaining > 0:
+                            formatted_items["__skipped__"] = f"{remaining} more items skipped"
+                        break
+                    key_text = item_key if isinstance(item_key, str) else _safe_repr(item_key)
+                    formatted_items[str(key_text)] = _format_exception_value(
+                        item_value,
+                        depth=depth + 1,
+                        max_depth=max_depth,
+                        visited=visited,
+                    )
+                return formatted_items
+
+            if isinstance(value, (list, tuple)):
+                sequence = list(value)
+                formatted_list: list[object] = []
+                for idx, item in enumerate(sequence):
+                    if idx >= 50:
+                        remaining = len(sequence) - 50
+                        if remaining > 0:
+                            formatted_list.append(f"<{remaining} more items skipped>")
+                        break
+                    formatted_list.append(
+                        _format_exception_value(
+                            item,
+                            depth=depth + 1,
+                            max_depth=max_depth,
+                            visited=visited,
+                        )
+                    )
+                return formatted_list
+
+            if isinstance(value, (set, frozenset)):
+                formatted_set: list[object] = []
+                ordered_items = sorted(value, key=lambda item: _safe_repr(item))
+                for idx, item in enumerate(ordered_items):
+                    if idx >= 50:
+                        remaining = len(ordered_items) - 50
+                        if remaining > 0:
+                            formatted_set.append(f"<{remaining} more items skipped>")
+                        break
+                    formatted_set.append(
+                        _format_exception_value(
+                            item,
+                            depth=depth + 1,
+                            max_depth=max_depth,
+                            visited=visited,
+                        )
+                    )
+                return {"__cideldill_set__": formatted_set}
+
+            if isinstance(value, BaseException):
+                return _format_exception(value, depth=depth + 1, max_depth=max_depth, visited=visited)
+
+            return _safe_repr(value)
+
+        def _format_exception(
+            exc: BaseException,
+            *,
+            depth: int = 0,
+            max_depth: int = 3,
+            visited: set[int] | None = None,
+        ) -> dict[str, object]:
+            if visited is None:
+                visited = set()
+
+            exc_id = id(exc)
+            if exc_id in visited:
+                return {
+                    "__cideldill_exception__": True,
+                    "summary": _safe_repr(exc),
+                    "module": type(exc).__module__,
+                    "qualname": getattr(type(exc), "__qualname__", type(exc).__name__),
+                    "type_name": type(exc).__name__,
+                    "message": str(exc),
+                    "circular_reference": True,
+                }
+
+            visited.add(exc_id)
+            try:
+                attributes: dict[str, object] = {}
+                failed_attributes: dict[str, str] = {}
+
+                raw_attrs = getattr(exc, "__dict__", {}) or {}
+                for idx, (name, attr_value) in enumerate(raw_attrs.items()):
+                    if idx >= 50:
+                        remaining = len(raw_attrs) - 50
+                        if remaining > 0:
+                            failed_attributes["__skipped__"] = f"{remaining} more attributes skipped"
+                        break
+                    try:
+                        attributes[name] = _format_exception_value(
+                            attr_value,
+                            depth=depth + 1,
+                            max_depth=max_depth,
+                            visited=visited,
+                        )
+                    except Exception as attr_exc:  # noqa: BLE001
+                        failed_attributes[name] = f"{type(attr_exc).__name__}: {attr_exc}"
+
+                args_value = _format_exception_value(
+                    list(getattr(exc, "args", ()) or ()),
+                    depth=depth + 1,
+                    max_depth=max_depth,
+                    visited=visited,
+                )
+
+                exc_type = type(exc)
+                module = exc_type.__module__
+                qualname = getattr(exc_type, "__qualname__", exc_type.__name__)
+                message = str(exc)
+                return {
+                    "__cideldill_exception__": True,
+                    "summary": f"{module}.{qualname}: {message}",
+                    "type_name": exc_type.__name__,
+                    "module": module,
+                    "qualname": qualname,
+                    "message": message,
+                    "repr_text": _safe_repr(exc),
+                    "args": args_value,
+                    "attributes": attributes,
+                    "failed_attributes": failed_attributes,
+                }
+            finally:
+                visited.discard(exc_id)
+
         def _format_payload_value(item: dict[str, object]) -> object:
             cid = item.get("cid")
             if not isinstance(cid, str):
@@ -1395,6 +1547,8 @@ class BreakpointServer:
                 return f"<unavailable: {type(exc).__name__}>"
             if _is_placeholder(value):
                 return _format_placeholder(value)
+            if isinstance(value, BaseException):
+                return _format_exception(value)
             return _safe_repr(value)
 
         def _normalize_client_ref(value: object) -> int | str | None:
