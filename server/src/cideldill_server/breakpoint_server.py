@@ -2670,6 +2670,12 @@ class BreakpointServer:
         @self.app.route('/call-tree', methods=['GET'])
         def call_tree_index():
             """List processes with recorded calls."""
+            def _record_search_text(record: dict[str, object]) -> str:
+                try:
+                    return json.dumps(record, sort_keys=True, default=str).lower()
+                except Exception:
+                    return str(record).lower()
+
             records = self.manager.get_call_records()
             summaries: dict[str, dict[str, object]] = {}
             for record in records:
@@ -2690,12 +2696,16 @@ class BreakpointServer:
                         "call_count": 0,
                         "first_call": started_at,
                         "last_call": completed_at,
+                        "_search_parts": [],
                     }
                     summaries[process_key] = summary
                 elif page_url and not summary.get("page_url"):
                     summary["page_url"] = page_url
 
                 summary["call_count"] = int(summary.get("call_count", 0)) + 1
+                search_parts = summary.get("_search_parts")
+                if isinstance(search_parts, list):
+                    search_parts.append(_record_search_text(record))
                 summary["first_call"] = min(
                     float(summary.get("first_call", started_at) or started_at),
                     float(started_at or 0),
@@ -2724,6 +2734,11 @@ class BreakpointServer:
                 process_label = str(pid)
                 if pid == 0 and page_url:
                     process_label = f"JS {page_url}"
+                record_search_text = " ".join(
+                    str(part)
+                    for part in (item.get("_search_parts") or [])
+                    if part is not None
+                )
                 rows.append(
                     {
                         "process_key": process_key,
@@ -2741,6 +2756,7 @@ class BreakpointServer:
                                 first_call,
                                 last_call,
                                 process_key,
+                                record_search_text,
                             ]
                         ).lower(),
                     }
@@ -2799,7 +2815,9 @@ class BreakpointServer:
   </div>
   <script>
     const rows = @@ROWS_JSON@@;
-    const state = { filterText: '', filterTokens: [] };
+    const params = new URLSearchParams(window.location.search);
+    const initialFilter = String(params.get('filter') || '').trim().toLowerCase();
+    const state = { filterText: initialFilter, filterTokens: [] };
 
     function escapeHtml(text) {
       return String(text)
@@ -2816,6 +2834,16 @@ class BreakpointServer:
         .trim()
         .split(/\\s+/)
         .filter(Boolean);
+    }
+
+    function detailLink(baseLink) {
+      if (!baseLink) return '';
+      const params = new URLSearchParams();
+      if (state.filterText) {
+        params.set('filter', state.filterText);
+      }
+      const query = params.toString();
+      return query ? `${baseLink}?${query}` : baseLink;
     }
 
     function render() {
@@ -2854,13 +2882,15 @@ class BreakpointServer:
           <td class="mono">${escapeHtml(row.call_count)}</td>
           <td class="mono">${escapeHtml(row.first_call)}</td>
           <td class="mono">${escapeHtml(row.last_call)}</td>
-          <td><a class="row-link" href="${escapeHtml(row.link)}">View call tree</a></td>
+          <td><a class="row-link" href="${escapeHtml(detailLink(row.link))}">View call tree</a></td>
         </tr>
       `).join('');
     }
 
     document.addEventListener('DOMContentLoaded', () => {
       const search = document.getElementById('searchInput');
+      search.value = state.filterText;
+      state.filterTokens = normalizeTokens(state.filterText);
       search.addEventListener('input', () => {
         state.filterText = String(search.value || '').trim().toLowerCase();
         state.filterTokens = normalizeTokens(state.filterText);
@@ -2877,6 +2907,12 @@ class BreakpointServer:
         @self.app.route('/call-tree/<process_key>', methods=['GET'])
         def call_tree_detail(process_key: str):
             """Show call tree for a specific process."""
+            def _record_search_text(record: dict[str, object]) -> str:
+                try:
+                    return json.dumps(record, sort_keys=True, default=str).lower()
+                except Exception:
+                    return str(record).lower()
+
             records = [
                 record for record in self.manager.get_call_records()
                 if record.get("process_key") == process_key
@@ -2928,6 +2964,7 @@ class BreakpointServer:
                     "call_site": call_site,
                     "stack_trace": stack_trace,
                     "repl_sessions": record.get("repl_sessions", []) or [],
+                    "searchText": _record_search_text(record),
                 }
                 if record.get("method_name") == "with_debug.register":
                     pretty_result = record.get("pretty_result")
@@ -3037,6 +3074,7 @@ class BreakpointServer:
     .back-link { display: inline-block; margin-bottom: 20px; color: #1976D2; text-decoration: none; }
     .back-link:hover { text-decoration: underline; }
     .toolbar { display: flex; align-items: center; gap: 12px; margin: 12px 0 20px; flex-wrap: wrap; }
+    .search-input { flex: 1; min-width: 240px; padding: 9px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 0.95em; background: white; }
     .timeline-btn { border: 1px solid #ccc; background: white; border-radius: 8px; padding: 6px 10px; cursor: pointer; font-weight: 600; }
     .timeline-btn:disabled { opacity: 0.4; cursor: not-allowed; }
     .timeline { flex: 1; min-width: 240px; }
@@ -3076,13 +3114,15 @@ class BreakpointServer:
 </head>
 <body>
   <div class="container">
-    <a href="/call-tree" class="back-link">← Back to Call Trees</a>
+    <a id="backLink" href="/call-tree" class="back-link">← Back to Call Trees</a>
     <h1>Call Tree</h1>
     <div class="toolbar">
       <button id="prevNode" class="timeline-btn" type="button">←</button>
       <input id="timeline" class="timeline" type="range" min="0" max="0" value="0" step="1">
       <button id="nextNode" class="timeline-btn" type="button">→</button>
+      <input id="searchInput" class="search-input" type="search" placeholder="Filter calls in this tree..." autocomplete="off">
       <div id="timelineInfo" class="timeline-info"></div>
+      <div id="searchSummary" class="timeline-info"></div>
     </div>
     <div class="layout">
       <div class="panel">
@@ -3112,9 +3152,18 @@ class BreakpointServer:
 
     const params = new URLSearchParams(window.location.search);
     const selectedParam = params.get('selected');
+    const initialFilter = String(params.get('filter') || '').trim().toLowerCase();
     const fallbackSelected = timeline[0] || roots[0] || null;
     const initialSelected = selectedParam && nodesById.has(selectedParam) ? selectedParam : fallbackSelected;
-    const state = { selectedId: initialSelected, collapsed: new Set() };
+    const state = {
+      selectedId: initialSelected,
+      collapsed: new Set(),
+      filterText: initialFilter,
+      filterTokens: [],
+      visibleNodeIds: new Set(),
+      visibleRoots: [],
+      visibleChildrenById: {},
+    };
 
     function formatTs(ts) {
       if (!ts) return 'Unknown';
@@ -3163,15 +3212,102 @@ class BreakpointServer:
       return `<div class="object-links">${links.join(' ')}</div>`;
     }
 
+    function normalizeTokens(text) {
+      return String(text || '')
+        .toLowerCase()
+        .trim()
+        .split(/\\s+/)
+        .filter(Boolean);
+    }
+
+    function visibleTimeline() {
+      return timeline.filter((id) => state.visibleNodeIds.has(id));
+    }
+
+    function applyFilter() {
+      const tokens = state.filterTokens;
+      const visible = new Set();
+
+      nodesById.forEach((node, id) => {
+        if (!tokens.length) {
+          visible.add(id);
+          return;
+        }
+        if (!node || typeof node.searchText !== 'string') {
+          return;
+        }
+        if (tokens.every((token) => node.searchText.includes(token))) {
+          visible.add(id);
+        }
+      });
+
+      const visibleChildrenById = {};
+      visible.forEach((id) => {
+        visibleChildrenById[id] = [];
+      });
+      visible.forEach((id) => {
+        const parent = parentById[id];
+        if (parent && visible.has(parent)) {
+          visibleChildrenById[parent].push(id);
+        }
+      });
+      Object.values(visibleChildrenById).forEach((children) => {
+        children.sort((left, right) => {
+          const leftIdx = timelineIndexById.get(left) || 0;
+          const rightIdx = timelineIndexById.get(right) || 0;
+          return leftIdx - rightIdx;
+        });
+      });
+
+      const visibleRoots = Array.from(visible)
+        .filter((id) => {
+          const parent = parentById[id];
+          return !parent || !visible.has(parent);
+        })
+        .sort((left, right) => {
+          const leftIdx = timelineIndexById.get(left) || 0;
+          const rightIdx = timelineIndexById.get(right) || 0;
+          return leftIdx - rightIdx;
+        });
+
+      state.visibleNodeIds = visible;
+      state.visibleChildrenById = visibleChildrenById;
+      state.visibleRoots = visibleRoots;
+
+      const currentTimeline = visibleTimeline();
+      if (!currentTimeline.length) {
+        state.selectedId = null;
+      } else if (!state.selectedId || !visible.has(state.selectedId)) {
+        state.selectedId = currentTimeline[0];
+      }
+    }
+
+    function updateFilterSummary() {
+      const summary = document.getElementById('searchSummary');
+      summary.textContent = `${state.visibleNodeIds.size} of ${data.nodes.length} calls`;
+    }
+
+    function updateBackLink() {
+      const backLink = document.getElementById('backLink');
+      if (!backLink) return;
+      const params = new URLSearchParams();
+      if (state.filterText) {
+        params.set('filter', state.filterText);
+      }
+      const query = params.toString();
+      backLink.href = query ? `/call-tree?${query}` : '/call-tree';
+    }
+
     function updateTimelineControls() {
       const slider = document.getElementById('timeline');
-      slider.max = Math.max(0, timeline.length - 1);
-      const idx = timelineIndexById.get(state.selectedId) || 0;
+      const currentTimeline = visibleTimeline();
+      slider.max = Math.max(0, currentTimeline.length - 1);
+      const idx = state.selectedId ? currentTimeline.indexOf(state.selectedId) : 0;
       slider.value = String(idx);
-      const hasTimeline = timeline.length > 0;
+      const hasTimeline = currentTimeline.length > 0;
       slider.disabled = !hasTimeline;
       document.getElementById('prevNode').disabled = !hasTimeline || idx <= 0;
-      document.getElementById('nextNode').disabled = !hasTimeline || idx >= timeline.length - 1;
+      document.getElementById('nextNode').disabled = !hasTimeline || idx >= currentTimeline.length - 1;
 
       const node = nodesById.get(state.selectedId);
       const info = document.getElementById('timelineInfo');
@@ -3201,6 +3337,7 @@ class BreakpointServer:
 
     function setSelected(nodeId, opts = {}) {
       if (!nodeId) return;
+      if (!state.visibleNodeIds.has(nodeId)) return;
       state.selectedId = nodeId;
       expandAncestors(nodeId);
       updateTreeSelection();
@@ -3395,7 +3532,7 @@ class BreakpointServer:
 
     function renderNode(id) {
       const node = nodesById.get(id);
-      const children = childrenById[id] || [];
+      const children = state.visibleChildrenById[id] || [];
       const wrapper = document.createElement('div');
       wrapper.className = 'tree-node';
 
@@ -3467,17 +3604,29 @@ class BreakpointServer:
     function renderTree() {
       const tree = document.getElementById('tree');
       tree.innerHTML = '';
+      nodeRowById.clear();
+      nodeContainerById.clear();
       if (!roots.length) {
         tree.innerHTML = '<div class="empty-state">No calls recorded.</div>';
         return;
       }
-      roots.forEach((id) => {
+      if (!state.visibleRoots.length) {
+        tree.innerHTML = '<div class="empty-state">No matching calls.</div>';
+        return;
+      }
+      state.visibleRoots.forEach((id) => {
         tree.appendChild(renderNode(id));
       });
       updateTreeSelection();
     }
 
     document.addEventListener('DOMContentLoaded', () => {
+      const search = document.getElementById('searchInput');
+      search.value = state.filterText;
+      state.filterTokens = normalizeTokens(state.filterText);
+      applyFilter();
+      updateBackLink();
+      updateFilterSummary();
       renderTree();
       updateTimelineControls();
       updateDetails();
@@ -3485,18 +3634,31 @@ class BreakpointServer:
       const slider = document.getElementById('timeline');
       slider.addEventListener('input', () => {
         const idx = Number(slider.value);
-        const id = timeline[idx];
+        const id = visibleTimeline()[idx];
         if (id) setSelected(id, { skipScroll: true });
       });
 
       document.getElementById('prevNode').addEventListener('click', () => {
-        const idx = timelineIndexById.get(state.selectedId) || 0;
-        if (idx > 0) setSelected(timeline[idx - 1]);
+        const currentTimeline = visibleTimeline();
+        const idx = state.selectedId ? currentTimeline.indexOf(state.selectedId) : 0;
+        if (idx > 0) setSelected(currentTimeline[idx - 1]);
       });
 
       document.getElementById('nextNode').addEventListener('click', () => {
-        const idx = timelineIndexById.get(state.selectedId) || 0;
-        if (idx < timeline.length - 1) setSelected(timeline[idx + 1]);
+        const currentTimeline = visibleTimeline();
+        const idx = state.selectedId ? currentTimeline.indexOf(state.selectedId) : 0;
+        if (idx < currentTimeline.length - 1) setSelected(currentTimeline[idx + 1]);
+      });
+
+      search.addEventListener('input', () => {
+        state.filterText = String(search.value || '').trim().toLowerCase();
+        state.filterTokens = normalizeTokens(state.filterText);
+        applyFilter();
+        updateBackLink();
+        updateFilterSummary();
+        renderTree();
+        updateTimelineControls();
+        updateDetails();
       });
     });
   </script>

@@ -992,6 +992,101 @@ def test_call_tree_index_supports_incremental_text_filtering(server) -> None:
     assert "tokens.every((token) => row.searchText.includes(token))" in html
 
 
+def test_call_tree_index_search_matches_call_item_text(server) -> None:
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    process_key = "1000.000000+555"
+    server.manager.record_call({
+        "call_id": "call-search-1",
+        "method_name": "needle_method",
+        "status": "success",
+        "pretty_args": ["arg-needle"],
+        "pretty_kwargs": {"k": "needle-kw"},
+        "pretty_result": "needle-result",
+        "signature": None,
+        "call_site": {"timestamp": 2.0, "stack_trace": []},
+        "process_pid": 555,
+        "process_start_time": 1000.0,
+        "process_key": process_key,
+        "started_at": 2.0,
+        "completed_at": 2.1,
+    })
+
+    response = server.test_client().get("/call-tree")
+    assert response.status_code == 200
+    html = response.data.decode("utf-8")
+
+    match = re.search(r"const rows = (\[.*?\]);", html, re.S)
+    assert match, "Expected call tree rows data to be embedded in HTML."
+    rows = json.loads(match.group(1))
+    row = next(item for item in rows if item["process_key"] == process_key)
+    assert "needle_method" in row["searchText"]
+    assert "needle-kw" in row["searchText"]
+
+
+def test_call_tree_index_links_preserve_filter_query(server) -> None:
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    server.manager.record_call({
+        "call_id": "call-link-1",
+        "method_name": "noop",
+        "status": "success",
+        "pretty_args": [],
+        "pretty_kwargs": {},
+        "signature": None,
+        "call_site": {"timestamp": 1.0, "stack_trace": []},
+        "process_pid": 999,
+        "process_start_time": 2000.0,
+        "process_key": "2000.000000+999",
+        "started_at": 1.0,
+        "completed_at": 1.1,
+    })
+
+    response = server.test_client().get("/call-tree")
+    assert response.status_code == 200
+    html = response.data.decode("utf-8")
+    assert "params.set('filter', state.filterText)" in html
+
+
+def test_call_tree_detail_supports_incremental_filter_from_query(server) -> None:
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    process_key = "3000.000000+321"
+    server.manager.record_call({
+        "call_id": "call-detail-1",
+        "method_name": "needle_detail",
+        "status": "success",
+        "pretty_args": ["alpha"],
+        "pretty_kwargs": {"beta": "needle"},
+        "signature": None,
+        "call_site": {"timestamp": 3.0, "stack_trace": []},
+        "process_pid": 321,
+        "process_start_time": 3000.0,
+        "process_key": process_key,
+        "started_at": 3.0,
+        "completed_at": 3.2,
+    })
+
+    response = server.test_client().get(f"/call-tree/{process_key}?filter=needle")
+    assert response.status_code == 200
+    html = response.data.decode("utf-8")
+    assert 'id="searchInput"' in html
+    assert "const initialFilter = String(params.get('filter') || '').trim().toLowerCase();" in html
+    assert "tokens.every((token) => node.searchText.includes(token))" in html
+
+    match = re.search(r"const data = ({.*?});", html, re.S)
+    assert match, "Expected call tree data to be embedded in HTML."
+    payload = json.loads(match.group(1))
+    assert "searchText" in payload["nodes"][0]
+    assert "needle_detail" in payload["nodes"][0]["searchText"]
+
+
 def test_frame_endpoint_renders_source_for_paused_execution(server) -> None:
     """Test GET /frame/<pause_id>/<frame_index> endpoint."""
     thread = threading.Thread(target=server.start, daemon=True)
