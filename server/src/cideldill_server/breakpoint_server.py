@@ -816,8 +816,12 @@ ${escapeHtml(formatPretty(prettyResult))}</div>`;
                 if (prettyException === null || prettyException === undefined) {
                     return '';
                 }
+                let text = escapeHtml(formatPretty(prettyException));
+                if (prettyException && prettyException.traceback) {
+                    text += '\\n\\n' + escapeHtml(prettyException.traceback);
+                }
                 return `<div class="call-data"><strong>Exception:</strong>
-${escapeHtml(formatPretty(prettyException))}</div>`;
+${text}</div>`;
             };
 
             const renderReplSessions = () => {
@@ -3114,6 +3118,9 @@ class BreakpointServer:
                     "result_client_ref": record.get("result_client_ref"),
                     "exception_cid": record.get("exception_cid"),
                     "exception_client_ref": record.get("exception_client_ref"),
+                    "exception_type": record.get("exception_type"),
+                    "exception_message": record.get("exception_message"),
+                    "exception_traceback": record.get("exception_traceback"),
                     "signature": record.get("signature"),
                     "call_site": call_site,
                     "stack_trace": stack_trace,
@@ -4201,6 +4208,9 @@ class BreakpointServer:
       if (value && typeof value === 'object' && value.__cideldill_placeholder__) {{
         return value.summary || '<Unpicklable>';
       }}
+      if (value && typeof value === 'object' && value.__cideldill_exception__) {{
+        return value.summary || '<Exception>';
+      }}
       return String(value);
     }}
 
@@ -4235,6 +4245,9 @@ class BreakpointServer:
         resultText = formatPretty(callData.pretty_result);
       }}
 
+      const exceptionTraceback = callData.exception_traceback || '';
+      const exceptionType = callData.exception_type || '';
+
       const id = String(record.id || '');
       const detailUrl = `/breakpoint/${{encodeURIComponent(functionName)}}/history/${{encodeURIComponent(id)}}`;
 
@@ -4248,7 +4261,7 @@ class BreakpointServer:
         statusText,
         statusIcon,
         ok,
-        searchText: `${{timeText}} ${{callText}} ${{resultText}} ${{statusText}}`.toLowerCase(),
+        searchText: `${{timeText}} ${{callText}} ${{resultText}} ${{statusText}} ${{exceptionType}} ${{exceptionTraceback}}`.toLowerCase(),
       }};
     }}
 
@@ -5121,6 +5134,9 @@ class BreakpointServer:
             exception_format = data.get("exception_serialization_format", "dill")
             result_client_ref = data.get("result_client_ref")
             exception_client_ref = data.get("exception_client_ref")
+            exception_type = data.get("exception_type")
+            exception_message = data.get("exception_message")
+            exception_traceback = data.get("exception_traceback")
             completed_at = data.get("timestamp") or time.time()
 
             if result_data and result_cid:
@@ -5189,6 +5205,25 @@ class BreakpointServer:
                         "serialization_format": exception_format,
                     })
 
+                # Use plain-text exception fields as fallback when dill
+                # deserialization failed or produced a placeholder.
+                _exc_from_text = None
+                if exception_type:
+                    _exc_from_text = {
+                        "__cideldill_exception__": True,
+                        "summary": f"{exception_type}: {exception_message}" if exception_message else exception_type,
+                        "type_name": exception_type.rsplit(".", 1)[-1],
+                        "module": exception_type.rsplit(".", 1)[0] if "." in exception_type else "builtins",
+                        "qualname": exception_type.rsplit(".", 1)[-1],
+                        "message": exception_message or "",
+                        "traceback": exception_traceback or "",
+                    }
+                if pretty_exception is not None and _exc_from_text is not None:
+                    if isinstance(pretty_exception, dict) and pretty_exception.get("__cideldill_placeholder__"):
+                        pretty_exception = _exc_from_text
+                elif pretty_exception is None and _exc_from_text is not None:
+                    pretty_exception = _exc_from_text
+
                 call_record = dict(call_data)
                 call_record["call_id"] = call_id
                 call_record["status"] = status
@@ -5204,6 +5239,12 @@ class BreakpointServer:
                     call_record["exception_cid"] = exception_cid
                 if exception_client_ref is not None:
                     call_record["exception_client_ref"] = exception_client_ref
+                if exception_type:
+                    call_record["exception_type"] = exception_type
+                if exception_message:
+                    call_record["exception_message"] = exception_message
+                if exception_traceback:
+                    call_record["exception_traceback"] = exception_traceback
                 call_site = call_data.get("call_site") or {}
                 call_record["started_at"] = call_site.get("timestamp")
                 self.manager.record_call(call_record)
@@ -5236,6 +5277,12 @@ class BreakpointServer:
                         "cid": exception_cid,
                         "serialization_format": exception_format,
                     })
+                # Use plain-text fallback for breakpoint pause too
+                if pretty_exception is not None and _exc_from_text is not None:
+                    if isinstance(pretty_exception, dict) and pretty_exception.get("__cideldill_placeholder__"):
+                        pretty_exception = _exc_from_text
+                elif pretty_exception is None and _exc_from_text is not None:
+                    pretty_exception = _exc_from_text
                 call_data = dict(call_data)
                 call_data["pretty_result"] = pretty_result
                 if pretty_exception is not None:
