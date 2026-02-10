@@ -16,35 +16,41 @@ data duplication, no extra process.
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────┐
-│              AI Agent(s) (MCP Clients)            │
-│          (Claude Code, Cursor, etc.)              │
-└──────┬───────────────────────────┬───────────────┘
-       │ stdio (single client)     │ SSE (multi-client)
-┌──────▼───────────────────────────▼───────────────┐
-│              MCP Server Layer                     │
-│  ┌──────────┐  ┌───────────┐  ┌───────────────┐  │
-│  │  Tools   │  │ Resources │  │    Prompts    │  │
-│  └──────────┘  └───────────┘  └───────────────┘  │
-│  ┌──────────────────────────────────────────────┐ │
-│  │  Notifications (paused / resumed / complete) │ │
-│  └──────────────────────────────────────────────┘ │
-│         │              │              │           │
-│         ▼              ▼              ▼           │
-│  ┌─────────────────────────────────────────────┐  │
-│  │  BreakpointManager + CIDStore (shared)      │  │
-│  └─────────────────────────────────────────────┘  │
-└────────────────────▲─────────────────────────────┘
-                     │ HTTP (unchanged)
-┌────────────────────┴─────────────────────────────┐
-│           Flask Web UI / REST API                 │
-│          (existing, unchanged)                    │
-└──────────────────────────────────────────────────┘
-                     ▲
-                     │ HTTP (unchanged)
-┌────────────────────┴─────────────────────────────┐
-│           Debug Client (app under debug)          │
-└──────────────────────────────────────────────────┘
+┌─────────────────┐                  ┌─────────────────┐
+│  MCP Client(s)  │                  │     Browser      │
+│ (Claude Code,   │                  │    (Web UI)      │
+│  Cursor, etc.)  │                  │                  │
+└──────┬──────┬───┘                  └────────┬─────────┘
+       │      │                               │
+  stdio│      │SSE                         HTTP│
+       │      │                               │
+┌──────▼──────▼───────────────────────────────▼─────────┐
+│                  Single Process                        │
+│                                                        │
+│  ┌─────────────────────┐   ┌────────────────────────┐  │
+│  │  MCP stdio          │   │  Flask HTTP Server     │  │
+│  │  transport          │   │  ┌──────────────────┐  │  │
+│  │  (main thread)      │   │  │ REST API routes  │  │  │
+│  └──────────┬──────────┘   │  │ Web UI routes    │  │  │
+│             │              │  │ MCP SSE endpoint │  │  │
+│             │              │  │  (/mcp/sse)      │  │  │
+│             │              │  └────────┬─────────┘  │  │
+│             │              └───────────┼────────────┘  │
+│             │                          │               │
+│  ┌──────────▼──────────────────────────▼────────────┐  │
+│  │       MCP Tool / Resource / Prompt Handlers      │  │
+│  │       Notification Dispatch                      │  │
+│  └──────────────────────┬───────────────────────────┘  │
+│                         │                              │
+│  ┌──────────────────────▼───────────────────────────┐  │
+│  │    BreakpointManager + CIDStore (shared state)   │  │
+│  └──────────────────────▲───────────────────────────┘  │
+│                         │                              │
+└─────────────────────────┼──────────────────────────────┘
+                          │ HTTP
+┌─────────────────────────┴──────────────────────────────┐
+│              Debug Client (app under debug)             │
+└────────────────────────────────────────────────────────┘
 ```
 
 ### Key Constraints
@@ -58,6 +64,12 @@ data duplication, no extra process.
 - When the MCP transport closes (stdio EOF or SSE client disconnect), the Flask
   server **keeps running** so the web UI remains accessible and the debug client
   is not disrupted.
+- The MCP SSE transport is served **by Flask** as a route (`/mcp/sse`). The
+  stdio transport runs on the main thread, separate from Flask. Both transports
+  delegate to the same set of tool/resource/prompt handlers.
+- In `--mcp` mode (stdio), **all logging is redirected to stderr**. Stdout is
+  reserved exclusively for MCP JSON-RPC messages. Flask's startup banner and
+  werkzeug request logging are sent to stderr.
 
 ---
 
@@ -76,35 +88,41 @@ python -m cideldill_server --mcp
 ```
 
 When `--mcp` is passed, the server:
-1. Starts the Flask HTTP server on a background thread (for debug clients).
-2. Runs the MCP stdio transport on the main thread.
-3. When stdin closes (MCP client disconnects), the MCP transport stops but the
+1. Redirects all logging (Flask, werkzeug, application) to **stderr** so that
+   stdout is reserved exclusively for MCP JSON-RPC messages.
+2. Starts the Flask HTTP server on a background thread (for debug clients).
+3. Runs the MCP stdio transport on the main thread.
+4. When stdin closes (MCP client disconnects), the MCP transport stops but the
    Flask server continues running.
 
 ### SSE (Server-Sent Events)
 
 HTTP-based transport that supports multiple simultaneous MCP clients. The SSE
-transport runs inside the existing Flask process on a dedicated endpoint path.
+transport is mounted as a Flask route at `/mcp/sse`, running inside the existing
+Flask server process.
 
 **Startup command:**
 ```bash
 python -m cideldill_server --mcp-sse
 ```
 
-When `--mcp-sse` is passed, the server:
-1. Starts the Flask HTTP server with the MCP SSE endpoint mounted at
-   `/mcp/sse`.
-2. Multiple MCP clients can connect to the same SSE endpoint concurrently.
-3. Each SSE client gets its own message stream; notifications are broadcast
-   to all connected clients.
+When `--mcp-sse` is passed (without `--mcp`), the server:
+1. Starts the Flask HTTP server normally (blocking on main thread, same as
+   without any MCP flags).
+2. Mounts the MCP SSE endpoint at `/mcp/sse` alongside the existing REST API
+   and web UI routes.
+3. Multiple MCP clients can connect concurrently. Each gets its own message
+   stream; notifications are broadcast to all connected clients.
+4. No stdio transport is started. Logging goes to stdout/stderr as usual.
 
 **Combined mode:**
 ```bash
 python -m cideldill_server --mcp --mcp-sse
 ```
 
-Both transports can run simultaneously. The stdio transport runs on the main
-thread; the SSE transport is served by Flask alongside the web UI.
+Both transports run simultaneously. The stdio transport runs on the main
+thread (with logging redirected to stderr); the SSE transport is served by
+Flask alongside the web UI.
 
 ---
 
@@ -139,6 +157,7 @@ Emitted when a paused execution is resumed (via MCP, HTTP, or web UI).
   "method": "notifications/breakpoint/execution_resumed",
   "params": {
     "pause_id": "uuid-1",
+    "method_name": "process",
     "action": "continue"
   }
 }
@@ -165,11 +184,28 @@ Notifications require an observer mechanism on `BreakpointManager`. The MCP
 server registers a callback; the manager invokes it on state transitions. The
 callback dispatches to all connected MCP transports (stdio + SSE clients).
 
+**Critical:** Observer callbacks must be invoked **after releasing** the
+manager's `_lock`. `BreakpointManager` uses `threading.Lock()` (not `RLock`),
+so if a callback tried to call any manager method that acquires the lock, it
+would deadlock. The implementation pattern is:
+
 ```python
 # Sketch: observer interface added to BreakpointManager
 class BreakpointManager:
     def add_observer(self, callback: Callable[[str, dict], None]) -> None: ...
     def remove_observer(self, callback: Callable[[str, dict], None]) -> None: ...
+
+    def add_paused_execution(self, call_data: dict) -> str:
+        with self._lock:
+            # ... mutate state ...
+            observers = list(self._observers)  # snapshot under lock
+        # Fire callbacks OUTSIDE the lock
+        for cb in observers:
+            try:
+                cb("execution_paused", {...})
+            except Exception:
+                pass  # observer errors must not crash the server
+        return pause_id
 ```
 
 ---
@@ -361,6 +397,19 @@ List all currently paused executions.
 
 Resume a paused execution.
 
+The tool first checks whether `pause_id` refers to a currently paused execution.
+If not (either because the ID is invalid or because it was already resumed), it
+returns an error. This is stricter than the existing HTTP endpoint, which
+silently accepts unknown IDs — the MCP tool adds an explicit guard so AI agents
+get clear feedback.
+
+**Serialization format:** When the MCP tool passes `modified_args`,
+`modified_kwargs`, or `fake_result` to the manager, it always uses **JSON
+format** (not dill). The debug client's `preferred_format` from the original
+call determines how the HTTP endpoint serializes these fields. Since MCP only
+sends JSON, the MCP tool sets `preferred_format` to `"json"` when applying
+`_apply_preferred_format()`.
+
 **Parameters:**
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
@@ -373,9 +422,14 @@ Resume a paused execution.
 | `exception_message` | string | no | Exception message (for `"raise"`) |
 | `replacement_function` | string | no | Replace with different function |
 
-**Returns:**
+**Returns (success):**
 ```json
 {"status": "ok", "pause_id": "uuid-1"}
+```
+
+**Returns (not found / already resumed):**
+```json
+{"error": "pause_not_found", "pause_id": "uuid-1"}
 ```
 
 **Maps to:** `POST /api/paused/<pause_id>/continue`
@@ -409,7 +463,7 @@ Get the recorded call history. Returns at most `limit` records (default: 100).
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | `function_name` | string | no | Filter to a specific function |
-| `limit` | integer | no | Maximum records to return (default: 100) |
+| `limit` | integer | no | Maximum records to return (default: 100, must be >= 1) |
 
 **Returns:**
 ```json
@@ -434,8 +488,12 @@ The response includes `total_count` (the total number of matching records before
 the limit was applied) and `truncated` (true if records were cut off by the
 limit), so the AI agent knows whether it has seen everything.
 
-**Maps to:** `GET /api/breakpoints/<name>/history` (per-function) and
-`BreakpointManager.get_call_records()` (all).
+**Data source:** Always uses `BreakpointManager.get_call_records()`, which
+contains **all** recorded calls (not just calls for functions with breakpoints).
+When `function_name` is provided, the tool filters this list by matching the
+`method_name` field. This is distinct from `get_execution_history()`, which only
+tracks calls to functions that have breakpoints set — the MCP tool intentionally
+uses the broader data set.
 
 ---
 
@@ -443,14 +501,25 @@ limit), so the AI agent knows whether it has seen everything.
 
 Evaluate a Python expression in the REPL context of a paused execution.
 
+**How it works:** The server does **not** evaluate Python itself. It acts as a
+relay between the MCP client and the debug client (the paused app process):
+1. The MCP tool queues an eval request for the given `pause_id`.
+2. The debug client process polls `/api/poll-repl/<pause_id>`, picks up the
+   request, evaluates the expression locally in the paused call's context, and
+   posts the result back to `/api/call/repl-result`.
+3. The MCP tool blocks until the result arrives or the timeout expires.
+
+This means the debug client must be running and polling for eval to succeed.
+
 **Parameters:**
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | `pause_id` | string | yes | ID of the paused execution |
 | `expression` | string | yes | Python expression to evaluate |
 | `session_id` | string | no | Existing REPL session ID (auto-created if omitted) |
+| `timeout_s` | number | no | Seconds to wait for the debug client to respond (default: 30) |
 
-**Returns:**
+**Returns (success):**
 ```json
 {
   "session_id": "12345-1700000000.000000",
@@ -460,7 +529,17 @@ Evaluate a Python expression in the REPL context of a paused execution.
 }
 ```
 
-**Maps to:** `POST /api/repl/start` + `POST /api/repl/<session_id>/eval`
+**Returns (timeout):**
+```json
+{
+  "error": "eval_timeout",
+  "message": "Debug client did not respond within 30s"
+}
+```
+
+**Maps to:** `POST /api/repl/start` + `POST /api/repl/<session_id>/eval` +
+the `/api/poll-repl` and `/api/call/repl-result` round-trip with the debug
+client.
 
 ---
 
@@ -468,12 +547,22 @@ Evaluate a Python expression in the REPL context of a paused execution.
 
 Inspect a serialized object by its CID.
 
+**Note:** This tool requires **new server-side logic**. There is no existing
+REST endpoint that returns a structured JSON representation of a deserialized
+CID object (the web UI renders HTML directly). The implementation must:
+1. Fetch raw bytes from `CIDStore.get(cid)`.
+2. Deserialize via dill (or JSON, based on stored format).
+3. Build a structured JSON representation with `type`, `repr`, and `attributes`.
+4. Handle deserialization failures gracefully (return a placeholder).
+
+Uses existing serializer defaults: `MAX_DEPTH=3`, `MAX_ATTRIBUTES=100`.
+
 **Parameters:**
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | `cid` | string | yes | Content identifier of the object |
 
-**Returns:**
+**Returns (success):**
 ```json
 {
   "cid": "abc123...",
@@ -483,8 +572,24 @@ Inspect a serialized object by its CID.
 }
 ```
 
-**Maps to:** `CIDStore.get()` + deserialization. Uses existing serializer
-defaults: `MAX_DEPTH=3`, `MAX_ATTRIBUTES=100`.
+**Returns (deserialization failure):**
+```json
+{
+  "cid": "abc123...",
+  "type": "unknown",
+  "repr": "<deserialization failed: ModuleNotFoundError>",
+  "attributes": {},
+  "error": "deserialization_failed"
+}
+```
+
+**Returns (not found):**
+```json
+{
+  "error": "cid_not_found",
+  "cid": "abc123..."
+}
+```
 
 ---
 
@@ -529,7 +634,9 @@ Currently paused executions (same data as `breakpoint_list_paused`).
 
 ### 4. `breakpoint://call-history`
 
-Recent call records (last 50).
+Recent call records (last 50). This is intentionally smaller than the tool's
+default limit of 100 — resources are for context injection (compact), while the
+tool is for explicit queries (larger, configurable).
 
 ### 5. `breakpoint://functions`
 
@@ -590,10 +697,13 @@ function name, arguments, call site, and stack trace.
 
 ## Test Plan
 
-All tests use the `BreakpointManager` and `CIDStore` directly (no HTTP). The MCP
-tools are thin wrappers, so tests verify the MCP layer's parameter handling,
-error reporting, and response formatting — not the underlying manager logic
-(which is already tested by the existing 401+ unit tests).
+Unit tests exercise the MCP tool handlers by calling them directly with a
+`BreakpointManager` and `CIDStore` instance — no HTTP server needed for most
+tests. The underlying manager logic is already covered by the existing 401+
+unit tests, so MCP tests focus on the MCP layer's parameter validation, error
+reporting, response formatting, and any new logic (e.g. `breakpoint_inspect_object`
+builds structured JSON from raw deserialized objects, which is new). CLI tests
+and integration tests require the full server stack.
 
 ### Module: `tests/unit/test_mcp_server.py`
 
@@ -658,120 +768,130 @@ error reporting, and response formatting — not the underlying manager logic
 | 25 | `test_set_replacement_valid` | Sets replacement function |
 | 26 | `test_set_replacement_clear` | Clears replacement when empty string passed |
 | 27 | `test_set_replacement_signature_mismatch` | Error when signatures don't match |
-| 28 | `test_set_replacement_no_breakpoint` | Error when breakpoint doesn't exist |
+| 28 | `test_set_replacement_no_signatures_registered` | Error when neither function has a registered signature |
+| 29 | `test_set_replacement_no_breakpoint` | Error when breakpoint doesn't exist |
 
 #### `breakpoint_get_default_behavior` / `breakpoint_set_default_behavior` tests
 
 | # | Test | Description |
 |---|------|-------------|
-| 29 | `test_get_default_behavior_initial` | Returns `"stop"` initially |
-| 30 | `test_set_default_behavior_go` | Sets default to `"go"` |
-| 31 | `test_set_default_behavior_exception` | Sets default to `"exception"` |
-| 32 | `test_set_default_behavior_stop_exception` | Sets default to `"stop_exception"` |
-| 33 | `test_set_default_behavior_invalid` | Error for invalid behavior |
+| 30 | `test_get_default_behavior_initial` | Returns `"stop"` initially |
+| 31 | `test_set_default_behavior_go` | Sets default to `"go"` |
+| 32 | `test_set_default_behavior_exception` | Sets default to `"exception"` |
+| 33 | `test_set_default_behavior_stop_exception` | Sets default to `"stop_exception"` |
+| 34 | `test_set_default_behavior_invalid` | Error for invalid behavior |
 
 #### `breakpoint_list_paused` tests
 
 | # | Test | Description |
 |---|------|-------------|
-| 34 | `test_list_paused_empty` | Returns empty list when nothing is paused |
-| 35 | `test_list_paused_with_entries` | Returns paused execution data with call details |
-| 36 | `test_list_paused_includes_repl_sessions` | REPL session IDs are included |
+| 35 | `test_list_paused_empty` | Returns empty list when nothing is paused |
+| 36 | `test_list_paused_with_entries` | Returns paused execution data with call details |
+| 37 | `test_list_paused_includes_repl_sessions` | REPL session IDs are included |
 
 #### `breakpoint_continue` tests
 
 | # | Test | Description |
 |---|------|-------------|
-| 37 | `test_continue_default_action` | Resumes with `"continue"` action |
-| 38 | `test_continue_skip_with_fake_result` | Resumes with `"skip"` and a fake result |
-| 39 | `test_continue_raise_exception` | Resumes with `"raise"` and exception details |
-| 40 | `test_continue_with_modified_args` | Resumes with modified arguments |
-| 41 | `test_continue_with_modified_kwargs` | Resumes with modified kwargs |
-| 42 | `test_continue_with_replacement_function` | Resumes with a replacement function |
-| 43 | `test_continue_invalid_pause_id` | Error when pause_id doesn't exist |
-| 44 | `test_continue_already_resumed` | Error when execution was already resumed |
+| 38 | `test_continue_default_action` | Resumes with `"continue"` action |
+| 39 | `test_continue_skip_with_fake_result` | Resumes with `"skip"` and a fake result |
+| 40 | `test_continue_raise_exception` | Resumes with `"raise"` and exception details |
+| 41 | `test_continue_with_modified_args` | Resumes with modified arguments |
+| 42 | `test_continue_with_modified_kwargs` | Resumes with modified kwargs |
+| 43 | `test_continue_with_replacement_function` | Resumes with a replacement function |
+| 44 | `test_continue_invalid_pause_id` | Error when pause_id was never a paused execution |
+| 45 | `test_continue_already_resumed` | Error when execution was already resumed (pause_id no longer in paused set) |
+| 46 | `test_continue_uses_json_format` | `modified_args` and `fake_result` are serialized with JSON format, not dill |
 
 #### `breakpoint_list_functions` tests
 
 | # | Test | Description |
 |---|------|-------------|
-| 45 | `test_list_functions_empty` | Returns empty when no functions registered |
-| 46 | `test_list_functions_with_entries` | Returns functions with signatures and metadata |
+| 47 | `test_list_functions_empty` | Returns empty when no functions registered |
+| 48 | `test_list_functions_with_entries` | Returns functions with signatures and metadata |
 
 #### `breakpoint_get_call_records` tests
 
 | # | Test | Description |
 |---|------|-------------|
-| 47 | `test_get_call_records_empty` | Returns empty list when no calls recorded |
-| 48 | `test_get_call_records_all` | Returns all call records (up to default limit) |
-| 49 | `test_get_call_records_filtered` | Filters by `function_name` |
-| 50 | `test_get_call_records_with_limit` | Respects explicit `limit` parameter |
-| 51 | `test_get_call_records_with_exception` | Exception info included in records |
-| 52 | `test_get_call_records_default_limit_100` | Returns at most 100 records when limit is not specified |
-| 53 | `test_get_call_records_total_count` | `total_count` reflects the true count before truncation |
-| 54 | `test_get_call_records_truncated_flag` | `truncated` is true when limit cuts off records, false otherwise |
+| 49 | `test_get_call_records_empty` | Returns empty list when no calls recorded |
+| 50 | `test_get_call_records_all` | Returns all call records (up to default limit) |
+| 51 | `test_get_call_records_filtered` | Filters by `function_name` |
+| 52 | `test_get_call_records_with_limit` | Respects explicit `limit` parameter |
+| 53 | `test_get_call_records_with_exception` | Exception info included in records |
+| 54 | `test_get_call_records_default_limit_100` | Returns at most 100 records when limit is not specified |
+| 55 | `test_get_call_records_total_count` | `total_count` reflects the true count before truncation |
+| 56 | `test_get_call_records_truncated_flag` | `truncated` is true when limit cuts off records, false otherwise |
+| 57 | `test_get_call_records_limit_zero_is_error` | `limit=0` returns a validation error (must be >= 1) |
 
 #### `breakpoint_repl_eval` tests
 
+These tests use a **mock debug client** that immediately posts results back to
+`/api/call/repl-result` when it receives an eval request. This simulates the
+3-party relay without a real app process.
+
 | # | Test | Description |
 |---|------|-------------|
-| 55 | `test_repl_eval_simple_expression` | Evaluates `"2 + 2"` and returns `"4"` |
-| 56 | `test_repl_eval_creates_session` | Auto-creates REPL session when `session_id` is omitted |
-| 57 | `test_repl_eval_reuses_session` | Reuses existing session when `session_id` is provided |
-| 58 | `test_repl_eval_error_expression` | Returns `is_error: true` for invalid Python |
-| 59 | `test_repl_eval_no_paused_execution` | Error when `pause_id` doesn't refer to a paused execution |
-| 60 | `test_repl_eval_captures_stdout` | Captures `print()` output in `stdout` field |
+| 58 | `test_repl_eval_simple_expression` | With mock client: evaluates `"2 + 2"`, returns `"4"` |
+| 59 | `test_repl_eval_creates_session` | Auto-creates REPL session when `session_id` is omitted |
+| 60 | `test_repl_eval_reuses_session` | Reuses existing session when `session_id` is provided |
+| 61 | `test_repl_eval_error_expression` | With mock client: returns `is_error: true` for invalid Python |
+| 62 | `test_repl_eval_no_paused_execution` | Error when `pause_id` doesn't refer to a paused execution |
+| 63 | `test_repl_eval_captures_stdout` | With mock client: captures `print()` output in `stdout` field |
+| 64 | `test_repl_eval_timeout` | Error when debug client does not respond within timeout |
+| 65 | `test_repl_eval_closed_session` | Error when `session_id` refers to a closed session |
 
 #### `breakpoint_inspect_object` tests
 
 | # | Test | Description |
 |---|------|-------------|
-| 61 | `test_inspect_object_exists` | Returns deserialized representation |
-| 62 | `test_inspect_object_not_found` | Error when CID doesn't exist in store |
-| 63 | `test_inspect_object_unpicklable` | Returns placeholder info for unpicklable objects |
+| 66 | `test_inspect_object_exists` | Returns structured JSON with type, repr, attributes |
+| 67 | `test_inspect_object_not_found` | Error when CID doesn't exist in store |
+| 68 | `test_inspect_object_unpicklable` | Returns placeholder info for unpicklable objects |
+| 69 | `test_inspect_object_corrupted_data` | Returns error when CID exists but data cannot be deserialized (corrupt bytes) |
 
 #### Tool result format tests
 
 | # | Test | Description |
 |---|------|-------------|
-| 64 | `test_tool_result_is_single_text_content` | Every tool returns exactly one TextContent item |
-| 65 | `test_tool_result_is_valid_json` | The text content of every tool result parses as valid JSON |
+| 70 | `test_tool_result_is_single_text_content` | Every tool returns exactly one TextContent item |
+| 71 | `test_tool_result_is_valid_json` | The text content of every tool result parses as valid JSON |
 
 #### MCP Resources tests
 
 | # | Test | Description |
 |---|------|-------------|
-| 66 | `test_resource_status` | `breakpoint://status` returns counts |
-| 67 | `test_resource_breakpoints` | `breakpoint://breakpoints` matches tool output |
-| 68 | `test_resource_paused` | `breakpoint://paused` matches tool output |
-| 69 | `test_resource_call_history` | `breakpoint://call-history` returns recent records |
-| 70 | `test_resource_functions` | `breakpoint://functions` returns registered functions |
-| 71 | `test_resource_status_updates_dynamically` | Status reflects changes after breakpoint operations |
+| 72 | `test_resource_status` | `breakpoint://status` returns counts |
+| 73 | `test_resource_breakpoints` | `breakpoint://breakpoints` matches tool output |
+| 74 | `test_resource_paused` | `breakpoint://paused` matches tool output |
+| 75 | `test_resource_call_history` | `breakpoint://call-history` returns recent records |
+| 76 | `test_resource_functions` | `breakpoint://functions` returns registered functions |
+| 77 | `test_resource_status_updates_dynamically` | Status reflects changes after breakpoint operations |
 
 #### MCP Prompts tests
 
 | # | Test | Description |
 |---|------|-------------|
-| 72 | `test_prompt_debug_session_start` | Renders with current session state |
-| 73 | `test_prompt_inspect_paused_call` | Renders with specific paused execution data |
-| 74 | `test_prompt_inspect_paused_call_not_found` | Error for invalid pause_id |
+| 78 | `test_prompt_debug_session_start` | Renders with current session state |
+| 79 | `test_prompt_inspect_paused_call` | Renders with specific paused execution data |
+| 80 | `test_prompt_inspect_paused_call_not_found` | Error for invalid pause_id |
 
 #### Error handling tests
 
 | # | Test | Description |
 |---|------|-------------|
-| 75 | `test_unknown_tool_name` | Calling a non-existent tool returns an error |
-| 76 | `test_missing_required_parameter` | Missing a required parameter returns a clear error |
-| 77 | `test_extra_unknown_parameter` | Extra parameters are ignored (no error) |
-| 78 | `test_parameter_wrong_type` | Wrong type for a parameter returns a clear error |
+| 81 | `test_unknown_tool_name` | Calling a non-existent tool returns an error |
+| 82 | `test_missing_required_parameter` | Missing a required parameter returns a clear error |
+| 83 | `test_extra_unknown_parameter` | Extra parameters are ignored (no error) |
+| 84 | `test_parameter_wrong_type` | Wrong type for a parameter returns a clear error |
 
 #### Concurrent access tests
 
 | # | Test | Description |
 |---|------|-------------|
-| 79 | `test_concurrent_add_remove_breakpoints` | Thread-safe add/remove from MCP and HTTP simultaneously |
-| 80 | `test_mcp_sees_http_changes` | Breakpoint added via HTTP is visible via MCP tool |
-| 81 | `test_http_sees_mcp_changes` | Breakpoint added via MCP tool is visible via HTTP API |
+| 85 | `test_concurrent_add_remove_breakpoints` | Thread-safe add/remove from MCP and HTTP simultaneously |
+| 86 | `test_mcp_sees_http_changes` | Breakpoint added via HTTP is visible via MCP tool |
+| 87 | `test_http_sees_mcp_changes` | Breakpoint added via MCP tool is visible via HTTP API |
 
 ### Module: `tests/unit/test_mcp_notifications.py`
 
@@ -779,18 +899,18 @@ error reporting, and response formatting — not the underlying manager logic
 
 | # | Test | Description |
 |---|------|-------------|
-| 82 | `test_notification_on_breakpoint_hit` | `execution_paused` emitted when a call pauses |
-| 83 | `test_notification_on_execution_resumed` | `execution_resumed` emitted when a paused call is resumed |
-| 84 | `test_notification_on_call_completed` | `call_completed` emitted when a call finishes |
-| 85 | `test_notification_includes_pause_id` | `execution_paused` notification includes `pause_id` |
-| 86 | `test_notification_includes_method_name` | All notifications include `method_name` |
-| 87 | `test_notification_includes_pause_reason` | `execution_paused` notification includes `pause_reason` ("breakpoint" or "exception") |
-| 88 | `test_notification_resumed_includes_action` | `execution_resumed` notification includes the resume action type |
-| 89 | `test_notification_completed_includes_status` | `call_completed` notification includes `status` (success/error) |
-| 90 | `test_no_notification_when_no_observers` | No crash when notifications fire with no observers registered |
-| 91 | `test_multiple_observers_all_notified` | All registered observers receive each notification |
-| 92 | `test_observer_exception_does_not_crash_server` | An exception in one observer does not prevent other observers from being notified |
-| 93 | `test_remove_observer` | Removed observers stop receiving notifications |
+| 88 | `test_notification_on_breakpoint_hit` | `execution_paused` emitted when a call pauses |
+| 89 | `test_notification_on_execution_resumed` | `execution_resumed` emitted when a paused call is resumed |
+| 90 | `test_notification_on_call_completed` | `call_completed` emitted when a call finishes |
+| 91 | `test_notification_includes_pause_id` | `execution_paused` notification includes `pause_id` |
+| 92 | `test_notification_includes_method_name` | All notifications include `method_name` |
+| 93 | `test_notification_includes_pause_reason` | `execution_paused` notification includes `pause_reason` ("breakpoint" or "exception") |
+| 94 | `test_notification_resumed_includes_action` | `execution_resumed` notification includes the resume action type |
+| 95 | `test_notification_completed_includes_status` | `call_completed` notification includes `status` (success/error) |
+| 96 | `test_no_notification_when_no_observers` | No crash when notifications fire with no observers registered |
+| 97 | `test_multiple_observers_all_notified` | All registered observers receive each notification |
+| 98 | `test_observer_exception_does_not_crash_server` | An exception in one observer does not prevent other observers from being notified |
+| 99 | `test_remove_observer` | Removed observers stop receiving notifications |
 
 ### Module: `tests/unit/test_mcp_observer.py`
 
@@ -798,12 +918,13 @@ error reporting, and response formatting — not the underlying manager logic
 
 | # | Test | Description |
 |---|------|-------------|
-| 94 | `test_add_observer` | `add_observer` accepts a callable |
-| 95 | `test_remove_observer` | `remove_observer` removes a previously added callable |
-| 96 | `test_remove_observer_not_registered` | `remove_observer` for an unregistered callable is a no-op |
-| 97 | `test_observer_called_on_add_paused_execution` | Observer fires when `add_paused_execution` is called |
-| 98 | `test_observer_called_on_resume_execution` | Observer fires when `resume_execution` is called |
-| 99 | `test_observer_called_on_record_call` | Observer fires when `record_call` is called |
+| 100 | `test_add_observer` | `add_observer` accepts a callable |
+| 101 | `test_remove_observer` | `remove_observer` removes a previously added callable |
+| 102 | `test_remove_observer_not_registered` | `remove_observer` for an unregistered callable is a no-op |
+| 103 | `test_observer_called_on_add_paused_execution` | Observer fires when `add_paused_execution` is called |
+| 104 | `test_observer_called_on_resume_execution` | Observer fires when `resume_execution` is called |
+| 105 | `test_observer_called_on_record_call` | Observer fires when `record_call` is called |
+| 106 | `test_observer_can_read_manager_without_deadlock` | Observer callback calls `get_paused_executions()` without deadlocking (verifies callbacks fire outside the lock) |
 
 ### Module: `tests/unit/test_mcp_server_cli.py`
 
@@ -811,14 +932,16 @@ error reporting, and response formatting — not the underlying manager logic
 
 | # | Test | Description |
 |---|------|-------------|
-| 100 | `test_mcp_flag_recognized` | `--mcp` flag is parsed without error |
-| 101 | `test_mcp_starts_flask_on_background_thread` | Flask server starts on a background thread |
-| 102 | `test_mcp_without_flag_no_mcp` | Without `--mcp`, no MCP server is started |
-| 103 | `test_mcp_port_flag_works` | `--mcp --port 9999` starts Flask on port 9999 |
-| 104 | `test_mcp_sse_flag_recognized` | `--mcp-sse` flag is parsed without error |
-| 105 | `test_mcp_sse_mounts_endpoint` | SSE endpoint is accessible at `/mcp/sse` |
-| 106 | `test_mcp_and_mcp_sse_combined` | Both flags work together |
-| 107 | `test_flask_survives_stdio_disconnect` | Flask continues serving after MCP stdio transport closes |
+| 107 | `test_mcp_flag_recognized` | `--mcp` flag is parsed without error |
+| 108 | `test_mcp_starts_flask_on_background_thread` | Flask server starts on a background thread |
+| 109 | `test_mcp_without_flag_no_mcp` | Without `--mcp`, no MCP server is started |
+| 110 | `test_mcp_port_flag_works` | `--mcp --port 9999` starts Flask on port 9999 |
+| 111 | `test_mcp_sse_flag_recognized` | `--mcp-sse` flag is parsed without error |
+| 112 | `test_mcp_sse_mounts_endpoint` | SSE endpoint is accessible at `/mcp/sse` |
+| 113 | `test_mcp_and_mcp_sse_combined` | Both flags work together |
+| 114 | `test_flask_survives_stdio_disconnect` | Flask continues serving after MCP stdio transport closes |
+| 115 | `test_mcp_sse_only_no_stdio` | `--mcp-sse` without `--mcp` starts Flask with SSE routes but no stdio transport |
+| 116 | `test_mcp_stdio_logging_redirected_to_stderr` | In `--mcp` mode, all logging goes to stderr, not stdout |
 
 ### Module: `tests/integration/test_mcp_server_integration.py`
 
@@ -826,30 +949,30 @@ error reporting, and response formatting — not the underlying manager logic
 
 | # | Test | Description |
 |---|------|-------------|
-| 108 | `test_mcp_stdio_initialize` | MCP client can initialize the server |
-| 109 | `test_mcp_add_and_list_breakpoints` | Add a breakpoint via MCP, list it back |
-| 110 | `test_mcp_pause_and_continue_flow` | Full pause/continue workflow via MCP |
-| 111 | `test_mcp_repl_eval_at_breakpoint` | REPL eval at a paused execution via MCP |
-| 112 | `test_mcp_resource_read` | Read a resource via MCP protocol |
-| 113 | `test_mcp_prompt_get` | Retrieve a prompt template via MCP protocol |
-| 114 | `test_mcp_and_http_interop` | Add breakpoint via MCP, verify via HTTP; vice versa |
+| 117 | `test_mcp_stdio_initialize` | MCP client can initialize the server |
+| 118 | `test_mcp_add_and_list_breakpoints` | Add a breakpoint via MCP, list it back |
+| 119 | `test_mcp_pause_and_continue_flow` | Full pause/continue workflow via MCP |
+| 120 | `test_mcp_repl_eval_at_breakpoint` | REPL eval at a paused execution via MCP |
+| 121 | `test_mcp_resource_read` | Read a resource via MCP protocol |
+| 122 | `test_mcp_prompt_get` | Retrieve a prompt template via MCP protocol |
+| 123 | `test_mcp_and_http_interop` | Add breakpoint via MCP, verify via HTTP; vice versa |
 
 #### End-to-end MCP tests (via SSE transport)
 
 | # | Test | Description |
 |---|------|-------------|
-| 115 | `test_mcp_sse_initialize` | MCP client can initialize the server over SSE |
-| 116 | `test_mcp_sse_add_and_list_breakpoints` | Add and list breakpoints over SSE |
-| 117 | `test_mcp_sse_multiple_clients` | Two SSE clients connect simultaneously and both see state changes |
-| 118 | `test_mcp_sse_client_disconnect_no_crash` | SSE client disconnecting does not crash the server |
-| 119 | `test_mcp_sse_notification_received` | SSE client receives `execution_paused` notification when breakpoint is hit |
+| 124 | `test_mcp_sse_initialize` | MCP client can initialize the server over SSE |
+| 125 | `test_mcp_sse_add_and_list_breakpoints` | Add and list breakpoints over SSE |
+| 126 | `test_mcp_sse_multiple_clients` | Two SSE clients connect simultaneously and both see state changes |
+| 127 | `test_mcp_sse_client_disconnect_no_crash` | SSE client disconnecting does not crash the server |
+| 128 | `test_mcp_sse_notification_received` | SSE client receives `execution_paused` notification when breakpoint is hit |
 
 #### Cross-transport tests
 
 | # | Test | Description |
 |---|------|-------------|
-| 120 | `test_stdio_and_sse_share_state` | Breakpoint added via stdio is visible to SSE client and vice versa |
-| 121 | `test_notification_broadcast_to_all_transports` | Notification is delivered to both stdio and SSE clients |
+| 129 | `test_stdio_and_sse_share_state` | Breakpoint added via stdio is visible to SSE client and vice versa |
+| 130 | `test_notification_broadcast_to_all_transports` | Notification is delivered to both stdio and SSE clients |
 
 ---
 
