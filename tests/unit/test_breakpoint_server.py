@@ -712,6 +712,18 @@ def test_objects_page_visually_marks_exception_rows(server) -> None:
     assert "pill-exception" in html
 
 
+def test_objects_page_filter_supports_multi_term_search(server) -> None:
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    response = server.test_client().get("/objects")
+    assert response.status_code == 200
+    html = response.data.decode("utf-8")
+    assert "split(/\\s+/)" in html
+    assert "tokens.every((token) => haystack.includes(token))" in html
+
+
 def test_object_pages_show_backrefs_and_snapshots(server) -> None:
     thread = threading.Thread(target=server.start, daemon=True)
     thread.start()
@@ -951,6 +963,33 @@ def test_object_ref_links_first_seen_call_tree(server) -> None:
     assert response.status_code == 200
     html = response.data.decode("utf-8")
     assert f"/call-tree/{process_key}?selected=call-early" in html
+
+
+def test_call_tree_index_supports_incremental_text_filtering(server) -> None:
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    server.manager.record_call({
+        "call_id": "call-index-1",
+        "method_name": "noop",
+        "status": "success",
+        "pretty_args": [],
+        "pretty_kwargs": {},
+        "signature": None,
+        "process_pid": 123,
+        "process_start_time": 1000.0,
+        "process_key": "1000.000000+123",
+        "started_at": 1.0,
+        "completed_at": 1.1,
+    })
+
+    response = server.test_client().get("/call-tree")
+    assert response.status_code == 200
+    html = response.data.decode("utf-8")
+    assert 'id="searchInput"' in html
+    assert "search.addEventListener('input'" in html
+    assert "tokens.every((token) => row.searchText.includes(token))" in html
 
 
 def test_frame_endpoint_renders_source_for_paused_execution(server) -> None:

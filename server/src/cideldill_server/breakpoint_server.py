@@ -1954,7 +1954,7 @@ class BreakpointServer:
 
   <script>
     const rows = @@DATA_JSON@@;
-    const state = { filter: '', sortKey: 'last_seen', sortDir: 'desc' };
+    const state = { filterText: '', filterTokens: [], sortKey: 'last_seen', sortDir: 'desc' };
 
     function formatTs(ts) {
       if (!ts) return 'Unknown';
@@ -1993,10 +1993,18 @@ class BreakpointServer:
       });
     }
 
-    function matchesFilter(row, filter) {
-      if (!filter) return true;
+    function normalizeTokens(text) {
+      return String(text || '')
+        .toLowerCase()
+        .trim()
+        .split(/\\s+/)
+        .filter(Boolean);
+    }
+
+    function matchesFilter(row, tokens) {
+      if (!tokens.length) return true;
       const haystack = JSON.stringify(row).toLowerCase();
-      return haystack.includes(filter);
+      return tokens.every((token) => haystack.includes(token));
     }
 
     function renderRole(role) {
@@ -2007,8 +2015,7 @@ class BreakpointServer:
     }
 
     function render() {
-      const filter = state.filter;
-      const filtered = rows.filter((row) => matchesFilter(row, filter));
+      const filtered = rows.filter((row) => matchesFilter(row, state.filterTokens));
       const sorted = sortRows(filtered);
       const summary = document.getElementById('summary');
       summary.textContent = `${sorted.length} of ${rows.length} rows`;
@@ -2076,7 +2083,8 @@ class BreakpointServer:
     }
 
     document.getElementById('searchInput').addEventListener('input', (event) => {
-      state.filter = String(event.target.value || '').trim().toLowerCase();
+      state.filterText = String(event.target.value || '').trim().toLowerCase();
+      state.filterTokens = normalizeTokens(state.filterText);
       render();
     });
 
@@ -2702,7 +2710,7 @@ class BreakpointServer:
                 key=lambda item: float(item.get("process_start_time") or 0),
             )
 
-            rows: list[str] = []
+            rows: list[dict[str, object]] = []
             for item in processes:
                 process_key = str(item.get("process_key"))
                 pid = item.get("process_pid", "unknown")
@@ -2717,31 +2725,28 @@ class BreakpointServer:
                 if pid == 0 and page_url:
                     process_label = f"JS {page_url}"
                 rows.append(
-                    "<tr>"
-                    f"<td class='mono'>{html.escape(start_text)}</td>"
-                    f"<td class='mono'>{html.escape(process_label)}</td>"
-                    f"<td class='mono'>{call_count}</td>"
-                    f"<td class='mono'>{html.escape(first_call)}</td>"
-                    f"<td class='mono'>{html.escape(last_call)}</td>"
-                    f"<td><a class='row-link' href='{link}'>View call tree</a></td>"
-                    "</tr>"
+                    {
+                        "process_key": process_key,
+                        "process_label": process_label,
+                        "start_text": start_text,
+                        "first_call": first_call,
+                        "last_call": last_call,
+                        "call_count": call_count,
+                        "link": link,
+                        "searchText": " ".join(
+                            [
+                                start_text,
+                                process_label,
+                                str(call_count),
+                                first_call,
+                                last_call,
+                                process_key,
+                            ]
+                        ).lower(),
+                    }
                 )
 
-            empty_state = "<div class='empty-state'>No processes recorded yet.</div>"
-            table_html = (
-                "<table>"
-                "<thead><tr>"
-                "<th>Process Start</th>"
-                "<th>Process</th>"
-                "<th>Calls</th>"
-                "<th>First Call</th>"
-                "<th>Last Call</th>"
-                "<th></th>"
-                "</tr></thead>"
-                "<tbody>"
-                + "".join(rows)
-                + "</tbody></table>"
-            ) if rows else empty_state
+            rows_json = json.dumps(rows)
 
             template = """<!DOCTYPE html>
 <html lang="en">
@@ -2755,6 +2760,9 @@ class BreakpointServer:
     h1 { color: #333; border-bottom: 3px solid #4CAF50; padding-bottom: 10px; }
     .back-link { display: inline-block; margin-bottom: 20px; color: #1976D2; text-decoration: none; }
     .back-link:hover { text-decoration: underline; }
+    .toolbar { display: flex; gap: 12px; align-items: center; margin: 14px 0 16px; flex-wrap: wrap; }
+    .search-input { flex: 1; min-width: 280px; padding: 10px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 0.95em; background: white; }
+    .summary { color: #666; font-size: 0.9em; white-space: nowrap; }
     table { width: 100%; border-collapse: collapse; background: white; border: 1px solid #ddd; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.06); }
     thead th { text-align: left; background: #fafafa; border-bottom: 1px solid #eee; padding: 12px 10px; font-size: 0.9em; color: #444; }
     tbody td { padding: 10px; border-bottom: 1px solid #f0f0f0; vertical-align: top; font-size: 0.92em; color: #222; }
@@ -2770,12 +2778,101 @@ class BreakpointServer:
     <a href="/" class="back-link">← Back to Breakpoints</a>
     <h1>Call Trees</h1>
     <p>Recorded processes ordered by start time.</p>
-    @@TABLE_HTML@@
+    <div class="toolbar">
+      <input id="searchInput" class="search-input" type="search" placeholder="Filter by process, PID, or timestamps..." autocomplete="off" />
+      <div id="summary" class="summary"></div>
+    </div>
+    <table id="processTable">
+      <thead>
+        <tr>
+          <th>Process Start</th>
+          <th>Process</th>
+          <th>Calls</th>
+          <th>First Call</th>
+          <th>Last Call</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="processBody"></tbody>
+    </table>
+    <div id="emptyState" class="empty-state" style="display:none;">No processes recorded yet.</div>
   </div>
+  <script>
+    const rows = @@ROWS_JSON@@;
+    const state = { filterText: '', filterTokens: [] };
+
+    function escapeHtml(text) {
+      return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    function normalizeTokens(text) {
+      return String(text || '')
+        .toLowerCase()
+        .trim()
+        .split(/\\s+/)
+        .filter(Boolean);
+    }
+
+    function render() {
+      const body = document.getElementById('processBody');
+      const table = document.getElementById('processTable');
+      const summary = document.getElementById('summary');
+      const empty = document.getElementById('emptyState');
+
+      const tokens = state.filterTokens;
+      const filtered = rows.filter(
+        (row) => !tokens.length || tokens.every((token) => row.searchText.includes(token))
+      );
+
+      summary.textContent = `${filtered.length} of ${rows.length} rows`;
+
+      if (!rows.length) {
+        table.style.display = 'none';
+        empty.textContent = 'No processes recorded yet.';
+        empty.style.display = 'block';
+        return;
+      }
+
+      if (!filtered.length) {
+        table.style.display = 'none';
+        empty.textContent = 'No matching processes.';
+        empty.style.display = 'block';
+        return;
+      }
+
+      table.style.display = 'table';
+      empty.style.display = 'none';
+      body.innerHTML = filtered.map((row) => `
+        <tr>
+          <td class="mono">${escapeHtml(row.start_text)}</td>
+          <td class="mono">${escapeHtml(row.process_label)}</td>
+          <td class="mono">${escapeHtml(row.call_count)}</td>
+          <td class="mono">${escapeHtml(row.first_call)}</td>
+          <td class="mono">${escapeHtml(row.last_call)}</td>
+          <td><a class="row-link" href="${escapeHtml(row.link)}">View call tree</a></td>
+        </tr>
+      `).join('');
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      const search = document.getElementById('searchInput');
+      search.addEventListener('input', () => {
+        state.filterText = String(search.value || '').trim().toLowerCase();
+        state.filterTokens = normalizeTokens(state.filterText);
+        render();
+      });
+      render();
+    });
+  </script>
 </body>
 </html>"""
 
-            return template.replace("@@TABLE_HTML@@", table_html)
+            return template.replace("@@ROWS_JSON@@", rows_json)
 
         @self.app.route('/call-tree/<process_key>', methods=['GET'])
         def call_tree_detail(process_key: str):
