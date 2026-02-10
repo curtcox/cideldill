@@ -267,8 +267,20 @@ class DebugClient:
                 if serialized.data_base64:
                     payload["result_data"] = serialized.data_base64
             elif status == "exception" and exception is not None:
-                payload["exception_type"] = type(exception).__name__
+                exc_type = type(exception)
+                exc_module = getattr(exc_type, "__module__", None)
+                exc_qualname = getattr(exc_type, "__qualname__", exc_type.__name__)
+                if exc_module and exc_module != "builtins":
+                    fq_type = f"{exc_module}.{exc_qualname}"
+                else:
+                    fq_type = exc_qualname
+                payload["exception_type"] = fq_type
                 payload["exception_message"] = str(exception)
+                payload["exception_traceback"] = "".join(
+                    traceback.format_exception(
+                        exc_type, exception, exception.__traceback__
+                    )
+                )
                 serialized = self._serializer.serialize(exception)
                 payload["exception_cid"] = serialized.cid
                 payload["exception_client_ref"] = self._get_client_ref(exception)
