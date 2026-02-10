@@ -474,6 +474,57 @@ def test_call_complete_pauses_when_after_breakpoint_set(server) -> None:
     assert paused[0]["call_data"]["pretty_result"] == "3"
 
 
+def test_call_complete_pauses_on_exception_when_global_exception_behavior(server) -> None:
+    """Global exception mode should pause on exception completion."""
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    server.manager.add_breakpoint("add")
+    server.manager.set_default_behavior("exception")
+
+    response = server.test_client().post(
+        "/api/call/start",
+        data=json.dumps({
+            "method_name": "add",
+            "args": [],
+            "kwargs": {},
+            "call_site": {"timestamp": 123.0},
+            "process_pid": 4242,
+            "process_start_time": 123.456,
+        }),
+        content_type="application/json",
+    )
+    assert response.status_code == 200
+    start_data = json.loads(response.data)
+    assert start_data["action"] == "continue"
+    call_id = start_data["call_id"]
+
+    serializer = Serializer()
+    exception_payload = serializer.force_serialize_with_data({
+        "type": "ValueError",
+        "message": "boom",
+    })
+
+    response = server.test_client().post(
+        "/api/call/complete",
+        data=json.dumps({
+            "call_id": call_id,
+            "status": "exception",
+            "exception_cid": exception_payload.cid,
+            "exception_data": exception_payload.data_base64,
+        }),
+        content_type="application/json",
+    )
+    assert response.status_code == 200
+    complete_data = json.loads(response.data)
+    assert complete_data["action"] == "poll"
+
+    paused = server.manager.get_paused_executions()
+    assert len(paused) == 1
+    assert paused[0]["call_data"]["pause_reason"] == "exception"
+
+
 def test_get_port_number(server) -> None:
     """Test that we can get the port number."""
     # When using port=0, Flask will assign a random port
@@ -500,6 +551,60 @@ def test_root_page_serves_html(server) -> None:
     assert b"breakpoint-replacement-select" in response.data
     assert b"isBreakpointSelectActive" in response.data
     assert b"sortBreakpoints" in response.data
+    html = response.data.decode("utf-8")
+    assert "Stop at exceptions" in html
+    assert "Stop at breakpoints and exceptions" in html
+    assert "After: Defer to global default" in html
+    assert "🚦" in html
+
+
+def test_behavior_endpoint_supports_exception_modes(server) -> None:
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    response = server.test_client().post(
+        "/api/behavior",
+        data=json.dumps({"behavior": "exception"}),
+        content_type="application/json",
+    )
+    assert response.status_code == 200
+    assert json.loads(response.data)["behavior"] == "exception"
+
+    response = server.test_client().post(
+        "/api/behavior",
+        data=json.dumps({"behavior": "stop_exception"}),
+        content_type="application/json",
+    )
+    assert response.status_code == 200
+    assert json.loads(response.data)["behavior"] == "stop_exception"
+
+    response = server.test_client().get("/api/behavior")
+    assert response.status_code == 200
+    assert json.loads(response.data)["behavior"] == "stop_exception"
+
+
+def test_after_behavior_endpoint_supports_exception_modes_and_defer(server) -> None:
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    server.manager.add_breakpoint("add")
+    response = server.test_client().post(
+        "/api/breakpoints/add/after_behavior",
+        data=json.dumps({"behavior": "exception"}),
+        content_type="application/json",
+    )
+    assert response.status_code == 200
+    assert json.loads(response.data)["behavior"] == "exception"
+
+    response = server.test_client().post(
+        "/api/breakpoints/add/after_behavior",
+        data=json.dumps({"behavior": "yield"}),
+        content_type="application/json",
+    )
+    assert response.status_code == 200
+    assert json.loads(response.data)["behavior"] == "yield"
 
 
 def test_report_com_error_endpoint(server) -> None:
@@ -582,6 +687,31 @@ def test_objects_page_lists_refs_and_cids(server) -> None:
     assert f"ref:{process_key}:99" in body
 
 
+def test_objects_page_visually_marks_exception_rows(server) -> None:
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    process_key = "111.000000+7"
+    server.manager.record_object_snapshot(
+        process_key,
+        7,
+        {
+            "timestamp": 1.0,
+            "call_id": "call-ex-1",
+            "method_name": "explode",
+            "role": "exception",
+            "cid": "deadbeef" * 16,
+            "pretty": "{'type': 'ValueError'}",
+        },
+    )
+
+    response = server.test_client().get("/objects")
+    assert response.status_code == 200
+    html = response.data.decode("utf-8")
+    assert "pill-exception" in html
+
+
 def test_object_pages_show_backrefs_and_snapshots(server) -> None:
     thread = threading.Thread(target=server.start, daemon=True)
     thread.start()
@@ -628,6 +758,32 @@ def test_object_pages_show_backrefs_and_snapshots(server) -> None:
     assert response.status_code == 200
     body = response.data.decode()
     assert ref in body
+
+
+def test_object_ref_page_visually_marks_exception_rows(server) -> None:
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    process_key = "222.000000+8"
+    client_ref = 8
+    server.manager.record_object_snapshot(
+        process_key,
+        client_ref,
+        {
+            "timestamp": 2.0,
+            "call_id": "call-ex-2",
+            "method_name": "explode",
+            "role": "exception",
+            "cid": "feedface" * 16,
+            "pretty": "{'type': 'RuntimeError'}",
+        },
+    )
+
+    response = server.test_client().get(f"/object/ref:{process_key}:{client_ref}")
+    assert response.status_code == 200
+    html = response.data.decode("utf-8")
+    assert "role-pill exception" in html
 
 
 def test_register_function_tracks_client_ref(server) -> None:
@@ -692,6 +848,35 @@ def test_call_tree_links_registered_target_ref(server) -> None:
     body = response.data.decode()
     assert "registered_target_ref" in body
     assert f"ref:{process_key}:17" in body
+
+
+def test_call_tree_visually_marks_exception_nodes(server) -> None:
+    thread = threading.Thread(target=server.start, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+
+    process_key = "333.000000+9"
+    server.manager.record_call({
+        "call_id": "call-ex-tree",
+        "method_name": "explode",
+        "status": "exception",
+        "pretty_args": [],
+        "pretty_kwargs": {},
+        "signature": None,
+        "exception": {"type": "ValueError", "message": "boom"},
+        "call_site": {"timestamp": 3.0, "stack_trace": []},
+        "process_pid": 9,
+        "process_start_time": 333.0,
+        "process_key": process_key,
+        "started_at": 3.0,
+        "completed_at": 3.0,
+    })
+
+    response = server.test_client().get(f"/call-tree/{process_key}")
+    assert response.status_code == 200
+    html = response.data.decode("utf-8")
+    assert "exception-badge" in html
+    assert "⚠️ EXCEPTION" in html
 
 
 def test_breakpoint_history_links_registration_call_tree(server) -> None:

@@ -190,6 +190,39 @@ def test_after_breakpoints_can_pause_execution() -> None:
     assert manager.should_pause_after_breakpoint("add") is False
 
 
+def test_default_exception_behavior_pauses_only_on_exceptions() -> None:
+    """Global exception mode should not pause at call start, only on exception return."""
+    manager = BreakpointManager()
+    manager.add_breakpoint("add")
+    manager.set_default_behavior("exception")
+
+    assert manager.should_pause_at_breakpoint("add") is False
+    assert manager.should_pause_after_breakpoint("add", is_exception=False) is False
+    assert manager.should_pause_after_breakpoint("add", is_exception=True) is True
+
+
+def test_after_breakpoint_defer_inherits_global_behavior() -> None:
+    """Default return handling should defer to the global behavior profile."""
+    manager = BreakpointManager()
+    manager.add_breakpoint("add")
+    manager.set_default_behavior("stop_exception")
+
+    assert manager.get_after_breakpoint_behavior("add") == "yield"
+    assert manager.should_pause_after_breakpoint("add", is_exception=False) is True
+    assert manager.should_pause_after_breakpoint("add", is_exception=True) is True
+
+
+def test_after_breakpoint_can_stop_on_exceptions_only() -> None:
+    """Per-function return handling should support exception-only pausing."""
+    manager = BreakpointManager()
+    manager.add_breakpoint("add")
+    manager.set_default_behavior("stop")
+    manager.set_after_breakpoint_behavior("add", "exception")
+
+    assert manager.should_pause_after_breakpoint("add", is_exception=False) is False
+    assert manager.should_pause_after_breakpoint("add", is_exception=True) is True
+
+
 def test_can_record_execution_history() -> None:
     """Test that execution history can be recorded."""
     manager = BreakpointManager()

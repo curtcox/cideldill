@@ -94,11 +94,18 @@ HTML_TEMPLATE = """
             margin-bottom: 15px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
+        .paused-card.exception {
+            background-color: #ffebee;
+            border-color: #e57373;
+        }
         .paused-header {
             font-size: 1.1em;
             font-weight: bold;
             color: #f57c00;
             margin-bottom: 10px;
+        }
+        .paused-header.exception {
+            color: #c62828;
         }
         .paused-meta {
             margin: -4px 0 10px;
@@ -326,7 +333,14 @@ HTML_TEMPLATE = """
                     <div style="margin-bottom: 10px;">
                         <strong>Default Breakpoint Behavior:</strong>
                     </div>
-                    <div style="display: flex; gap: 10px; align-items: center;">
+                    <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                        <label style="display: flex; align-items: center; cursor: pointer;">
+                            <input type="radio" name="behavior" value="go"
+                                   id="behavior-go"
+                                   onchange="setBehavior('go')"
+                                   style="margin-right: 5px; cursor: pointer;">
+                            <span>🟢 Go (log only)</span>
+                        </label>
                         <label style="display: flex; align-items: center; cursor: pointer;">
                             <input type="radio" name="behavior" value="stop"
                                    id="behavior-stop" checked
@@ -335,16 +349,22 @@ HTML_TEMPLATE = """
                             <span>🛑 Stop at breakpoints</span>
                         </label>
                         <label style="display: flex; align-items: center; cursor: pointer;">
-                            <input type="radio" name="behavior" value="go"
-                                   id="behavior-go"
-                                   onchange="setBehavior('go')"
+                            <input type="radio" name="behavior" value="exception"
+                                   id="behavior-exception"
+                                   onchange="setBehavior('exception')"
                                    style="margin-right: 5px; cursor: pointer;">
-                            <span>🟢 Go (log only)</span>
+                            <span>⚠️ Stop at exceptions</span>
+                        </label>
+                        <label style="display: flex; align-items: center; cursor: pointer;">
+                            <input type="radio" name="behavior" value="stop_exception"
+                                   id="behavior-stop_exception"
+                                   onchange="setBehavior('stop_exception')"
+                                   style="margin-right: 5px; cursor: pointer;">
+                            <span>🛑⚠️ Stop at breakpoints and exceptions</span>
                         </label>
                     </div>
                     <div style="margin-top: 10px; font-size: 0.9em; color: #856404;">
-                        When "Stop" is selected, execution pauses at breakpoints.
-                        When "Go" is selected, breakpoints are logged but don't pause.
+                        Global behavior controls pause-at-entry and default return handling.
                     </div>
                 </div>
             </div>
@@ -379,6 +399,20 @@ HTML_TEMPLATE = """
             return String(value);
         }
 
+        function globalBehaviorIcon(behavior) {
+            if (behavior === 'stop') return '🛑';
+            if (behavior === 'exception') return '⚠️';
+            if (behavior === 'stop_exception') return '🛑⚠️';
+            return '🟢';
+        }
+
+        function globalBehaviorLabel(behavior) {
+            if (behavior === 'stop') return 'Stop at breakpoints';
+            if (behavior === 'exception') return 'Stop at exceptions';
+            if (behavior === 'stop_exception') return 'Stop at breakpoints and exceptions';
+            return 'Go (log only)';
+        }
+
         function setActiveTab(tab) {
             activeTab = tab;
             const pausedPanel = document.getElementById('tabPaused');
@@ -402,9 +436,7 @@ HTML_TEMPLATE = """
                 });
 
                 if (response.ok) {
-                    const icon = behavior === 'stop' ? '🛑' : '🟢';
-                    const action = behavior === 'stop' ? 'stop at' : 'go through';
-                    showMessage(`${icon} Will ${action} breakpoints`, 'success');
+                    showMessage(`${globalBehaviorIcon(behavior)} Global behavior: ${globalBehaviorLabel(behavior)}`, 'success');
                 } else {
                     showMessage('Failed to set behavior', 'error');
                 }
@@ -421,7 +453,12 @@ HTML_TEMPLATE = """
                 const data = await response.json();
 
                 const behavior = data.behavior || 'stop';
-                document.getElementById(`behavior-${behavior}`).checked = true;
+                const control = document.getElementById(`behavior-${behavior}`);
+                if (control) {
+                    control.checked = true;
+                } else {
+                    document.getElementById('behavior-stop').checked = true;
+                }
             } catch (e) {
                 console.error('Failed to load behavior:', e);
             }
@@ -437,7 +474,7 @@ HTML_TEMPLATE = """
                 });
 
                 if (response.ok) {
-                    const icon = behavior === 'stop' ? '🛑' : (behavior === 'yield' ? '⚠️' : '🟢');
+                    const icon = behavior === 'stop' ? '🛑' : (behavior === 'yield' ? '🚦' : '🟢');
                     showMessage(`${icon} Set breakpoint behavior: ${functionName}`, 'success');
                     loadBreakpoints();
                 } else {
@@ -459,8 +496,11 @@ HTML_TEMPLATE = """
                 });
 
                 if (response.ok) {
-                    const icon = behavior === 'stop' ? '🛑' : (behavior === 'yield' ? '⚠️' : '🟢');
-                    showMessage(`${icon} Set after-breakpoint behavior: ${functionName}`, 'success');
+                    const icon = behavior === 'yield' ? '🚦' : globalBehaviorIcon(behavior);
+                    const label = behavior === 'yield'
+                        ? 'Defer to global default'
+                        : globalBehaviorLabel(behavior);
+                    showMessage(`${icon} Set return handling: ${functionName} (${label})`, 'success');
                     loadBreakpoints();
                 } else {
                     showMessage('Failed to set after-breakpoint behavior', 'error');
@@ -585,8 +625,8 @@ HTML_TEMPLATE = """
                                         </button>
                                         <button class="state-btn ${states[bp] === 'yield' ? 'selected' : ''}"
                                                 onclick="setBreakpointBehavior('${bp}', 'yield')"
-                                                title="Before: Yield (inherit global default)">
-                                            ⚠️
+                                                title="Before: Defer to global default">
+                                            🚦
                                         </button>
                                         <button class="state-btn ${states[bp] === 'go' ? 'selected' : ''}"
                                                 onclick="setBreakpointBehavior('${bp}', 'go')"
@@ -598,18 +638,28 @@ HTML_TEMPLATE = """
                                     <div class="state-toggle">
                                         <button class="state-btn ${afterStates[bp] === 'stop' ? 'selected' : ''}"
                                                 onclick="setAfterBreakpointBehavior('${bp}', 'stop')"
-                                                title="After: Stop (pause)">
+                                                title="After: Stop at breakpoints">
                                             🛑
                                         </button>
-                                        <button class="state-btn ${afterStates[bp] === 'yield' ? 'selected' : ''}"
-                                                onclick="setAfterBreakpointBehavior('${bp}', 'yield')"
-                                                title="After: Yield (inherit global default)">
+                                        <button class="state-btn ${afterStates[bp] === 'exception' ? 'selected' : ''}"
+                                                onclick="setAfterBreakpointBehavior('${bp}', 'exception')"
+                                                title="After: Stop at exceptions">
                                             ⚠️
+                                        </button>
+                                        <button class="state-btn ${afterStates[bp] === 'stop_exception' ? 'selected' : ''}"
+                                                onclick="setAfterBreakpointBehavior('${bp}', 'stop_exception')"
+                                                title="After: Stop at breakpoints and exceptions">
+                                            🛑⚠️
                                         </button>
                                         <button class="state-btn ${afterStates[bp] === 'go' ? 'selected' : ''}"
                                                 onclick="setAfterBreakpointBehavior('${bp}', 'go')"
-                                                title="After: Go (don't pause)">
+                                                title="After: Go (log only)">
                                             🟢
+                                        </button>
+                                        <button class="state-btn ${afterStates[bp] === 'yield' ? 'selected' : ''}"
+                                                onclick="setAfterBreakpointBehavior('${bp}', 'yield')"
+                                                title="After: Defer to global default">
+                                            🚦
                                         </button>
                                     </div>
                                     <div class="breakpoint-options">${replacementSelect}</div>
@@ -713,6 +763,11 @@ HTML_TEMPLATE = """
             const stackTrace = (callData.call_site && callData.call_site.stack_trace) ? callData.call_site.stack_trace : [];
             const signature = callData.signature || null;
             const prettyResult = callData.pretty_result;
+            const prettyException = callData.exception;
+            const pauseReason = callData.pause_reason || 'breakpoint';
+            const isExceptionPause = pauseReason === 'exception' || (
+                prettyException !== null && prettyException !== undefined
+            );
             const replSessions = Array.isArray(paused.repl_sessions) ? paused.repl_sessions : [];
             const pageUrl = callData.page_url;
             const processPid = callData.process_pid;
@@ -755,6 +810,14 @@ ${argsBlock}</div>`;
                 }
                 return `<div class="call-data"><strong>Return Value:</strong>
 ${escapeHtml(formatPretty(prettyResult))}</div>`;
+            };
+
+            const renderException = () => {
+                if (prettyException === null || prettyException === undefined) {
+                    return '';
+                }
+                return `<div class="call-data"><strong>Exception:</strong>
+${escapeHtml(formatPretty(prettyException))}</div>`;
             };
 
             const renderReplSessions = () => {
@@ -807,14 +870,15 @@ ${escapeHtml(formatPretty(prettyResult))}</div>`;
             };
 
             return `
-                <div class="paused-card">
-                    <div class="paused-header">
-                        ⏸️ ${escapeHtml(displayName)}() - Paused at ${pausedAt}
+                <div class="paused-card ${isExceptionPause ? 'exception' : ''}">
+                    <div class="paused-header ${isExceptionPause ? 'exception' : ''}">
+                        ${isExceptionPause ? '⚠️ Exception Pause' : '⏸️ Breakpoint Pause'}: ${escapeHtml(displayName)}() at ${pausedAt}
                     </div>
                     <div class="paused-meta">${escapeHtml(processLabel || '')}</div>
                     ${renderArgs()}
                     ${renderStack()}
                     ${renderResult()}
+                    ${renderException()}
                     ${renderReplSessions()}
                     ${renderFunctionChoices()}
                     <div class="actions">
@@ -1523,6 +1587,12 @@ class BreakpointServer:
             except Exception:
                 return "Unknown"
 
+        def _role_cell(role: object) -> str:
+            role_text = str(role or "")
+            if role_text == "exception":
+                return "<span class='role-pill exception'>⚠️ exception</span>"
+            return html.escape(role_text)
+
         def _process_key(process_pid: object, process_start_time: object) -> str | None:
             if process_pid is None or process_start_time is None:
                 return None
@@ -1866,6 +1936,8 @@ class BreakpointServer:
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.92em; white-space: pre-wrap; word-break: break-word; }
     .row-link { color: #1976D2; text-decoration: none; font-weight: 600; }
     .row-link:hover { text-decoration: underline; }
+    .pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 999px; border: 1px solid #ddd; font-size: 0.8em; font-weight: 700; }
+    .pill-exception { background: #ffebee; border-color: #ef9a9a; color: #b71c1c; }
     .empty-state { text-align: center; padding: 40px; color: #666; font-style: italic; }
   </style>
 </head>
@@ -1927,6 +1999,13 @@ class BreakpointServer:
       return haystack.includes(filter);
     }
 
+    function renderRole(role) {
+      if (role === 'exception') {
+        return '<span class="pill pill-exception">⚠️ exception</span>';
+      }
+      return role || '';
+    }
+
     function render() {
       const filter = state.filter;
       const filtered = rows.filter((row) => matchesFilter(row, filter));
@@ -1967,7 +2046,7 @@ class BreakpointServer:
                   <td class=\"mono\">${link || ''}</td>
                   <td class=\"mono\">${row.process_key || ''}</td>
                   <td class=\"mono\">${row.client_ref ?? ''}</td>
-                  <td>${row.role || ''}</td>
+                  <td>${renderRole(row.role)}</td>
                   <td class=\"mono\">${row.method_name || ''}</td>
                   <td class=\"mono\">${row.call_id || ''}</td>
                   <td class=\"mono\">${formatTs(row.last_seen || row.created_at)}</td>
@@ -2068,7 +2147,7 @@ class BreakpointServer:
                     f"<td class='mono'>{html.escape(_format_ts(item.get('timestamp')))}</td>"
                     f"<td class='mono'>{html.escape(str(item.get('process_key') or ''))}</td>"
                     f"<td class='mono'>{html.escape(str(item.get('client_ref') or ''))}</td>"
-                    f"<td>{html.escape(str(item.get('role') or ''))}</td>"
+                    f"<td>{_role_cell(item.get('role'))}</td>"
                     f"<td class='mono'>{html.escape(str(item.get('method_name') or ''))}</td>"
                     f"<td class='mono'>{html.escape(str(item.get('call_id') or ''))}</td>"
                     f"<td><a class='row-link' href='/object/{quote(_object_ref(item.get('process_key'), item.get('client_ref')), safe='')}'>"
@@ -2113,6 +2192,8 @@ class BreakpointServer:
     tbody tr:hover {{ background: #f7fbff; }}
     .row-link {{ color: #1976D2; text-decoration: none; font-weight: 600; }}
     .row-link:hover {{ text-decoration: underline; }}
+    .role-pill {{ display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 999px; border: 1px solid #ddd; font-size: 0.8em; font-weight: 700; }}
+    .role-pill.exception {{ background: #ffebee; border-color: #ef9a9a; color: #b71c1c; }}
     .empty-state {{ text-align: center; padding: 20px; color: #666; font-style: italic; }}
   </style>
 </head>
@@ -2183,7 +2264,7 @@ class BreakpointServer:
                     row_lines.append(
                         "<tr>"
                         f"<td class='mono'>{html.escape(_format_ts(item.get('timestamp')))}</td>"
-                        f"<td>{html.escape(str(item.get('role') or ''))}</td>"
+                        f"<td>{_role_cell(item.get('role'))}</td>"
                         f"<td class='mono'>{html.escape(str(item.get('method_name') or ''))}</td>"
                         f"<td class='mono'>{html.escape(str(item.get('call_id') or ''))}</td>"
                         f"<td class='mono'>{html.escape(str(item.get('cid') or ''))}</td>"
@@ -2259,6 +2340,8 @@ class BreakpointServer:
     tbody tr:hover {{ background: #f7fbff; }}
     .row-link {{ color: #1976D2; text-decoration: none; font-weight: 600; }}
     .row-link:hover {{ text-decoration: underline; }}
+    .role-pill {{ display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 999px; border: 1px solid #ddd; font-size: 0.8em; font-weight: 700; }}
+    .role-pill.exception {{ background: #ffebee; border-color: #ef9a9a; color: #b71c1c; }}
     .empty-state {{ text-align: center; padding: 20px; color: #666; font-style: italic; }}
   </style>
 </head>
@@ -2873,6 +2956,7 @@ class BreakpointServer:
     .tree-label { font-weight: 600; color: #1976D2; cursor: pointer; background: none; border: none; padding: 0; }
     .tree-time { margin-left: auto; font-size: 0.85em; color: #666; }
     .repl-badge { background: #e3f2fd; color: #1565C0; font-size: 0.75em; padding: 2px 6px; border-radius: 999px; font-weight: 700; }
+    .exception-badge { background: #ffebee; color: #b71c1c; font-size: 0.75em; padding: 2px 6px; border-radius: 999px; font-weight: 700; }
     .tree-children { margin-left: 18px; border-left: 1px dashed #e0e0e0; padding-left: 10px; }
     .tree-collapsed > .tree-children { display: none; }
     .detail-item { margin: 10px 0; }
@@ -3248,6 +3332,12 @@ class BreakpointServer:
         replBadge.className = 'repl-badge';
         replBadge.textContent = 'REPL';
       }
+      let exceptionBadge = null;
+      if (node && (node.exception || node.status === 'exception')) {
+        exceptionBadge = document.createElement('span');
+        exceptionBadge.className = 'exception-badge';
+        exceptionBadge.textContent = '⚠️ EXCEPTION';
+      }
 
       const time = document.createElement('div');
       time.className = 'tree-time';
@@ -3257,6 +3347,9 @@ class BreakpointServer:
       row.appendChild(label);
       if (replBadge) {
         row.appendChild(replBadge);
+      }
+      if (exceptionBadge) {
+        row.appendChild(exceptionBadge);
       }
       row.appendChild(time);
 
@@ -4227,16 +4320,18 @@ class BreakpointServer:
             behavior = data.get('behavior')
             if behavior == 'continue':
                 behavior = 'go'
-            if behavior not in {'stop', 'go', 'yield'}:
-                return jsonify({"error": "behavior must be 'stop', 'go', or 'yield'"}), 400
             try:
                 self.manager.set_after_breakpoint_behavior(function_name, behavior)
+            except ValueError:
+                return jsonify({
+                    "error": "behavior must be one of 'stop', 'go', 'exception', 'stop_exception', or 'yield'"
+                }), 400
             except KeyError:
                 return jsonify({"error": "breakpoint_not_found"}), 404
             return jsonify({
                 "status": "ok",
                 "function_name": function_name,
-                "behavior": behavior,
+                "behavior": self.manager.get_after_breakpoint_behavior(function_name),
             })
 
         @self.app.route('/api/breakpoints/<function_name>/replacement', methods=['POST'])
@@ -4284,11 +4379,14 @@ class BreakpointServer:
             behavior = data.get('behavior')
             if behavior == 'continue':
                 behavior = 'go'
-            if behavior not in {'stop', 'go'}:
-                return jsonify({"error": "behavior must be 'stop' or 'go'"}), 400
+            try:
+                self.manager.set_default_behavior(behavior)
+            except ValueError:
+                return jsonify({
+                    "error": "behavior must be one of 'stop', 'go', 'exception', or 'stop_exception'"
+                }), 400
 
-            self.manager.set_default_behavior(behavior)
-            return jsonify({"status": "ok", "behavior": behavior})
+            return jsonify({"status": "ok", "behavior": self.manager.get_default_behavior()})
 
         @self.app.route('/api/repl/start', methods=['POST'])
         def repl_start():
@@ -4560,6 +4658,7 @@ class BreakpointServer:
             call_data["call_id"] = call_id
             self.manager.register_call(call_id, call_data)
             if self.manager.should_pause_at_breakpoint(method_name):
+                call_data["pause_reason"] = "breakpoint"
                 pause_id = self.manager.add_paused_execution(call_data)
                 # Store the pause_id with the call for cleanup later
                 self.manager.associate_pause_with_call(call_id, pause_id)
@@ -4704,10 +4803,13 @@ class BreakpointServer:
                         history_data["exception"] = pretty_exception
                     self.manager.record_execution(method_name, history_data, completed_at=completed_at)
 
+            is_exception = bool(exception_cid) or status not in {None, "success"}
             if (
-                status == "success"
-                and call_data
-                and self.manager.should_pause_after_breakpoint(call_data.get("method_name", ""))
+                call_data
+                and self.manager.should_pause_after_breakpoint(
+                    call_data.get("method_name", ""),
+                    is_exception=is_exception,
+                )
             ):
                 pretty_result = None
                 if result_cid:
@@ -4715,8 +4817,17 @@ class BreakpointServer:
                         "cid": result_cid,
                         "serialization_format": result_format,
                     })
+                pretty_exception = None
+                if exception_cid:
+                    pretty_exception = _format_payload_value({
+                        "cid": exception_cid,
+                        "serialization_format": exception_format,
+                    })
                 call_data = dict(call_data)
                 call_data["pretty_result"] = pretty_result
+                if pretty_exception is not None:
+                    call_data["exception"] = pretty_exception
+                call_data["pause_reason"] = "exception" if is_exception else "breakpoint"
                 pause_id = self.manager.add_paused_execution(call_data)
                 return jsonify({
                     "action": "poll",

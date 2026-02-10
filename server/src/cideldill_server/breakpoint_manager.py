@@ -50,6 +50,66 @@ class BreakpointManager:
         # Default behavior when a breakpoint is hit: "stop" or "go"
         self._default_behavior: str = "stop"
 
+    @staticmethod
+    def _normalize_global_behavior(behavior: str) -> str:
+        aliases = {
+            "breakpoints": "stop",
+            "stop_at_breakpoints": "stop",
+            "exceptions": "exception",
+            "stop_at_exceptions": "exception",
+            "breakpoints_and_exceptions": "stop_exception",
+            "stop_at_breakpoints_and_exceptions": "stop_exception",
+            "both": "stop_exception",
+        }
+        normalized = aliases.get(behavior, behavior)
+        if normalized not in {"stop", "go", "exception", "stop_exception"}:
+            raise ValueError(
+                "Behavior must be one of 'stop', 'go', 'exception', or 'stop_exception'"
+            )
+        return normalized
+
+    @staticmethod
+    def _normalize_before_behavior(behavior: str) -> str:
+        aliases = {
+            "continue": "go",
+            "breakpoints": "stop",
+            "defer": "yield",
+            "default": "yield",
+        }
+        normalized = aliases.get(behavior, behavior)
+        if normalized not in {"stop", "go", "yield"}:
+            raise ValueError("Behavior must be 'stop', 'go', or 'yield'")
+        return normalized
+
+    @staticmethod
+    def _normalize_after_behavior(behavior: str) -> str:
+        aliases = {
+            "continue": "go",
+            "breakpoints": "stop",
+            "stop_at_breakpoints": "stop",
+            "exceptions": "exception",
+            "stop_at_exceptions": "exception",
+            "breakpoints_and_exceptions": "stop_exception",
+            "stop_at_breakpoints_and_exceptions": "stop_exception",
+            "both": "stop_exception",
+            "defer": "yield",
+            "default": "yield",
+        }
+        normalized = aliases.get(behavior, behavior)
+        if normalized not in {"stop", "go", "yield", "exception", "stop_exception"}:
+            raise ValueError(
+                "Behavior must be one of 'stop', 'go', 'exception', 'stop_exception', or 'yield'"
+            )
+        return normalized
+
+    @staticmethod
+    def _pauses_on_breakpoint(behavior: str) -> bool:
+        return behavior in {"stop", "stop_exception"}
+
+    @staticmethod
+    def _pauses_on_exception(behavior: str) -> bool:
+        return behavior in {"exception", "stop_exception"}
+
     def register_function(
         self,
         function_name: str,
@@ -160,8 +220,7 @@ class BreakpointManager:
             return self._breakpoint_replacements.get(function_name)
 
     def set_breakpoint_behavior(self, function_name: str, behavior: str) -> None:
-        if behavior not in {"stop", "go", "yield"}:
-            raise ValueError("Behavior must be 'stop', 'go', or 'yield'")
+        behavior = self._normalize_before_behavior(behavior)
         with self._lock:
             if function_name not in self._breakpoints:
                 raise KeyError(function_name)
@@ -171,8 +230,7 @@ class BreakpointManager:
                 self._breakpoint_behaviors[function_name] = behavior
 
     def set_after_breakpoint_behavior(self, function_name: str, behavior: str) -> None:
-        if behavior not in {"stop", "go", "yield"}:
-            raise ValueError("Behavior must be 'stop', 'go', or 'yield'")
+        behavior = self._normalize_after_behavior(behavior)
         with self._lock:
             if function_name not in self._breakpoints:
                 raise KeyError(function_name)
@@ -315,8 +373,7 @@ class BreakpointManager:
         Args:
             behavior: Either "stop" (pause execution) or "go" (log only).
         """
-        if behavior not in {"stop", "go"}:
-            raise ValueError("Behavior must be 'stop' or 'go'")
+        behavior = self._normalize_global_behavior(behavior)
         with self._lock:
             self._default_behavior = behavior
 
@@ -349,17 +406,21 @@ class BreakpointManager:
                 if selected_behavior == "yield"
                 else selected_behavior
             )
-            return behavior == "stop"
+            return self._pauses_on_breakpoint(behavior)
 
-    def should_pause_after_breakpoint(self, function_name: str) -> bool:
+    def should_pause_after_breakpoint(self, function_name: str, *, is_exception: bool = False) -> bool:
         """Check if execution should pause after a breakpoint."""
         with self._lock:
             if function_name not in self._breakpoints:
                 return False
             selected_behavior = self._after_breakpoint_behaviors.get(function_name, "yield")
             if selected_behavior == "yield":
-                return False
-            return selected_behavior == "stop"
+                behavior = self._default_behavior
+            else:
+                behavior = selected_behavior
+            if is_exception:
+                return self._pauses_on_exception(behavior)
+            return self._pauses_on_breakpoint(behavior)
 
     def register_call(self, call_id: str, call_data: dict[str, Any]) -> None:
         """Register call data for later lookup during call completion."""
