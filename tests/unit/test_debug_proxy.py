@@ -16,6 +16,7 @@ class _StubClient:
     def __init__(self, action: dict) -> None:
         self._action = action
         self.completed = []
+        self.events = []
         self.poll_calls = 0
 
     def record_call_start(self, **kwargs) -> dict:
@@ -23,6 +24,9 @@ class _StubClient:
 
     def record_call_complete(self, **kwargs) -> None:
         self.completed.append(kwargs)
+
+    def record_event(self, **kwargs) -> None:
+        self.events.append(kwargs)
 
     def poll(self, action: dict) -> dict:
         self.poll_calls += 1
@@ -141,3 +145,19 @@ def test_debug_proxy_polls_until_non_poll_action() -> None:
     proxy = DebugProxy(_Target(), client, lambda: True)
     assert proxy.add(1, 2) == 3
     assert client.poll_calls >= 3
+
+
+def test_debug_proxy_missing_attr_reports_exception_event() -> None:
+    client = _StubClient({"call_id": "1", "action": "continue"})
+    proxy = DebugProxy(_Target(), client, lambda: True)
+
+    with pytest.raises(AttributeError, match="missing_attr"):
+        _ = proxy.missing_attr
+
+    assert len(client.events) == 1
+    event = client.events[0]
+    assert event["method_name"] == "__getattr__('missing_attr')"
+    assert event["status"] == "exception"
+    assert event["call_site"]["target_cid"] == proxy.cid
+    assert event["exception"]["type"] == "AttributeError"
+    assert event["exception"]["requested_attribute"] == "missing_attr"

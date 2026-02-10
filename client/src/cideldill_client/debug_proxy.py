@@ -186,12 +186,44 @@ class DebugProxy:
         return object.__getattribute__(self, "_cid")
 
     def __getattr__(self, name: str) -> Any:
-        attr = getattr(self._target, name)
+        try:
+            attr = getattr(self._target, name)
+        except AttributeError as exc:
+            self._report_getattr_exception(name, exc)
+            raise
         if callable(attr):
             if inspect.iscoroutinefunction(attr):
                 return self._wrap_async_method(attr, name)
             return self._wrap_method(attr, name)
         return attr
+
+    def _report_getattr_exception(self, name: str, exc: AttributeError) -> None:
+        if not self._is_enabled():
+            return
+        if not hasattr(self._client, "record_event"):
+            return
+
+        call_site = {
+            "timestamp": time.time(),
+            "target_cid": self._cid,
+            "stack_trace": _build_stack_trace(skip=3),
+        }
+        exception = {
+            "type": type(exc).__name__,
+            "message": str(exc),
+            "target_type": f"{type(self._target).__module__}.{type(self._target).__qualname__}",
+            "requested_attribute": name,
+        }
+
+        try:
+            self._client.record_event(
+                method_name=f"__getattr__({name!r})",
+                status="exception",
+                call_site=call_site,
+                exception=exception,
+            )
+        except Exception:
+            logger.exception("Failed to record DebugProxy __getattr__ exception")
 
     def __setattr__(self, name: str, value: Any) -> None:
         setattr(self._target, name, value)
