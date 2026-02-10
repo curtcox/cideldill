@@ -102,16 +102,29 @@ def test_breakpoint_actually_pauses_execution(tmp_path, monkeypatch):
 
         # This should now pass - breakpoint works!
         assert len(paused_list) > 0, "Execution should be paused at breakpoint"
-        assert paused_list[0]["call_data"]["method_name"] == "test_function"
-
-        # Resume execution
-        pause_id = paused_list[0]["id"]
-        response = requests.post(
-            f"http://localhost:{port}/api/paused/{pause_id}/continue",
-            json={"action": "continue"},
-            timeout=5
+        assert any(
+            item.get("call_data", {}).get("method_name") == "test_function"
+            for item in paused_list
         )
-        assert response.status_code == 200
+
+        # Resume any pauses (entry and/or completion) until thread completes.
+        deadline = time.monotonic() + 5.0
+        while call_thread.is_alive() and time.monotonic() < deadline:
+            current = requests.get(f"http://localhost:{port}/api/paused", timeout=5)
+            assert current.status_code == 200
+            current_paused = current.json().get("paused", [])
+            if not current_paused:
+                time.sleep(0.05)
+                continue
+            for paused in current_paused:
+                pause_id = paused["id"]
+                response = requests.post(
+                    f"http://localhost:{port}/api/paused/{pause_id}/continue",
+                    json={"action": "continue"},
+                    timeout=5,
+                )
+                assert response.status_code == 200
+            time.sleep(0.05)
 
         # Wait for thread to complete
         call_thread.join(timeout=5)

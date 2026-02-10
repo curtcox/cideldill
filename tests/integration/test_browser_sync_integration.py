@@ -144,6 +144,12 @@ def test_sync_browser_client_pauses_and_resumes(tmp_path: Path) -> None:
             timeout=5,
         )
         assert resp.status_code == 200
+        resp = requests.post(
+            f"{base_url}/api/breakpoints/add/after_behavior",
+            json={"behavior": "go"},
+            timeout=5,
+        )
+        assert resp.status_code == 200
 
         js_path = _write_debug_client(tmp_path, base_url)
         script = _sync_prelude() + r"""
@@ -192,6 +198,12 @@ def test_sync_browser_client_modify_args(tmp_path: Path) -> None:
         resp = requests.post(
             f"{base_url}/api/breakpoints",
             json={"function_name": "sub"},
+            timeout=5,
+        )
+        assert resp.status_code == 200
+        resp = requests.post(
+            f"{base_url}/api/breakpoints/sub/after_behavior",
+            json={"behavior": "go"},
             timeout=5,
         )
         assert resp.status_code == 200

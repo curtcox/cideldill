@@ -98,6 +98,12 @@ def test_browser_debug_call_roundtrip(tmp_path: Path) -> None:
             timeout=5,
         )
         assert resp.status_code == 200
+        resp = requests.post(
+            f"{base_url}/api/breakpoints/add/after_behavior",
+            json={"behavior": "go"},
+            timeout=5,
+        )
+        assert resp.status_code == 200
 
         js_path = _write_debug_client(tmp_path, base_url)
         script = r"""
