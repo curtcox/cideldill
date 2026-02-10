@@ -396,6 +396,9 @@ HTML_TEMPLATE = """
             if (value && typeof value === 'object' && value.__cideldill_placeholder__) {
                 return value.summary || '<Unpicklable>';
             }
+            if (value && typeof value === 'object' && value.__cideldill_exception__) {
+                return value.summary || '<Exception>';
+            }
             return String(value);
         }
 
@@ -1640,6 +1643,15 @@ class BreakpointServer:
 
         def _format_pretty_for_html(value: object) -> str:
             if isinstance(value, dict):
+                if value.get("__cideldill_exception__"):
+                    parts = []
+                    summary = value.get("summary", "")
+                    if summary:
+                        parts.append(summary)
+                    tb = value.get("traceback", "")
+                    if tb:
+                        parts.append(tb)
+                    return "\n\n".join(parts) if parts else str(value)
                 return json.dumps(value, indent=2)
             return str(value)
 
@@ -3603,6 +3615,9 @@ class BreakpointServer:
       if (value && typeof value === 'object' && value.__cideldill_placeholder__) {
         return value.summary || '<Unpicklable>';
       }
+      if (value && typeof value === 'object' && value.__cideldill_exception__) {
+        return value.summary || '<Exception>';
+      }
       if (value && typeof value === 'object') {
         try { return JSON.stringify(value, null, 2); } catch (e) { return '[object]'; }
       }
@@ -3943,7 +3958,7 @@ class BreakpointServer:
         ${node.exception ? `
           <div class="detail-item">
             <div class="detail-label">Exception</div>
-            <div class="detail-value">${renderPretty(node.exception)}</div>
+            <div class="detail-value">${renderPretty(node.exception)}${node.exception && node.exception.traceback ? '<pre style="margin-top:8px;white-space:pre-wrap;font-size:12px;color:#666;">' + escapeHtml(node.exception.traceback) + '</pre>' : (node.exception_traceback ? '<pre style="margin-top:8px;white-space:pre-wrap;font-size:12px;color:#666;">' + escapeHtml(node.exception_traceback) + '</pre>' : '')}</div>
             ${exceptionLinks}
           </div>
         ` : ''}

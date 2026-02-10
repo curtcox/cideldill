@@ -5,6 +5,7 @@ Verifies that the server's /api/call/complete endpoint:
 2. Stores them in call records
 3. Makes exception details searchable in the call-tree UI
 4. Uses plain-text fields as fallback when dill deserialization degrades
+5. Displays exception details visibly in all UI pages
 """
 
 from __future__ import annotations
@@ -231,3 +232,128 @@ class TestExceptionFallbackWithoutDill:
         assert exc is not None
         # It should contain the exception type info
         assert "psycopg2" in str(exc) or "OperationalError" in str(exc)
+
+
+# ---------------------------------------------------------------------------
+# Tests: Exception details displayed in call-tree detail page
+# ---------------------------------------------------------------------------
+
+
+class TestCallTreeDetailExceptionDisplay:
+    """The call-tree detail page must render exception type, message,
+    and traceback in a human-readable way — not as raw JSON."""
+
+    def test_exception_summary_visible_in_call_tree_detail(self, server) -> None:
+        """The call-tree detail page's formatPretty JS function must handle
+        __cideldill_exception__ objects to produce a human-readable summary."""
+        thread = threading.Thread(target=server.start, daemon=True)
+        thread.start()
+        time.sleep(0.2)
+
+        call_id = _start_call(server)
+        _complete_call_with_exception(server, call_id)
+
+        records = server.manager.get_call_records()
+        process_key = records[0]["process_key"]
+
+        client = server.test_client()
+        resp = client.get(f"/call-tree/{process_key}")
+        assert resp.status_code == 200
+        html = resp.data.decode("utf-8")
+
+        # The call-tree JS formatPretty must include __cideldill_exception__
+        # handling so that exception summary is rendered, not raw JSON
+        assert "value.__cideldill_exception__" in html
+
+    def test_traceback_rendered_in_call_tree_node_detail(self, server) -> None:
+        """The traceback should be rendered in the node detail panel
+        of the call-tree page."""
+        thread = threading.Thread(target=server.start, daemon=True)
+        thread.start()
+        time.sleep(0.2)
+
+        call_id = _start_call(server)
+        _complete_call_with_exception(server, call_id)
+
+        records = server.manager.get_call_records()
+        process_key = records[0]["process_key"]
+
+        client = server.test_client()
+        resp = client.get(f"/call-tree/{process_key}")
+        assert resp.status_code == 200
+        html = resp.data.decode("utf-8")
+
+        # The JS rendering code must handle traceback display
+        assert "exception_traceback" in html or "node.exception_traceback" in html
+
+
+# ---------------------------------------------------------------------------
+# Tests: Exception details displayed in main dashboard paused cards
+# ---------------------------------------------------------------------------
+
+
+class TestDashboardExceptionDisplay:
+    """The main dashboard's formatPretty must handle __cideldill_exception__
+    objects so paused-on-exception cards show readable text."""
+
+    def test_dashboard_formatPretty_handles_exception_objects(self, server) -> None:
+        """The main dashboard formatPretty JS function must recognize
+        __cideldill_exception__ objects and return the summary."""
+        thread = threading.Thread(target=server.start, daemon=True)
+        thread.start()
+        time.sleep(0.2)
+
+        client = server.test_client()
+        resp = client.get("/")
+        assert resp.status_code == 200
+        html = resp.data.decode("utf-8")
+
+        # The JS must contain __cideldill_exception__ handling
+        assert "__cideldill_exception__" in html
+
+
+# ---------------------------------------------------------------------------
+# Tests: Exception details displayed in breakpoint history detail page
+# ---------------------------------------------------------------------------
+
+
+class TestBreakpointHistoryDetailExceptionDisplay:
+    """The breakpoint history detail page must render exception info
+    in a human-readable format, not as raw JSON."""
+
+    def test_format_pretty_for_html_renders_exception_summary(self, server) -> None:
+        """_format_pretty_for_html should produce a human-readable string
+        for __cideldill_exception__ dicts, not raw JSON."""
+        thread = threading.Thread(target=server.start, daemon=True)
+        thread.start()
+        time.sleep(0.2)
+
+        # Set up a breakpoint so execution recording happens
+        server.manager.add_breakpoint("my_tool.ainvoke")
+        server.manager.set_default_behavior("go")
+
+        call_id = _start_call(server)
+        _complete_call_with_exception(
+            server,
+            call_id,
+            exception_type="psycopg2.OperationalError",
+            exception_message="connection failed",
+            exception_traceback="Traceback (most recent call last):\n  psycopg2.OperationalError: connection failed\n",
+        )
+
+        # Get the execution records for the breakpoint history
+        records = server.manager.get_execution_history("my_tool.ainvoke")
+        assert len(records) >= 1
+        record_id = records[0].get("id", "0")
+
+        client = server.test_client()
+        resp = client.get(f"/breakpoint/my_tool.ainvoke/history/{record_id}")
+        assert resp.status_code == 200
+        html = resp.data.decode("utf-8")
+
+        # The exception type should appear as readable text
+        assert "psycopg2.OperationalError" in html
+        # The traceback should appear
+        assert "connection failed" in html
+        # It should NOT show raw JSON keys as visible content
+        assert "__cideldill_exception__" not in html
