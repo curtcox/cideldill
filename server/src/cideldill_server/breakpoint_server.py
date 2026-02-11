@@ -12,17 +12,19 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 import time
 from collections import deque
 from pathlib import Path
 from urllib.parse import quote
+from typing import TextIO
 
-from flask import Flask, Response, jsonify, render_template_string, request
+from flask import Flask, Response, jsonify, render_template_string, request, stream_with_context
 from pygments import highlight
 from pygments.formatters import HtmlFormatter
 from pygments.lexers import get_lexer_by_name
-from werkzeug.serving import BaseWSGIServer, make_server
+from werkzeug.serving import BaseWSGIServer, WSGIRequestHandler, make_server
 
 from .breakpoint_manager import BreakpointManager
 from .cid_store import CIDStore
@@ -1018,6 +1020,7 @@ class BreakpointServer:
         db_path: str = ":memory:",
         port_file: Path | None = None,
         repl_eval_timeout_s: float = 30.0,
+        log_stream: TextIO | None = None,
     ) -> None:
         """Initialize the server.
 
@@ -1041,7 +1044,76 @@ class BreakpointServer:
         self._repl_eval_queues: dict[str, deque[dict[str, str]]] = {}
         self._repl_eval_waiters: dict[str, dict[str, object]] = {}
         self.port_file = port_file or get_discovery_file_path()
+        self._log_stream = log_stream
         self._setup_routes()
+
+    def queue_repl_eval(self, pause_id: str, session_id: str, expr: str) -> str:
+        eval_id = str(uuid.uuid4())
+        with self._repl_lock:
+            self._repl_eval_queues.setdefault(pause_id, deque()).append({
+                "eval_id": eval_id,
+                "session_id": session_id,
+                "pause_id": pause_id,
+                "expr": expr,
+            })
+            self._repl_eval_waiters[eval_id] = {
+                "event": threading.Event(),
+                "result": None,
+                "session_id": session_id,
+                "pause_id": pause_id,
+                "expr": expr,
+                "closed": False,
+            }
+        return eval_id
+
+    def pop_repl_eval(self, pause_id: str) -> dict[str, str] | None:
+        with self._repl_lock:
+            queue = self._repl_eval_queues.get(pause_id)
+            if not queue:
+                return None
+            return queue.popleft()
+
+    def mark_repl_waiters_closed(
+        self,
+        *,
+        pause_id: str | None = None,
+        session_id: str | None = None,
+    ) -> None:
+        with self._repl_lock:
+            for waiter in self._repl_eval_waiters.values():
+                if pause_id and waiter.get("pause_id") != pause_id:
+                    continue
+                if session_id and waiter.get("session_id") != session_id:
+                    continue
+                waiter["closed"] = True
+                event = waiter.get("event")
+                if isinstance(event, threading.Event):
+                    event.set()
+
+    def wait_for_repl_eval(
+        self, eval_id: str, *, timeout_s: float
+    ) -> tuple[str, dict[str, object] | None]:
+        with self._repl_lock:
+            waiter = self._repl_eval_waiters.get(eval_id)
+        if waiter is None:
+            return ("missing", None)
+        event = waiter.get("event")
+        if not isinstance(event, threading.Event):
+            return ("missing", None)
+
+        if not event.wait(timeout=timeout_s):
+            with self._repl_lock:
+                self._repl_eval_waiters.pop(eval_id, None)
+            return ("timeout", None)
+
+        with self._repl_lock:
+            waiter = self._repl_eval_waiters.pop(eval_id, None)
+        if waiter is None:
+            return ("missing", None)
+        if waiter.get("closed"):
+            return ("closed", None)
+        result = waiter.get("result") or {}
+        return ("ok", result)
 
     def _setup_routes(self) -> None:
         """Set up Flask routes."""
@@ -1222,42 +1294,13 @@ class BreakpointServer:
             return None
 
         def _queue_repl_eval(pause_id: str, session_id: str, expr: str) -> str:
-            eval_id = str(uuid.uuid4())
-            with self._repl_lock:
-                self._repl_eval_queues.setdefault(pause_id, deque()).append({
-                    "eval_id": eval_id,
-                    "session_id": session_id,
-                    "pause_id": pause_id,
-                    "expr": expr,
-                })
-                self._repl_eval_waiters[eval_id] = {
-                    "event": threading.Event(),
-                    "result": None,
-                    "session_id": session_id,
-                    "pause_id": pause_id,
-                    "expr": expr,
-                    "closed": False,
-                }
-            return eval_id
+            return self.queue_repl_eval(pause_id, session_id, expr)
 
         def _pop_repl_eval(pause_id: str) -> dict[str, str] | None:
-            with self._repl_lock:
-                queue = self._repl_eval_queues.get(pause_id)
-                if not queue:
-                    return None
-                return queue.popleft()
+            return self.pop_repl_eval(pause_id)
 
         def _mark_repl_waiters_closed(pause_id: str | None = None, session_id: str | None = None) -> None:
-            with self._repl_lock:
-                for waiter in self._repl_eval_waiters.values():
-                    if pause_id and waiter.get("pause_id") != pause_id:
-                        continue
-                    if session_id and waiter.get("session_id") != session_id:
-                        continue
-                    waiter["closed"] = True
-                    event = waiter.get("event")
-                    if isinstance(event, threading.Event):
-                        event.set()
+            self.mark_repl_waiters_closed(pause_id=pause_id, session_id=session_id)
 
         def _safe_repr(obj: object, limit: int = 500) -> str:
             try:
@@ -5813,7 +5856,8 @@ class BreakpointServer:
         self._server = self._create_server()
         self.actual_port = self._server.server_port
         self._write_port_file()
-        print(f"Server running on http://{self.host}:{self.actual_port}")
+        output = self._log_stream if self._log_stream is not None else sys.stdout
+        print(f"Server running on http://{self.host}:{self.actual_port}", file=output)
         try:
             self._server.serve_forever()
         finally:
@@ -5828,6 +5872,48 @@ class BreakpointServer:
             self._cid_store.close()
         except Exception:
             return
+
+    @property
+    def cid_store(self) -> CIDStore:
+        return self._cid_store
+
+    def mount_mcp_sse(self, mcp_server: object) -> None:
+        start_session = getattr(mcp_server, "start_sse_session", None)
+        handle_message = getattr(mcp_server, "handle_sse_message", None)
+        close_session = getattr(mcp_server, "close_sse_session", None)
+        if not callable(start_session) or not callable(handle_message) or not callable(close_session):
+            raise RuntimeError("MCP SSE app unavailable")
+
+        def _sse_stream():
+            base_path = request.path.rsplit("/", 1)[0]
+            session = start_session(base_path=base_path)
+            try:
+                yield from session.iter_events()
+            finally:
+                close_session(session.session_id)
+
+        def _sse_endpoint():
+            response = Response(
+                stream_with_context(_sse_stream()),
+                mimetype="text/event-stream",
+            )
+            response.headers["Cache-Control"] = "no-cache"
+            response.headers["X-Accel-Buffering"] = "no"
+            return response
+
+        def _messages_endpoint():
+            session_id = request.args.get("session_id")
+            body = request.get_data()
+            message, status = handle_message(session_id, body)
+            return Response(message, status=status)
+
+        self.app.add_url_rule("/mcp/sse", "mcp_sse", _sse_endpoint, methods=["GET"])
+        self.app.add_url_rule(
+            "/mcp/messages",
+            "mcp_messages",
+            _messages_endpoint,
+            methods=["POST"],
+        )
 
     def is_running(self) -> bool:
         """Check if server is running.
@@ -5855,19 +5941,37 @@ class BreakpointServer:
 
     def _create_server(self) -> BaseWSGIServer:
         try:
-            return make_server(self.host, self.requested_port, self.app, threaded=True)
+            return make_server(
+                self.host,
+                self.requested_port,
+                self.app,
+                threaded=True,
+                request_handler=_HTTP11RequestHandler,
+            )
         except SystemExit:
             print(
                 f"Port {self.requested_port} is occupied, finding free port...",
             )
-            return make_server(self.host, 0, self.app, threaded=True)
+            return make_server(
+                self.host,
+                0,
+                self.app,
+                threaded=True,
+                request_handler=_HTTP11RequestHandler,
+            )
         except OSError as exc:
             if not _is_address_in_use(exc):
                 raise
             print(
                 f"Port {self.requested_port} is occupied, finding free port...",
             )
-            return make_server(self.host, 0, self.app, threaded=True)
+            return make_server(
+                self.host,
+                0,
+                self.app,
+                threaded=True,
+                request_handler=_HTTP11RequestHandler,
+            )
 
     def _write_port_file(self) -> None:
         try:
@@ -5881,3 +5985,5 @@ def _is_address_in_use(exc: OSError) -> bool:
     if exc.errno in {98, 48}:  # Linux and macOS
         return True
     return "Address already in use" in str(exc)
+class _HTTP11RequestHandler(WSGIRequestHandler):
+    protocol_version = "HTTP/1.1"

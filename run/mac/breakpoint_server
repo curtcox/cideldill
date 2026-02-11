@@ -65,15 +65,27 @@ def _candidate_venv_pythons() -> list[tuple[Path, Path]]:
 
 
 def _reexec_with_venv_python() -> None:
-    for venv_python, venv_root in _candidate_venv_pythons():
+    if os.environ.get("CIDELDILL_SKIP_VENV_REEXEC") == "1":
+        return
+
+    candidates = _candidate_venv_pythons()
+    if not candidates:
+        return
+
+    try:
+        current_prefix = Path(sys.prefix).resolve()
+    except OSError:
+        current_prefix = None
+
+    for _venv_python, venv_root in candidates:
         try:
-            current_prefix = Path(sys.prefix).resolve()
-            target_prefix = venv_root.resolve()
+            if current_prefix is not None and current_prefix == venv_root.resolve():
+                return
         except OSError:
             continue
 
-        if current_prefix != target_prefix:
-            os.execv(str(venv_python), [str(venv_python)] + sys.argv)
+    venv_python, _venv_root = candidates[0]
+    os.execv(str(venv_python), [str(venv_python)] + sys.argv)
 
 
 _reexec_with_venv_python()

@@ -7,7 +7,7 @@ for interactive debugging through a web UI.
 import threading
 import time
 import uuid
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 
 class BreakpointManager:
@@ -45,6 +45,7 @@ class BreakpointManager:
         self._repl_sessions: dict[str, dict[str, Any]] = {}
         self._repl_sessions_by_pause: dict[str, list[str]] = {}
         self._repl_sessions_by_call: dict[str, list[str]] = {}
+        self._observers: list[Callable[[str, dict[str, object]], None]] = []
         self._com_error_limit = 500
         self._lock = threading.Lock()
         # Default behavior when a breakpoint is hit: "stop" or "go"
@@ -124,6 +125,30 @@ class BreakpointManager:
                 self._function_signatures.pop(function_name, None)
             if metadata is not None:
                 self._function_metadata[function_name] = dict(metadata)
+
+    def add_observer(self, callback: Callable[[str, dict[str, object]], None]) -> None:
+        with self._lock:
+            if callback not in self._observers:
+                self._observers.append(callback)
+
+    def remove_observer(self, callback: Callable[[str, dict[str, object]], None]) -> None:
+        with self._lock:
+            try:
+                self._observers.remove(callback)
+            except ValueError:
+                return
+
+    def _dispatch_observers(
+        self,
+        observers: list[Callable[[str, dict[str, object]], None]],
+        event: str,
+        payload: dict[str, object],
+    ) -> None:
+        for callback in observers:
+            try:
+                callback(event, payload)
+            except Exception:
+                continue
 
     def get_registered_functions(self) -> list[str]:
         with self._lock:
@@ -264,9 +289,20 @@ class BreakpointManager:
             self._paused_executions[pause_id] = {
                 "id": pause_id,
                 "call_data": call_data,
-                "paused_at": paused_at
+                "paused_at": paused_at,
             }
+            observers = list(self._observers)
 
+        method_name = None
+        if isinstance(call_data, dict):
+            method_name = call_data.get("method_name") or call_data.get("function_name")
+        payload = {
+            "pause_id": pause_id,
+            "method_name": method_name,
+            "pause_reason": call_data.get("pause_reason") if isinstance(call_data, dict) else None,
+            "paused_at": paused_at,
+        }
+        self._dispatch_observers(observers, "execution_paused", payload)
         return pause_id
 
     def get_paused_execution(self, pause_id: str) -> Optional[dict[str, Any]]:
@@ -298,11 +334,24 @@ class BreakpointManager:
             action: Action dict (e.g., {"action": "continue"}).
         """
         with self._lock:
+            paused = self._paused_executions.get(pause_id)
             # Store the action
             self._resume_actions[pause_id] = action
             # Remove from paused list
             self._paused_executions.pop(pause_id, None)
             self._close_repl_sessions_for_pause(pause_id)
+            observers = list(self._observers)
+
+        call_data = paused.get("call_data") if isinstance(paused, dict) else {}
+        method_name = None
+        if isinstance(call_data, dict):
+            method_name = call_data.get("method_name") or call_data.get("function_name")
+        payload = {
+            "pause_id": pause_id,
+            "method_name": method_name,
+            "action": action.get("action") if isinstance(action, dict) else None,
+        }
+        self._dispatch_observers(observers, "execution_resumed", payload)
 
     def get_resume_action(self, pause_id: str) -> Optional[dict[str, Any]]:
         """Get the resume action for a paused execution.
@@ -476,6 +525,14 @@ class BreakpointManager:
                     list(self._repl_sessions_by_call.get(call_id, [])),
                 )
             self._call_records.append(call_record)
+            observers = list(self._observers)
+
+        payload = {
+            "call_id": call_record.get("call_id"),
+            "method_name": call_record.get("method_name"),
+            "status": call_record.get("status"),
+        }
+        self._dispatch_observers(observers, "call_completed", payload)
 
     def get_call_records(self) -> list[dict[str, Any]]:
         """Get all recorded calls."""

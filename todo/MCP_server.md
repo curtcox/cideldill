@@ -681,6 +681,16 @@ function name, arguments, call site, and stack trace.
 
 ### Phase 1: Core MCP server with tools (stdio)
 
+## Progress
+
+- [x] Review existing server code, CLI entrypoint, BreakpointManager, and tests
+- [x] Add BreakpointManager observer interface tests
+- [x] Add MCP notification delivery tests
+- [x] Implement MCP server core (stdio, tools/resources/prompts)
+- [x] Add SSE transport integration + CLI flags
+- [x] Add integration tests + documentation + dependency updates
+- [ ] Fix MCP SSE integration hang (test_mcp_sse_initialize)
+
 1. Add `mcp` Python SDK (latest stable) as a dependency to `cideldill-server`.
 2. Create `mcp_server.py` module in `server/src/cideldill_server/`.
 3. Implement tool registration and handler dispatch.
@@ -711,6 +721,7 @@ function name, arguments, call site, and stack trace.
 
 15. Add MCP server configuration examples (Claude Code `mcp_servers` config).
 16. Add usage documentation.
+17. Fix MCP SSE integration hang (`test_mcp_sse_initialize`).
 
 ---
 
