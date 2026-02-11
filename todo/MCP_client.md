@@ -53,8 +53,8 @@ breakpoint server's REST API and MCP server interface.
 - External MCP server connections are **long-lived** — they start when the
   breakpoint server starts (or when configured at runtime) and persist until
   explicitly disconnected or the server shuts down.
-- The MCP client manager is **thread-safe**. Flask request threads, the MCP
-  server handlers, and the web UI can all invoke external tools concurrently.
+- The MCP client manager is **thread-safe**. Flask request threads and the MCP
+  server tool handlers can all invoke external tools concurrently.
 - External tool calls are **async** under the hood (MCP SDK uses asyncio) but
   are exposed **synchronously** to Flask routes and the existing MCP server
   tool handlers via a bridging mechanism.
@@ -108,19 +108,86 @@ methods that bridge into it.
 
 ```python
 class MCPClientManager:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        manager: BreakpointManager,
+        cid_store: CIDStore,
+    ) -> None:
+        self._manager = manager        # for recording call records
+        self._cid_store = cid_store    # for storing tool results
         self._loop: asyncio.AbstractEventLoop  # background loop
         self._thread: threading.Thread          # loop runner
+        self._servers: dict[str, _ServerConnection] = {}
 
     def call_tool(self, namespaced_name: str, arguments: dict) -> CallToolResult:
         """Synchronous — blocks until the external tool completes."""
         server_name, tool_name = self._parse_namespaced_name(namespaced_name)
+        server = self._servers[server_name]
         future = asyncio.run_coroutine_threadsafe(
             self._call_tool_async(server_name, tool_name, arguments),
             self._loop,
         )
-        return future.result(timeout=self._call_timeout)
+        return future.result(timeout=server.config.timeout_s)
 ```
+
+### Constructor Dependencies
+
+The `MCPClientManager` receives `BreakpointManager` and `CIDStore` as
+constructor arguments. It uses these to:
+- Record each external tool call in `BreakpointManager.record_call()` with
+  `"source": "mcp_client"` (Decision #1).
+- Store tool call results in `CIDStore` for later inspection via
+  `breakpoint_inspect_object` (Decision #3).
+
+### `disconnect` vs `reconnect` Semantics
+
+`disconnect(name)` sets the server's status to `"disconnected"`, closes the
+transport (terminates the subprocess for stdio, closes the HTTP connection for
+SSE), and removes the server's tools from the catalog. The server's **config
+is retained** so that `reconnect(name)` can re-establish the connection using
+the original configuration.
+
+To fully remove a server (config and all), there is no separate API — just
+disconnect it and it will be forgotten on process restart (since runtime
+connections are ephemeral per Decision #7, and config-file connections are
+re-read from the file on startup).
+
+### `--mcp-client` Inline Parsing
+
+The `--mcp-client` value is split on the **first** colon to produce
+`name:value`. Server names match `[a-zA-Z0-9_-]+` (no colons), so the first
+colon is always the separator. If `value` starts with `http://` or `https://`,
+it is SSE; otherwise it is stdio (split on whitespace into command + args).
+
+### CLI Flag Interactions
+
+- `--mcp-clients` alone: loads the default config file
+  (`~/.cideldill/mcp_clients.json`). If the file does not exist, it is a
+  **silent no-op** (zero servers configured, manager still created).
+- `--mcp-clients-config /path`: loads the specified config file. If the file
+  does not exist, it is an **error** (FileNotFoundError).
+- `--mcp-client "name:value"` alone (without `--mcp-clients`): **also creates
+  the MCPClientManager** and connects the inline server(s). You do not need
+  `--mcp-clients` when using `--mcp-client`.
+- All three flags can be combined. Config-file servers and inline servers are
+  merged. If a name appears in both, the inline definition wins.
+
+### Auto-Reconnect Parameters
+
+Auto-reconnection uses these constants (not configurable per-server):
+- **Max attempts:** 5
+- **Backoff schedule:** 1s, 2s, 4s, 8s, 16s (exponential, base 2)
+- After max attempts, the server status becomes `"failed"` and no further
+  automatic reconnection is attempted. Manual `reconnect(name)` resets the
+  attempt counter.
+
+### Connection Timeout vs Tool Call Timeout
+
+The `timeout_s` config field controls **tool call timeout** (how long to wait
+for a single tool call to complete). A separate **connection timeout** of 30
+seconds (not configurable) applies to the initial connection establishment
+(subprocess spawn + MCP initialization, or SSE handshake + MCP initialization).
+If connection takes longer than 30s, the server status becomes `"error"`.
 
 ---
 
@@ -290,6 +357,20 @@ Read a resource from a connected external MCP server.
 }
 ```
 
+**Returns:**
+```json
+{
+  "content": "...",
+  "mime_type": "application/json"
+}
+```
+
+**Error returns:**
+```json
+{"error": "server_not_connected", "server": "filesystem"}
+{"error": "resource_not_found", "uri": "filesystem://localhost/nosuch"}
+```
+
 ### `POST /api/mcp-clients/connect`
 
 Connect to a new external MCP server at runtime.
@@ -304,13 +385,46 @@ Connect to a new external MCP server at runtime.
 }
 ```
 
+**Returns:**
+```json
+{"status": "ok", "name": "git-server", "tools": ["git-server/log", "git-server/diff"]}
+```
+
+**Error returns:**
+```json
+{"error": "duplicate_name", "name": "git-server"}
+{"error": "connect_failed", "name": "git-server", "message": "..."}
+```
+
 ### `POST /api/mcp-clients/<name>/disconnect`
 
-Disconnect from a specific external MCP server.
+Disconnect from a specific external MCP server. The server config is retained
+for future `reconnect` calls.
+
+**Returns:**
+```json
+{"status": "ok", "name": "filesystem"}
+```
+
+**Error returns:**
+```json
+{"error": "server_not_found", "name": "nosuch"}
+```
 
 ### `POST /api/mcp-clients/<name>/reconnect`
 
-Reconnect to a disconnected external MCP server.
+Reconnect to a disconnected external MCP server using its retained config.
+
+**Returns:**
+```json
+{"status": "ok", "name": "filesystem", "tools": ["filesystem/read_file"]}
+```
+
+**Error returns:**
+```json
+{"error": "server_not_found", "name": "nosuch"}
+{"error": "connect_failed", "name": "filesystem", "message": "..."}
+```
 
 ---
 
@@ -382,6 +496,21 @@ List resources from connected external MCP servers.
 |------|------|----------|-------------|
 | `server` | string | no | Filter to a specific server |
 
+**Returns:**
+```json
+{
+  "resources": [
+    {
+      "uri": "filesystem://localhost/tmp",
+      "server": "filesystem",
+      "name": "Tmp Directory",
+      "description": "...",
+      "mime_type": "application/json"
+    }
+  ]
+}
+```
+
 #### `external_read_resource`
 
 Read a resource from a connected external MCP server.
@@ -391,6 +520,20 @@ Read a resource from a connected external MCP server.
 |------|------|----------|-------------|
 | `server` | string | yes | Server name |
 | `uri` | string | yes | Resource URI |
+
+**Returns:**
+```json
+{
+  "content": "...",
+  "mime_type": "application/json"
+}
+```
+
+**Error returns:**
+```json
+{"error": "server_not_found", "server": "nosuch"}
+{"error": "resource_not_found", "uri": "..."}
+```
 
 ---
 
@@ -457,121 +600,124 @@ Integration tests spawn real MCP server subprocesses.
 | # | Test | Description |
 |---|------|-------------|
 | 1 | `test_manager_starts_background_loop` | MCPClientManager starts a background asyncio event loop on a dedicated thread |
-| 2 | `test_manager_shutdown_stops_loop` | `shutdown()` stops the background loop and joins the thread |
-| 3 | `test_manager_shutdown_idempotent` | Calling `shutdown()` twice does not raise |
-| 4 | `test_manager_initially_has_no_servers` | `list_servers()` returns empty dict after construction |
-| 5 | `test_manager_initially_has_no_tools` | `list_tools()` returns empty list after construction |
+| 2 | `test_manager_requires_breakpoint_manager` | Constructor requires a `BreakpointManager` instance |
+| 3 | `test_manager_requires_cid_store` | Constructor requires a `CIDStore` instance |
+| 4 | `test_manager_shutdown_stops_loop` | `shutdown()` stops the background loop and joins the thread |
+| 5 | `test_manager_shutdown_idempotent` | Calling `shutdown()` twice does not raise |
+| 6 | `test_manager_initially_has_no_servers` | `list_servers()` returns empty dict after construction |
+| 7 | `test_manager_initially_has_no_tools` | `list_tools()` returns empty list after construction |
 
 #### Server name validation tests
 
 | # | Test | Description |
 |---|------|-------------|
-| 6 | `test_server_name_valid_alphanumeric` | Names like `"filesystem"`, `"my-server"`, `"db_1"` are accepted |
-| 7 | `test_server_name_empty_rejected` | Empty string `""` raises ValueError |
-| 8 | `test_server_name_with_slash_rejected` | Names containing `"/"` raise ValueError (slash is the namespace separator) |
-| 9 | `test_server_name_with_spaces_rejected` | Names containing spaces raise ValueError |
-| 10 | `test_server_name_duplicate_rejected` | Connecting with an already-connected name raises ValueError |
+| 8 | `test_server_name_valid_alphanumeric` | Names like `"filesystem"`, `"my-server"`, `"db_1"` are accepted |
+| 9 | `test_server_name_empty_rejected` | Empty string `""` raises ValueError |
+| 10 | `test_server_name_with_slash_rejected` | Names containing `"/"` raise ValueError (slash is the namespace separator) |
+| 11 | `test_server_name_with_spaces_rejected` | Names containing spaces raise ValueError |
+| 12 | `test_server_name_duplicate_rejected` | Connecting with an already-connected name raises ValueError |
 
 #### Stdio connection tests (with mock MCP server)
 
 | # | Test | Description |
 |---|------|-------------|
-| 11 | `test_connect_stdio_success` | Connects to a mock stdio MCP server; status becomes `"connected"` |
-| 12 | `test_connect_stdio_discovers_tools` | After connecting, `list_tools()` returns the mock server's tools with namespace prefix |
-| 13 | `test_connect_stdio_invalid_command` | Connecting with a nonexistent command results in status `"error"` |
-| 14 | `test_connect_stdio_server_crash_on_init` | Server that exits immediately results in status `"error"` |
-| 15 | `test_disconnect_stdio` | `disconnect(name)` terminates the subprocess and removes tools |
-| 16 | `test_disconnect_unknown_server` | `disconnect("nonexistent")` raises KeyError |
+| 13 | `test_connect_stdio_success` | Connects to a mock stdio MCP server; status becomes `"connected"` |
+| 14 | `test_connect_stdio_discovers_tools` | After connecting, `list_tools()` returns the mock server's tools with namespace prefix |
+| 15 | `test_connect_stdio_invalid_command` | Connecting with a nonexistent command results in status `"error"` |
+| 16 | `test_connect_stdio_server_crash_on_init` | Server that exits immediately results in status `"error"` |
+| 17 | `test_disconnect_stdio_retains_config` | `disconnect(name)` terminates the subprocess, removes tools, sets status to `"disconnected"`, but retains server config for reconnect |
+| 18 | `test_disconnect_unknown_server` | `disconnect("nonexistent")` raises KeyError |
 
 #### SSE connection tests (with mock HTTP server)
 
 | # | Test | Description |
 |---|------|-------------|
-| 17 | `test_connect_sse_success` | Connects to a mock SSE endpoint; status becomes `"connected"` |
-| 18 | `test_connect_sse_discovers_tools` | After connecting, tools from SSE server appear in catalog |
-| 19 | `test_connect_sse_invalid_url` | Connecting with an unreachable URL results in status `"error"` |
-| 20 | `test_disconnect_sse` | `disconnect(name)` closes the SSE connection cleanly |
+| 19 | `test_connect_sse_success` | Connects to a mock SSE endpoint; status becomes `"connected"` |
+| 20 | `test_connect_sse_discovers_tools` | After connecting, tools from SSE server appear in catalog |
+| 21 | `test_connect_sse_invalid_url` | Connecting with an unreachable URL results in status `"error"` |
+| 22 | `test_disconnect_sse` | `disconnect(name)` closes the SSE connection cleanly |
 
 #### Tool namespacing tests
 
 | # | Test | Description |
 |---|------|-------------|
-| 21 | `test_tool_names_are_namespaced` | Tool `"read_file"` from server `"fs"` appears as `"fs/read_file"` |
-| 22 | `test_tools_from_multiple_servers_do_not_collide` | Two servers both exposing `"search"` appear as `"server_a/search"` and `"server_b/search"` |
-| 23 | `test_tool_catalog_includes_server_name` | Each tool entry includes the `server` field |
-| 24 | `test_tool_catalog_includes_original_name` | Each tool entry includes `original_name` (without namespace) |
-| 25 | `test_tool_catalog_includes_description` | Tool description from the MCP server is preserved |
-| 26 | `test_tool_catalog_includes_input_schema` | Tool input schema from the MCP server is preserved |
+| 23 | `test_tool_names_are_namespaced` | Tool `"read_file"` from server `"fs"` appears as `"fs/read_file"` |
+| 24 | `test_tools_from_multiple_servers_do_not_collide` | Two servers both exposing `"search"` appear as `"server_a/search"` and `"server_b/search"` |
+| 25 | `test_tool_catalog_includes_server_name` | Each tool entry includes the `server` field |
+| 26 | `test_tool_catalog_includes_original_name` | Each tool entry includes `original_name` (without namespace) |
+| 27 | `test_tool_catalog_includes_description` | Tool description from the MCP server is preserved |
+| 28 | `test_tool_catalog_includes_input_schema` | Tool input schema from the MCP server is preserved |
 
 #### Tool calling tests
 
 | # | Test | Description |
 |---|------|-------------|
-| 27 | `test_call_tool_success` | Calling a namespaced tool routes to the correct server and returns the result |
-| 28 | `test_call_tool_with_arguments` | Arguments are passed through to the external tool |
-| 29 | `test_call_tool_empty_arguments` | Calling with empty `{}` arguments works |
-| 30 | `test_call_tool_server_not_connected` | Calling a tool on a disconnected server returns error |
-| 31 | `test_call_tool_unknown_server` | Calling `"nosuch/tool"` returns `server_not_found` error |
-| 32 | `test_call_tool_unknown_tool` | Calling `"fs/nosuch"` where `"fs"` is connected but `"nosuch"` is not a known tool returns `tool_not_found` error |
-| 33 | `test_call_tool_invalid_format` | Calling with a name that has no `"/"` separator returns error |
-| 34 | `test_call_tool_timeout` | Tool call that exceeds timeout returns `call_timeout` error |
-| 35 | `test_call_tool_server_error` | External server returning an error is propagated as a structured error |
-| 36 | `test_call_tool_returns_text_content` | TextContent results from external tools are returned faithfully |
-| 37 | `test_call_tool_returns_multiple_content` | Multi-item content arrays are returned faithfully |
-| 38 | `test_call_tool_result_stored_in_cid_store` | Tool call result content is stored in the CIDStore and can be retrieved via CID |
-| 39 | `test_call_tool_recorded_in_call_records` | Tool call is recorded in BreakpointManager call records with `"source": "mcp_client"` |
-| 40 | `test_call_tool_record_includes_server_name` | Call record includes the server name and namespaced tool name |
-| 41 | `test_call_tool_record_includes_arguments` | Call record includes the arguments passed to the tool |
-| 42 | `test_call_tool_record_includes_result_cid` | Call record includes the CID of the stored result |
-| 43 | `test_call_tool_error_recorded_in_call_records` | Failed tool calls are also recorded with error details |
+| 29 | `test_call_tool_success` | Calling a namespaced tool routes to the correct server and returns the result |
+| 30 | `test_call_tool_with_arguments` | Arguments are passed through to the external tool |
+| 31 | `test_call_tool_empty_arguments` | Calling with empty `{}` arguments works |
+| 32 | `test_call_tool_server_not_connected` | Calling a tool on a disconnected server returns error |
+| 33 | `test_call_tool_unknown_server` | Calling `"nosuch/tool"` returns `server_not_found` error |
+| 34 | `test_call_tool_unknown_tool` | Calling `"fs/nosuch"` where `"fs"` is connected but `"nosuch"` is not a known tool returns `tool_not_found` error |
+| 35 | `test_call_tool_invalid_format` | Calling with a name that has no `"/"` separator returns error |
+| 36 | `test_call_tool_timeout` | Tool call that exceeds per-server `timeout_s` returns `call_timeout` error |
+| 37 | `test_call_tool_server_error` | External server returning an error is propagated as a structured error |
+| 38 | `test_call_tool_returns_text_content` | TextContent results from external tools are returned faithfully |
+| 39 | `test_call_tool_returns_multiple_content` | Multi-item content arrays are returned faithfully |
+| 40 | `test_call_tool_result_stored_in_cid_store` | Tool call result content is stored in the CIDStore and can be retrieved via CID |
+| 41 | `test_call_tool_recorded_in_call_records` | Tool call is recorded in BreakpointManager call records with `"source": "mcp_client"` |
+| 42 | `test_call_tool_record_includes_server_name` | Call record includes the server name and namespaced tool name |
+| 43 | `test_call_tool_record_includes_arguments` | Call record includes the arguments passed to the tool |
+| 44 | `test_call_tool_record_includes_result_cid` | Call record includes the CID of the stored result |
+| 45 | `test_call_tool_error_recorded_in_call_records` | Failed tool calls are also recorded with error details |
 
 #### Resource discovery tests
 
 | # | Test | Description |
 |---|------|-------------|
-| 44 | `test_list_resources_empty` | No resources when no servers connected |
-| 45 | `test_list_resources_from_connected_server` | Resources from connected server include server name |
-| 46 | `test_list_resources_multiple_servers` | Resources from multiple servers are aggregated |
-| 47 | `test_list_resources_filter_by_server` | Filtering by server name returns only that server's resources |
-| 48 | `test_read_resource_success` | Reading a resource from a connected server returns content |
-| 49 | `test_read_resource_server_not_connected` | Error when server is not connected |
-| 50 | `test_read_resource_not_found` | Error when resource URI is not found on the server |
+| 46 | `test_list_resources_empty` | No resources when no servers connected |
+| 47 | `test_list_resources_from_connected_server` | Resources from connected server include server name |
+| 48 | `test_list_resources_multiple_servers` | Resources from multiple servers are aggregated |
+| 49 | `test_list_resources_filter_by_server` | Filtering by server name returns only that server's resources |
+| 50 | `test_read_resource_success` | Reading a resource from a connected server returns content |
+| 51 | `test_read_resource_server_not_connected` | Error when server is not connected |
+| 52 | `test_read_resource_not_found` | Error when resource URI is not found on the server |
 
 #### Concurrent access tests
 
 | # | Test | Description |
 |---|------|-------------|
-| 51 | `test_concurrent_tool_calls_same_server` | Multiple threads calling tools on the same server concurrently |
-| 52 | `test_concurrent_tool_calls_different_servers` | Multiple threads calling tools on different servers concurrently |
-| 53 | `test_connect_while_calling_tool` | Connecting a new server while a tool call is in progress on another |
-| 54 | `test_disconnect_while_calling_tool` | Disconnecting a server while a tool call is in progress on it returns error for the in-flight call |
+| 53 | `test_concurrent_tool_calls_same_server` | Multiple threads calling tools on the same server concurrently |
+| 54 | `test_concurrent_tool_calls_different_servers` | Multiple threads calling tools on different servers concurrently |
+| 55 | `test_connect_while_calling_tool` | Connecting a new server while a tool call is in progress on another |
+| 56 | `test_disconnect_while_calling_tool` | Disconnecting a server while a tool call is in progress on it returns error for the in-flight call |
 
 #### Reconnection tests
 
 | # | Test | Description |
 |---|------|-------------|
-| 55 | `test_reconnect_after_disconnect` | `reconnect(name)` re-establishes a previously disconnected connection |
-| 56 | `test_reconnect_discovers_fresh_tools` | After reconnection, tool list is refreshed (may have changed) |
-| 57 | `test_auto_reconnect_on_connection_loss` | When auto_reconnect is true, manager attempts reconnection after detecting connection loss |
-| 58 | `test_auto_reconnect_exponential_backoff` | Reconnection attempts use exponential backoff (1s, 2s, 4s, 8s, ...) |
-| 59 | `test_auto_reconnect_max_attempts` | Auto-reconnection gives up after max attempts and sets status to `"failed"` |
-| 60 | `test_no_auto_reconnect_when_disabled` | When auto_reconnect is false, no reconnection is attempted |
-| 61 | `test_reconnect_unknown_server` | `reconnect("nonexistent")` raises KeyError |
+| 57 | `test_reconnect_after_disconnect` | `reconnect(name)` re-establishes a previously disconnected connection using retained config |
+| 58 | `test_reconnect_discovers_fresh_tools` | After reconnection, tool list is refreshed (may have changed) |
+| 59 | `test_auto_reconnect_on_connection_loss` | When auto_reconnect is true, manager attempts reconnection after detecting connection loss |
+| 60 | `test_auto_reconnect_exponential_backoff` | Reconnection attempts use exponential backoff (1s, 2s, 4s, 8s, 16s) with max 5 attempts |
+| 61 | `test_auto_reconnect_max_attempts` | Auto-reconnection gives up after 5 attempts and sets status to `"failed"` |
+| 62 | `test_no_auto_reconnect_when_disabled` | When auto_reconnect is false, no reconnection is attempted |
+| 63 | `test_reconnect_unknown_server` | `reconnect("nonexistent")` raises KeyError |
+| 64 | `test_manual_reconnect_resets_attempt_counter` | After `reconnect()`, auto-reconnect attempt counter resets to 0 |
 
 #### Health monitoring tests
 
 | # | Test | Description |
 |---|------|-------------|
-| 62 | `test_ping_connected_server` | Pinging a connected server succeeds |
-| 63 | `test_ping_disconnected_server` | Pinging a disconnected server returns error |
-| 64 | `test_connection_status_reflects_reality` | After server process dies, status eventually becomes `"disconnected"` |
+| 65 | `test_ping_connected_server` | Pinging a connected server succeeds |
+| 66 | `test_ping_disconnected_server` | Pinging a disconnected server returns error |
+| 67 | `test_connection_status_reflects_reality` | After server process dies, status eventually becomes `"disconnected"` |
 
 #### Sampling request handling tests
 
 | # | Test | Description |
 |---|------|-------------|
-| 65 | `test_sampling_request_raises_not_implemented` | Server-initiated `sampling/createMessage` raises `NotImplementedError` |
-| 66 | `test_sampling_rejection_does_not_crash_connection` | After rejecting a sampling request, the connection remains usable for tool calls |
+| 68 | `test_sampling_request_raises_not_implemented` | Server-initiated `sampling/createMessage` raises `NotImplementedError` |
+| 69 | `test_sampling_rejection_does_not_crash_connection` | After rejecting a sampling request, the connection remains usable for tool calls |
 
 ### Module: `tests/unit/test_mcp_client_config.py`
 
@@ -579,20 +725,20 @@ Integration tests spawn real MCP server subprocesses.
 
 | # | Test | Description |
 |---|------|-------------|
-| 67 | `test_parse_valid_config` | Parses a valid `mcp_clients.json` with multiple servers |
-| 68 | `test_parse_empty_config` | Empty `{"servers": {}}` parses to zero server configs |
-| 69 | `test_parse_missing_file` | Missing config file raises FileNotFoundError |
-| 70 | `test_parse_invalid_json` | Malformed JSON raises ValueError |
-| 71 | `test_parse_missing_transport` | Server entry without `transport` raises ValueError |
-| 72 | `test_parse_stdio_missing_command` | Stdio entry without `command` raises ValueError |
-| 73 | `test_parse_sse_missing_url` | SSE entry without `url` raises ValueError |
-| 74 | `test_parse_unknown_transport` | Transport other than `"stdio"` or `"sse"` raises ValueError |
-| 75 | `test_parse_optional_fields_defaulted` | Missing optional fields (`env`, `args`, `timeout_s`, `auto_reconnect`) get defaults |
-| 76 | `test_parse_timeout_must_be_positive` | `timeout_s` of 0 or negative raises ValueError |
-| 77 | `test_parse_env_must_be_dict` | `env` field that is not a dict raises ValueError |
-| 78 | `test_default_config_path` | Default path is `~/.cideldill/mcp_clients.json` |
-| 79 | `test_config_path_from_env` | `$CIDELDILL_MCP_CLIENTS_CONFIG` overrides default path |
-| 80 | `test_config_path_respects_cideldill_home` | `$CIDELDILL_HOME/mcp_clients.json` is used when `$CIDELDILL_HOME` is set |
+| 70 | `test_parse_valid_config` | Parses a valid `mcp_clients.json` with multiple servers |
+| 71 | `test_parse_empty_config` | Empty `{"servers": {}}` parses to zero server configs |
+| 72 | `test_parse_missing_file` | Missing config file raises FileNotFoundError |
+| 73 | `test_parse_invalid_json` | Malformed JSON raises ValueError |
+| 74 | `test_parse_missing_transport` | Server entry without `transport` raises ValueError |
+| 75 | `test_parse_stdio_missing_command` | Stdio entry without `command` raises ValueError |
+| 76 | `test_parse_sse_missing_url` | SSE entry without `url` raises ValueError |
+| 77 | `test_parse_unknown_transport` | Transport other than `"stdio"` or `"sse"` raises ValueError |
+| 78 | `test_parse_optional_fields_defaulted` | Missing optional fields (`env`, `args`, `timeout_s`, `auto_reconnect`) get defaults |
+| 79 | `test_parse_timeout_must_be_positive` | `timeout_s` of 0 or negative raises ValueError |
+| 80 | `test_parse_env_must_be_dict` | `env` field that is not a dict raises ValueError |
+| 81 | `test_default_config_path` | Default path is `~/.cideldill/mcp_clients.json` |
+| 82 | `test_config_path_from_env` | `$CIDELDILL_MCP_CLIENTS_CONFIG` overrides default path |
+| 83 | `test_config_path_respects_cideldill_home` | `$CIDELDILL_HOME/mcp_clients.json` is used when `$CIDELDILL_HOME` is set |
 
 ### Module: `tests/unit/test_mcp_client_cli.py`
 
@@ -600,18 +746,21 @@ Integration tests spawn real MCP server subprocesses.
 
 | # | Test | Description |
 |---|------|-------------|
-| 81 | `test_mcp_clients_flag_recognized` | `--mcp-clients` flag is parsed without error |
-| 82 | `test_mcp_clients_config_flag` | `--mcp-clients-config /path` is parsed and stored |
-| 83 | `test_mcp_client_inline_flag_stdio` | `--mcp-client "name:command args"` is parsed as stdio transport |
-| 84 | `test_mcp_client_inline_flag_sse_http` | `--mcp-client "name:http://host/path"` is parsed as SSE transport |
-| 85 | `test_mcp_client_inline_flag_sse_https` | `--mcp-client "name:https://host/path"` is parsed as SSE transport |
-| 86 | `test_mcp_client_inline_multiple` | Multiple `--mcp-client` flags are accumulated |
-| 87 | `test_mcp_client_inline_missing_colon` | `--mcp-client "no-colon"` raises error (missing name:value separator) |
-| 88 | `test_mcp_client_inline_empty_name` | `--mcp-client ":command"` raises error (empty server name) |
-| 89 | `test_mcp_client_inline_empty_value` | `--mcp-client "name:"` raises error (empty command/URL) |
-| 90 | `test_mcp_clients_without_flag_no_client_manager` | Without `--mcp-clients`, no MCPClientManager is created |
-| 91 | `test_mcp_clients_starts_manager` | With `--mcp-clients`, MCPClientManager is created and started |
-| 92 | `test_mcp_clients_shutdown_on_server_stop` | MCPClientManager.shutdown() is called when the server stops |
+| 84 | `test_mcp_clients_flag_recognized` | `--mcp-clients` flag is parsed without error |
+| 85 | `test_mcp_clients_config_flag` | `--mcp-clients-config /path` is parsed and stored |
+| 86 | `test_mcp_client_inline_flag_stdio` | `--mcp-client "name:command args"` is parsed as stdio transport (split on first colon) |
+| 87 | `test_mcp_client_inline_flag_sse_http` | `--mcp-client "name:http://host/path"` is parsed as SSE transport |
+| 88 | `test_mcp_client_inline_flag_sse_https` | `--mcp-client "name:https://host/path"` is parsed as SSE transport |
+| 89 | `test_mcp_client_inline_multiple` | Multiple `--mcp-client` flags are accumulated |
+| 90 | `test_mcp_client_inline_missing_colon` | `--mcp-client "no-colon"` raises error (missing name:value separator) |
+| 91 | `test_mcp_client_inline_empty_name` | `--mcp-client ":command"` raises error (empty server name) |
+| 92 | `test_mcp_client_inline_empty_value` | `--mcp-client "name:"` raises error (empty command/URL) |
+| 93 | `test_no_flags_no_client_manager` | Without any `--mcp-clients` or `--mcp-client` flags, no MCPClientManager is created |
+| 94 | `test_mcp_clients_flag_creates_manager` | `--mcp-clients` alone creates MCPClientManager (loads default config, no-op if file missing) |
+| 95 | `test_mcp_client_inline_alone_creates_manager` | `--mcp-client "name:cmd"` alone (without `--mcp-clients`) creates MCPClientManager and connects the server |
+| 96 | `test_mcp_clients_shutdown_on_server_stop` | MCPClientManager.shutdown() is called when the server stops |
+| 97 | `test_mcp_clients_default_config_missing_is_silent` | `--mcp-clients` with no config file at default path creates manager with zero servers (no error) |
+| 98 | `test_mcp_clients_config_file_missing_is_error` | `--mcp-clients-config /nonexistent` raises FileNotFoundError |
 
 ### Module: `tests/unit/test_mcp_client_rest_api.py`
 
@@ -619,23 +768,25 @@ Integration tests spawn real MCP server subprocesses.
 
 | # | Test | Description |
 |---|------|-------------|
-| 93 | `test_get_mcp_clients_empty` | `/api/mcp-clients` returns empty when no clients configured |
-| 94 | `test_get_mcp_clients_with_connections` | `/api/mcp-clients` returns status for each configured server |
-| 95 | `test_get_mcp_tools_empty` | `/api/mcp-tools` returns empty when no servers connected |
-| 96 | `test_get_mcp_tools_with_connected_server` | `/api/mcp-tools` returns tools from connected servers |
-| 97 | `test_post_mcp_tools_call_success` | `/api/mcp-tools/call` routes to correct server and returns result |
-| 98 | `test_post_mcp_tools_call_missing_tool` | Error when `tool` field is missing from request body |
-| 99 | `test_post_mcp_tools_call_server_not_connected` | Error when target server is not connected |
-| 100 | `test_post_mcp_tools_call_tool_not_found` | Error when tool name is not in catalog |
-| 101 | `test_get_mcp_resources` | `/api/mcp-resources` returns aggregated resources |
-| 102 | `test_post_mcp_resources_read` | `/api/mcp-resources/read` reads from correct server |
-| 103 | `test_post_mcp_clients_connect` | `/api/mcp-clients/connect` adds a new server connection |
-| 104 | `test_post_mcp_clients_connect_duplicate_name` | Error when connecting with an already-used name |
-| 105 | `test_post_mcp_clients_disconnect` | `/api/mcp-clients/<name>/disconnect` disconnects a server |
-| 106 | `test_post_mcp_clients_reconnect` | `/api/mcp-clients/<name>/reconnect` reconnects a server |
-| 107 | `test_mcp_tools_call_records_in_call_records` | External tool calls are recorded in call records with `"source": "mcp_client"` |
-| 108 | `test_mcp_tools_call_result_stored_in_cid_store` | External tool call results are stored in the CIDStore |
-| 109 | `test_api_unavailable_when_no_client_manager` | All `/api/mcp-*` routes return 404 or 503 when MCPClientManager is not configured |
+| 99 | `test_get_mcp_clients_empty` | `/api/mcp-clients` returns empty when no clients configured |
+| 100 | `test_get_mcp_clients_with_connections` | `/api/mcp-clients` returns status for each configured server |
+| 101 | `test_get_mcp_tools_empty` | `/api/mcp-tools` returns empty when no servers connected |
+| 102 | `test_get_mcp_tools_with_connected_server` | `/api/mcp-tools` returns tools from connected servers |
+| 103 | `test_post_mcp_tools_call_success` | `/api/mcp-tools/call` routes to correct server and returns result |
+| 104 | `test_post_mcp_tools_call_missing_tool` | Error when `tool` field is missing from request body |
+| 105 | `test_post_mcp_tools_call_server_not_connected` | Error when target server is not connected |
+| 106 | `test_post_mcp_tools_call_tool_not_found` | Error when tool name is not in catalog |
+| 107 | `test_get_mcp_resources` | `/api/mcp-resources` returns aggregated resources |
+| 108 | `test_post_mcp_resources_read` | `/api/mcp-resources/read` reads from correct server and returns content + mime_type |
+| 109 | `test_post_mcp_clients_connect_success` | `/api/mcp-clients/connect` adds a new server, returns status + tool list |
+| 110 | `test_post_mcp_clients_connect_duplicate_name` | Error when connecting with an already-used name |
+| 111 | `test_post_mcp_clients_disconnect` | `/api/mcp-clients/<name>/disconnect` disconnects a server, returns status ok |
+| 112 | `test_post_mcp_clients_disconnect_not_found` | Disconnecting unknown server returns `server_not_found` error |
+| 113 | `test_post_mcp_clients_reconnect_success` | `/api/mcp-clients/<name>/reconnect` reconnects a server, returns status + tools |
+| 114 | `test_post_mcp_clients_reconnect_not_found` | Reconnecting unknown server returns `server_not_found` error |
+| 115 | `test_mcp_tools_call_records_in_call_records` | External tool calls are recorded in call records with `"source": "mcp_client"` |
+| 116 | `test_mcp_tools_call_result_stored_in_cid_store` | External tool call results are stored in the CIDStore |
+| 117 | `test_api_unavailable_when_no_client_manager` | All `/api/mcp-*` routes return 404 or 503 when MCPClientManager is not configured |
 
 ### Module: `tests/unit/test_mcp_client_proxy_tools.py`
 
@@ -643,23 +794,23 @@ Integration tests spawn real MCP server subprocesses.
 
 | # | Test | Description |
 |---|------|-------------|
-| 110 | `test_external_list_servers_empty` | Returns empty when no MCP client connections |
-| 111 | `test_external_list_servers_with_connections` | Returns server status and tool counts |
-| 112 | `test_external_list_tools_all` | Returns all tools from all servers |
-| 113 | `test_external_list_tools_filter_by_server` | Filters tools to a specific server |
-| 114 | `test_external_call_tool_success` | Proxies a tool call through to the external server |
-| 115 | `test_external_call_tool_server_not_found` | Error for unknown server name |
-| 116 | `test_external_call_tool_tool_not_found` | Error for unknown tool name |
-| 117 | `test_external_call_tool_timeout` | Error when external tool call times out |
-| 118 | `test_external_call_tool_no_client_manager` | Error when MCPClientManager is not configured |
-| 119 | `test_external_list_resources_all` | Returns all resources from all servers |
-| 120 | `test_external_list_resources_filter_by_server` | Filters resources to a specific server |
-| 121 | `test_external_read_resource_success` | Reads a resource from the correct server |
-| 122 | `test_external_read_resource_server_not_found` | Error for unknown server |
-| 123 | `test_external_read_resource_not_found` | Error when resource is not found |
-| 124 | `test_proxy_tools_registered` | All 5 proxy tools are registered with the MCP server |
-| 125 | `test_proxy_tool_names_prefixed` | Proxy tool names start with `external_` |
-| 126 | `test_proxy_tool_results_are_json` | All proxy tool results are single TextContent with valid JSON |
+| 118 | `test_external_list_servers_empty` | Returns empty when no MCP client connections |
+| 119 | `test_external_list_servers_with_connections` | Returns server status and tool counts |
+| 120 | `test_external_list_tools_all` | Returns all tools from all servers |
+| 121 | `test_external_list_tools_filter_by_server` | Filters tools to a specific server |
+| 122 | `test_external_call_tool_success` | Proxies a tool call through to the external server |
+| 123 | `test_external_call_tool_server_not_found` | Error for unknown server name |
+| 124 | `test_external_call_tool_tool_not_found` | Error for unknown tool name |
+| 125 | `test_external_call_tool_timeout` | Error when external tool call times out |
+| 126 | `test_external_call_tool_no_client_manager` | Error when MCPClientManager is not configured |
+| 127 | `test_external_list_resources_all` | Returns resources from all servers with uri, server, name, description, mime_type |
+| 128 | `test_external_list_resources_filter_by_server` | Filters resources to a specific server |
+| 129 | `test_external_read_resource_success` | Reads a resource from the correct server, returns content + mime_type |
+| 130 | `test_external_read_resource_server_not_found` | Error for unknown server |
+| 131 | `test_external_read_resource_not_found` | Error when resource is not found |
+| 132 | `test_proxy_tools_registered` | All 5 proxy tools are registered with the MCP server |
+| 133 | `test_proxy_tool_names_prefixed` | Proxy tool names start with `external_` |
+| 134 | `test_proxy_tool_results_are_json` | All proxy tool results are single TextContent with valid JSON |
 
 ### Module: `tests/unit/test_mcp_client_async_bridge.py`
 
@@ -667,12 +818,12 @@ Integration tests spawn real MCP server subprocesses.
 
 | # | Test | Description |
 |---|------|-------------|
-| 127 | `test_bridge_runs_coroutine_on_background_loop` | A coroutine submitted via the bridge runs on the background thread |
-| 128 | `test_bridge_returns_result_to_calling_thread` | The result of the coroutine is returned to the calling thread |
-| 129 | `test_bridge_propagates_exception` | An exception in the coroutine is re-raised on the calling thread |
-| 130 | `test_bridge_timeout_raises` | A coroutine that takes too long raises TimeoutError |
-| 131 | `test_bridge_concurrent_calls` | Multiple threads submitting coroutines concurrently all get correct results |
-| 132 | `test_bridge_after_shutdown_raises` | Submitting to a shut-down bridge raises RuntimeError |
+| 135 | `test_bridge_runs_coroutine_on_background_loop` | A coroutine submitted via the bridge runs on the background thread |
+| 136 | `test_bridge_returns_result_to_calling_thread` | The result of the coroutine is returned to the calling thread |
+| 137 | `test_bridge_propagates_exception` | An exception in the coroutine is re-raised on the calling thread |
+| 138 | `test_bridge_timeout_raises` | A coroutine that takes too long raises TimeoutError |
+| 139 | `test_bridge_concurrent_calls` | Multiple threads submitting coroutines concurrently all get correct results |
+| 140 | `test_bridge_after_shutdown_raises` | Submitting to a shut-down bridge raises RuntimeError |
 
 ### Module: `tests/integration/test_mcp_client_integration.py`
 
@@ -680,19 +831,19 @@ Integration tests spawn real MCP server subprocesses.
 
 | # | Test | Description |
 |---|------|-------------|
-| 133 | `test_connect_to_mock_stdio_server` | Start a mock MCP server as subprocess, connect, list tools, call a tool |
-| 134 | `test_connect_to_mock_sse_server` | Start a mock MCP SSE server, connect, list tools, call a tool |
-| 135 | `test_multiple_servers_simultaneously` | Connect to two mock servers, verify tool catalogs are separate and both callable |
-| 136 | `test_server_crash_recovery` | Kill a connected server process, verify status becomes disconnected, reconnect succeeds |
-| 137 | `test_tool_call_through_rest_api` | Start breakpoint server with MCP client, call external tool via `/api/mcp-tools/call` |
-| 138 | `test_tool_call_through_mcp_server` | Start breakpoint server as MCP server with client configured, call `external_call_tool` via MCP protocol |
-| 139 | `test_connect_at_runtime_via_api` | Use `/api/mcp-clients/connect` to add a server after startup, then call its tools |
-| 140 | `test_disconnect_at_runtime_via_api` | Use `/api/mcp-clients/<name>/disconnect` to remove a server, verify tools disappear |
-| 141 | `test_config_file_loaded_on_startup` | With `--mcp-clients-config`, servers from config file are connected on startup |
-| 142 | `test_graceful_shutdown` | Stopping the breakpoint server cleanly shuts down all MCP client connections |
-| 143 | `test_tool_call_result_inspectable_via_cid` | External tool call result stored in CIDStore is retrievable via `breakpoint_inspect_object` |
-| 144 | `test_inline_stdio_server_connected_on_startup` | `--mcp-client "name:command"` connects a stdio server on startup |
-| 145 | `test_inline_sse_server_connected_on_startup` | `--mcp-client "name:http://url"` connects an SSE server on startup |
+| 141 | `test_connect_to_mock_stdio_server` | Start a mock MCP server as subprocess, connect, list tools, call a tool |
+| 142 | `test_connect_to_mock_sse_server` | Start a mock MCP SSE server, connect, list tools, call a tool |
+| 143 | `test_multiple_servers_simultaneously` | Connect to two mock servers, verify tool catalogs are separate and both callable |
+| 144 | `test_server_crash_recovery` | Kill a connected server process, verify status becomes disconnected, reconnect succeeds |
+| 145 | `test_tool_call_through_rest_api` | Start breakpoint server with MCP client, call external tool via `/api/mcp-tools/call` |
+| 146 | `test_tool_call_through_mcp_server` | Start breakpoint server as MCP server with client configured, call `external_call_tool` via MCP protocol |
+| 147 | `test_connect_at_runtime_via_api` | Use `/api/mcp-clients/connect` to add a server after startup, then call its tools |
+| 148 | `test_disconnect_at_runtime_via_api` | Use `/api/mcp-clients/<name>/disconnect` to remove a server, verify tools disappear |
+| 149 | `test_config_file_loaded_on_startup` | With `--mcp-clients-config`, servers from config file are connected on startup |
+| 150 | `test_graceful_shutdown` | Stopping the breakpoint server cleanly shuts down all MCP client connections |
+| 151 | `test_tool_call_result_inspectable_via_cid` | External tool call result stored in CIDStore is retrievable via `breakpoint_inspect_object` |
+| 152 | `test_inline_stdio_server_connected_on_startup` | `--mcp-client "name:command"` connects a stdio server on startup |
+| 153 | `test_inline_sse_server_connected_on_startup` | `--mcp-client "name:http://url"` connects an SSE server on startup |
 
 ### Module: `tests/unit/test_mcp_client_edge_cases.py`
 
@@ -700,25 +851,25 @@ Integration tests spawn real MCP server subprocesses.
 
 | # | Test | Description |
 |---|------|-------------|
-| 146 | `test_server_returns_empty_tool_list` | A server with zero tools is connected; `list_tools()` works, `call_tool()` returns `tool_not_found` |
-| 147 | `test_server_tool_list_changes_after_reconnect` | Server adds a new tool between disconnects; after reconnect the new tool appears |
-| 148 | `test_tool_call_with_very_large_arguments` | Large argument payloads are passed through without truncation |
-| 149 | `test_tool_call_with_very_large_result` | Large result payloads are returned without truncation |
-| 150 | `test_server_name_collision_with_breakpoint_prefix` | Server named `"breakpoint"` works — its tools are `"breakpoint/tool"`, which does not collide with `"breakpoint_tool"` in the MCP server |
-| 151 | `test_tool_with_no_input_schema` | External tools with no input_schema specified are callable with empty arguments |
-| 152 | `test_unicode_in_tool_name` | Tool name containing unicode characters is handled correctly |
-| 153 | `test_unicode_in_arguments` | Arguments containing unicode are passed through correctly |
-| 154 | `test_tool_returning_is_error_true` | Tool result with `is_error=true` is propagated faithfully |
-| 155 | `test_concurrent_connect_disconnect` | Connecting and disconnecting the same server from different threads |
-| 156 | `test_call_tool_after_server_process_exit` | Calling a tool after the server process has exited returns connection error |
-| 157 | `test_sse_server_url_trailing_slash` | SSE URL with trailing slash works |
-| 158 | `test_sse_server_url_without_trailing_slash` | SSE URL without trailing slash works |
-| 159 | `test_config_file_with_comments_rejected` | JSON with comments fails to parse with clear error |
-| 160 | `test_shutdown_with_active_tool_call` | Shutdown while a tool call is in progress completes the shutdown without hanging |
-| 161 | `test_connect_timeout` | Connection attempt that takes too long times out with clear error |
-| 162 | `test_initialize_failure` | Server that connects but fails MCP initialization gets status `"error"` |
-| 163 | `test_runtime_connection_not_persisted` | Server added via `/api/mcp-clients/connect` does not modify the config file |
-| 164 | `test_runtime_connection_gone_after_restart` | After server restart, only config-file servers are reconnected (not runtime-added ones) |
+| 154 | `test_server_returns_empty_tool_list` | A server with zero tools is connected; `list_tools()` works, `call_tool()` returns `tool_not_found` |
+| 155 | `test_server_tool_list_changes_after_reconnect` | Server adds a new tool between disconnects; after reconnect the new tool appears |
+| 156 | `test_tool_call_with_very_large_arguments` | Large argument payloads are passed through without truncation |
+| 157 | `test_tool_call_with_very_large_result` | Large result payloads are returned without truncation |
+| 158 | `test_server_name_collision_with_breakpoint_prefix` | Server named `"breakpoint"` works — its tools are `"breakpoint/tool"`, which does not collide with `"breakpoint_tool"` in the MCP server |
+| 159 | `test_tool_with_no_input_schema` | External tools with no input_schema specified are callable with empty arguments |
+| 160 | `test_unicode_in_tool_name` | Tool name containing unicode characters is handled correctly |
+| 161 | `test_unicode_in_arguments` | Arguments containing unicode are passed through correctly |
+| 162 | `test_tool_returning_is_error_true` | Tool result with `is_error=true` is propagated faithfully |
+| 163 | `test_concurrent_connect_disconnect` | Connecting and disconnecting the same server from different threads |
+| 164 | `test_call_tool_after_server_process_exit` | Calling a tool after the server process has exited returns connection error |
+| 165 | `test_sse_server_url_trailing_slash` | SSE URL with trailing slash works |
+| 166 | `test_sse_server_url_without_trailing_slash` | SSE URL without trailing slash works |
+| 167 | `test_config_file_with_comments_rejected` | JSON with comments fails to parse with clear error |
+| 168 | `test_shutdown_with_active_tool_call` | Shutdown while a tool call is in progress completes the shutdown without hanging |
+| 169 | `test_connect_timeout_30s` | Connection attempt exceeding 30s connection timeout gets status `"error"` |
+| 170 | `test_initialize_failure` | Server that connects but fails MCP initialization gets status `"error"` |
+| 171 | `test_runtime_connection_not_persisted` | Server added via `/api/mcp-clients/connect` does not modify the config file |
+| 172 | `test_runtime_connection_gone_after_restart` | After server restart, only config-file servers are reconnected (not runtime-added ones) |
 
 ---
 
